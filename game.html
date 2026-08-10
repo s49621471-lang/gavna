@@ -1,0 +1,348 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orb Run - 3D</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;
+    font:14px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#dfe6f0;
+    user-select:none;-webkit-user-select:none}
+  #c{display:block;width:100vw;height:100vh;cursor:crosshair}
+  #hud{position:fixed;left:14px;top:12px;pointer-events:none;text-shadow:0 1px 3px #000}
+  #hud b{color:#ffd85a}
+  #cross{position:fixed;left:50%;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;
+    pointer-events:none;opacity:.85}
+  #cross:before,#cross:after{content:"";position:absolute;background:#fff}
+  #cross:before{left:5px;top:0;width:2px;height:12px}
+  #cross:after{top:5px;left:0;height:2px;width:12px}
+  #banner{position:fixed;inset:0;display:grid;place-content:center;text-align:center;
+    background:rgba(6,9,15,.72);backdrop-filter:blur(2px)}
+  #banner h1{margin:0 0 .3em;font-size:34px;letter-spacing:1px}
+  #banner p{margin:.25em 0;opacity:.85}
+  #banner .k{color:#7aa2ff}
+  #banner .win h1{color:#7dff9b}#banner .lose h1{color:#ff7a7a}
+  #err{position:fixed;inset:0;display:none;place-content:center;text-align:center;
+    padding:2rem;color:#ff7a7a}
+</style>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div>orbs <b><span id="score">0</span>/<span id="total">0</span></b>
+       &nbsp; time <b><span id="time">0</span>s</b></div>
+  <div style="opacity:.7">WASD move &middot; mouse/arrows look &middot; R reset</div>
+</div>
+<div id="cross"></div>
+<div id="banner"><div id="bwrap"></div></div>
+<div id="err"></div>
+<script>
+"use strict";
+/* Orb Run: first-person collect-and-survive, raw WebGL, no dependencies.
+   Tunables live here so balancing is a text edit, not a code hunt. */
+const ARENA      = 20;    // half-extent of the square floor (world units)
+const WALL_H     = 3;
+const WALL_T     = 0.5;
+const EYE_H      = 1.3;
+const PLAYER_R   = 0.45;  // collision radius vs walls/pillars
+const MOVE_SPEED = 6.5;   // units/s
+const ENEMY_SPEED= 3.4;   // < MOVE_SPEED so the game is winnable
+const N_PICKUPS  = 8;
+const N_ENEMIES  = 3;
+const N_PILLARS  = 7;
+const TIME_LIMIT = 60;    // seconds
+const PICKUP_R   = 0.8;   // collect distance
+const ENEMY_HIT  = 0.9;   // contact distance -> lose
+const LOOK_SENS  = 0.0022;
+const PITCH_LIM  = 1.45;  // ~83 deg, keeps up-vector sane in lookAt
+const MAX_DT     = 0.05;  // clamp frame step: prevents tunneling after tab-away
+
+/* ---- fail closed -------------------------------------------------------- */
+function die(m){const e=document.getElementById("err");e.style.display="grid";
+  e.textContent=m;throw new Error(m);}
+const canvas=document.getElementById("c");
+const gl=canvas.getContext("webgl")||canvas.getContext("experimental-webgl");
+if(!gl) die("WebGL is unavailable in this browser/context.");
+
+/* ---- column-major mat math (verified elsewhere) ------------------------- */
+function ident(){const m=new Float32Array(16);m[0]=m[5]=m[10]=m[15]=1;return m;}
+function mul(a,b){const o=new Float32Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s;}return o;}
+function translation(x,y,z){const m=ident();m[12]=x;m[13]=y;m[14]=z;return m;}
+function scaling(x,y,z){const m=ident();m[0]=x;m[5]=y;m[10]=z;return m;}
+function rotY(a){const c=Math.cos(a),s=Math.sin(a);const m=ident();
+  m[0]=c;m[2]=-s;m[8]=s;m[10]=c;return m;}
+function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2),nf=1/(near-far);
+  return new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)*nf,-1,0,0,2*far*near*nf,0]);}
+function lookAt(e,c,up){
+  let z0=e[0]-c[0],z1=e[1]-c[1],z2=e[2]-c[2];let l=Math.hypot(z0,z1,z2)||1;z0/=l;z1/=l;z2/=l;
+  let x0=up[1]*z2-up[2]*z1,x1=up[2]*z0-up[0]*z2,x2=up[0]*z1-up[1]*z0;
+  l=Math.hypot(x0,x1,x2)||1;x0/=l;x1/=l;x2/=l;
+  const y0=z1*x2-z2*x1,y1=z2*x0-z0*x2,y2=z0*x1-z1*x0;
+  return new Float32Array([x0,y0,z0,0,x1,y1,z1,0,x2,y2,z2,0,
+    -(x0*e[0]+x1*e[1]+x2*e[2]),-(y0*e[0]+y1*e[1]+y2*e[2]),-(z0*e[0]+z1*e[1]+z2*e[2]),1]);}
+function normalMat3(a){
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+        a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,b03=a01*a12-a02*a11,
+        b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,
+        b08=a20*a33-a23*a30,b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;
+  let det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;const o=new Float32Array(9);
+  if(!det)return o;det=1/det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det;o[1]=(a12*b08-a10*b11-a13*b07)*det;o[2]=(a10*b10-a11*b08+a13*b06)*det;
+  o[3]=(a02*b10-a01*b11-a03*b09)*det;o[4]=(a00*b11-a02*b08+a03*b07)*det;o[5]=(a01*b08-a00*b10-a03*b06)*det;
+  o[6]=(a31*b05-a32*b04+a33*b03)*det;o[7]=(a32*b02-a30*b05-a33*b01)*det;o[8]=(a30*b04-a31*b02+a33*b00)*det;
+  return o;}
+
+/* ---- seeded RNG so a layout is reproducible / testable ------------------ */
+function makeRng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;
+  let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;
+  return((t^t>>>14)>>>0)/4294967296;};}
+
+/* ---- meshes ------------------------------------------------------------- */
+function buildBox(){
+  const pos=[],norm=[],idx=[],s=0.5;
+  const add=(n,a,b,c,d)=>{const base=pos.length/3;
+    for(const p of[a,b,c,d]){pos.push(p[0],p[1],p[2]);norm.push(n[0],n[1],n[2]);}
+    idx.push(base,base+1,base+2,base,base+2,base+3);};
+  add([0,0,1],[-s,-s,s],[s,-s,s],[s,s,s],[-s,s,s]);
+  add([0,0,-1],[s,-s,-s],[-s,-s,-s],[-s,s,-s],[s,s,-s]);
+  add([1,0,0],[s,-s,s],[s,-s,-s],[s,s,-s],[s,s,s]);
+  add([-1,0,0],[-s,-s,-s],[-s,-s,s],[-s,s,s],[-s,s,-s]);
+  add([0,1,0],[-s,s,s],[s,s,s],[s,s,-s],[-s,s,-s]);
+  add([0,-1,0],[-s,-s,-s],[s,-s,-s],[s,-s,s],[-s,-s,s]);
+  return {pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+function buildQuad(sz){
+  return {pos:new Float32Array([-sz,0,-sz,sz,0,-sz,sz,0,sz,-sz,0,sz]),
+    norm:new Float32Array([0,1,0,0,1,0,0,1,0,0,1,0]),
+    idx:new Uint16Array([0,1,2,0,2,3])};
+}
+
+/* ---- GL program --------------------------------------------------------- */
+const VS=`attribute vec3 aPos,aNorm;
+uniform mat4 uProj,uMV,uModel;uniform mat3 uN;
+varying vec3 vN,vEye,vWorld;
+void main(){vec4 e=uMV*vec4(aPos,1.0);vEye=e.xyz;vN=uN*aNorm;
+vWorld=(uModel*vec4(aPos,1.0)).xyz;gl_Position=uProj*e;}`;
+const FS=`precision mediump float;
+varying vec3 vN,vEye,vWorld;
+uniform vec3 uColor,uLightDir;uniform float uChecker,uEmis;
+void main(){
+  vec3 N=normalize(vN),L=normalize(uLightDir),V=normalize(-vEye),H=normalize(L+V);
+  float diff=max(dot(N,L),0.0),spec=pow(max(dot(N,H),0.0),32.0);
+  vec3 base=uColor;
+  if(uChecker>0.5){float ch=mod(floor(vWorld.x)+floor(vWorld.z),2.0);base=mix(uColor,uColor*0.5,ch);}
+  vec3 c=base*(0.22+0.78*diff)+vec3(0.9)*spec*0.3+uColor*uEmis;
+  float fog=clamp(length(vEye)/48.0,0.0,1.0);
+  c=mix(min(c,vec3(1.0)),vec3(0.05,0.07,0.11),fog*0.85);
+  gl_FragColor=vec4(c,1.0);
+}`;
+function compile(t,src){const s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))die("shader: "+gl.getShaderInfoLog(s));return s;}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS))die("link: "+gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const A_POS=gl.getAttribLocation(prog,"aPos"),A_NORM=gl.getAttribLocation(prog,"aNorm");
+const U={proj:gl.getUniformLocation(prog,"uProj"),mv:gl.getUniformLocation(prog,"uMV"),
+  model:gl.getUniformLocation(prog,"uModel"),n:gl.getUniformLocation(prog,"uN"),
+  col:gl.getUniformLocation(prog,"uColor"),light:gl.getUniformLocation(prog,"uLightDir"),
+  checker:gl.getUniformLocation(prog,"uChecker"),emis:gl.getUniformLocation(prog,"uEmis")};
+function upload(m){
+  const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);gl.bufferData(gl.ARRAY_BUFFER,m.pos,gl.STATIC_DRAW);
+  const nb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,nb);gl.bufferData(gl.ARRAY_BUFFER,m.norm,gl.STATIC_DRAW);
+  const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,m.idx,gl.STATIC_DRAW);
+  return {vb,nb,ib,n:m.idx.length};}
+const BOX=upload(buildBox()),GROUND=upload(buildQuad(ARENA));
+
+function draw(g,model,color,checker,emis){
+  const mv=mul(view,model);
+  gl.uniformMatrix4fv(U.mv,false,mv);
+  gl.uniformMatrix4fv(U.model,false,model);
+  gl.uniformMatrix3fv(U.n,false,normalMat3(mv));
+  gl.uniform3fv(U.col,color);gl.uniform1f(U.checker,checker?1:0);gl.uniform1f(U.emis,emis||0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,g.vb);gl.enableVertexAttribArray(A_POS);gl.vertexAttribPointer(A_POS,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,g.nb);gl.enableVertexAttribArray(A_NORM);gl.vertexAttribPointer(A_NORM,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,g.ib);gl.drawElements(gl.TRIANGLES,g.n,gl.UNSIGNED_SHORT,0);
+}
+
+/* ---- world state -------------------------------------------------------- */
+let pillars=[],pickups=[],enemies=[];
+let px=0,pz=0,yaw=0,pitch=0,score=0,tleft=TIME_LIMIT;
+let state="menu",seed=1337,anim=0;
+const keys=Object.create(null);
+
+function pillarHit(x,z,pad){
+  for(const p of pillars)
+    if(Math.abs(x-p.x)<p.hx+pad && Math.abs(z-p.z)<p.hz+pad) return true;
+  return false;
+}
+// walls + pillars; single source of truth for "can the player stand here"
+function collides(x,z){
+  const lim=ARENA-WALL_T-PLAYER_R;
+  if(Math.abs(x)>lim||Math.abs(z)>lim) return true;
+  return pillarHit(x,z,PLAYER_R);
+}
+
+function newWorld(s){
+  const R=makeRng(s);
+  pillars=[];
+  for(let tries=0;pillars.length<N_PILLARS&&tries<200;tries++){
+    const x=(R()*2-1)*(ARENA-3),z=(R()*2-1)*(ARENA-3);
+    if(Math.hypot(x,z)<5) continue;                 // keep spawn area clear
+    pillars.push({x,z,hx:0.6+R()*0.7,hz:0.6+R()*0.7,h:1.5+R()*2.8});
+  }
+  pickups=[];
+  for(let tries=0;pickups.length<N_PICKUPS&&tries<600;tries++){
+    const x=(R()*2-1)*(ARENA-2),z=(R()*2-1)*(ARENA-2);
+    if(Math.hypot(x,z)<3) continue;                 // not on the player's head
+    if(pillarHit(x,z,PICKUP_R)) continue;           // not buried in a pillar
+    pickups.push({x,z,got:false});
+  }
+  const corners=[[ARENA-3,ARENA-3],[-(ARENA-3),ARENA-3],[ARENA-3,-(ARENA-3)],[-(ARENA-3),-(ARENA-3)]];
+  enemies=corners.slice(0,N_ENEMIES).map(c=>({x:c[0],z:c[1]}));
+  px=0;pz=0;yaw=0;pitch=0;score=0;tleft=TIME_LIMIT;
+  document.getElementById("total").textContent=pickups.length;
+}
+
+/* ---- simulation --------------------------------------------------------- */
+function step(dt){
+  // movement in yaw-only horizontal basis; forward(-Z at yaw 0), right(+X at yaw 0)
+  let ix=0,iz=0;
+  if(keys["KeyW"])iz+=1; if(keys["KeyS"])iz-=1; if(keys["KeyD"])ix+=1; if(keys["KeyA"])ix-=1;
+  const fx=Math.sin(yaw),fz=-Math.cos(yaw),rx=Math.cos(yaw),rz=Math.sin(yaw);
+  let vx=fx*iz+rx*ix,vz=fz*iz+rz*ix;
+  const vl=Math.hypot(vx,vz);
+  if(vl>0){vx=vx/vl*MOVE_SPEED;vz=vz/vl*MOVE_SPEED;}
+  const nx=px+vx*dt,nz=pz+vz*dt;
+  if(!collides(nx,pz)) px=nx;                        // axis-separated => wall sliding
+  if(!collides(px,nz)) pz=nz;
+
+  // keyboard look fallback (works without pointer lock)
+  const look=2.2*dt;
+  if(keys["ArrowLeft"]) yaw-=look; if(keys["ArrowRight"]) yaw+=look;
+  if(keys["ArrowUp"])   pitch+=look; if(keys["ArrowDown"]) pitch-=look;
+  pitch=Math.max(-PITCH_LIM,Math.min(PITCH_LIM,pitch));
+
+  // pickups
+  for(const pk of pickups){
+    if(pk.got) continue;
+    if((px-pk.x)**2+(pz-pk.z)**2 < PICKUP_R*PICKUP_R){pk.got=true;score++;}
+  }
+  if(score>=pickups.length && pickups.length>0){endGame(true);return;}
+
+  // enemies chase on XZ, clamped to arena; contact loses
+  const lim=ARENA-WALL_T-0.5;
+  for(const e of enemies){
+    let dx=px-e.x,dz=pz-e.z,d=Math.hypot(dx,dz)||1;
+    e.x+=dx/d*ENEMY_SPEED*dt; e.z+=dz/d*ENEMY_SPEED*dt;
+    e.x=Math.max(-lim,Math.min(lim,e.x)); e.z=Math.max(-lim,Math.min(lim,e.z));
+    if(dx*dx+dz*dz < ENEMY_HIT*ENEMY_HIT){endGame(false);return;}
+  }
+
+  tleft-=dt;
+  if(tleft<=0){tleft=0;endGame(false);return;}
+}
+
+/* ---- view + render ------------------------------------------------------ */
+let view=ident();
+function buildView(){
+  const cp=Math.cos(pitch);
+  const fwd=[Math.sin(yaw)*cp,Math.sin(pitch),-Math.cos(yaw)*cp];
+  const eye=[px,EYE_H,pz];
+  view=lookAt(eye,[eye[0]+fwd[0],eye[1]+fwd[1],eye[2]+fwd[2]],[0,1,0]);
+}
+const C_GROUND=[0.16,0.20,0.28],C_WALL=[0.30,0.34,0.44],C_PILLAR=[0.42,0.30,0.50],
+      C_ORB=[1.0,0.84,0.30],C_ENEMY=[0.95,0.24,0.24];
+function render(){
+  // ground
+  draw(GROUND,ident(),C_GROUND,true,0);
+  // four boundary walls
+  const w=ARENA;
+  draw(BOX,mul(translation(0,WALL_H/2, w),scaling(2*w,WALL_H,WALL_T)),C_WALL,false,0);
+  draw(BOX,mul(translation(0,WALL_H/2,-w),scaling(2*w,WALL_H,WALL_T)),C_WALL,false,0);
+  draw(BOX,mul(translation( w,WALL_H/2,0),scaling(WALL_T,WALL_H,2*w)),C_WALL,false,0);
+  draw(BOX,mul(translation(-w,WALL_H/2,0),scaling(WALL_T,WALL_H,2*w)),C_WALL,false,0);
+  // pillars
+  for(const p of pillars)
+    draw(BOX,mul(translation(p.x,p.h/2,p.z),scaling(2*p.hx,p.h,2*p.hz)),C_PILLAR,false,0);
+  // orbs: spin + bob, emissive
+  const bob=Math.sin(anim*2.2)*0.18;
+  for(const pk of pickups){
+    if(pk.got) continue;
+    const m=mul(mul(translation(pk.x,0.9+bob,pk.z),rotY(anim*1.6)),scaling(0.5,0.5,0.5));
+    draw(BOX,m,C_ORB,false,0.6);
+  }
+  // enemies: bob
+  for(const e of enemies){
+    const m=mul(mul(translation(e.x,0.7+Math.sin(anim*3+e.x)*0.1,e.z),rotY(anim*2)),scaling(0.8,1.4,0.8));
+    draw(BOX,m,C_ENEMY,false,0.15);
+  }
+}
+
+/* ---- HUD / banners ------------------------------------------------------ */
+const $=id=>document.getElementById(id);
+function setBanner(html){$("bwrap").innerHTML=html;$("banner").style.display=html?"grid":"none";}
+function menuBanner(){setBanner(
+  '<h1>Orb Run</h1><p>Collect all <b>'+N_PICKUPS+'</b> orbs before the timer.</p>'+
+  '<p>Avoid the red hunters.</p><p><span class="k">Click</span> to play &middot; '+
+  '<span class="k">WASD</span> move &middot; <span class="k">mouse</span> look</p>');}
+function endGame(won){
+  state=won?"win":"lose";
+  if(document.pointerLockElement) document.exitPointerLock();
+  const used=(TIME_LIMIT-tleft).toFixed(1);
+  setBanner('<div class="'+(won?'win':'lose')+'">'+
+    '<h1>'+(won?'You escaped':'Caught')+'</h1>'+
+    (won?'<p>All orbs in <b>'+used+'s</b>.</p>':'<p>Orbs: <b>'+score+'/'+pickups.length+'</b></p>')+
+    '<p><span class="k">R</span> or <span class="k">click</span> to play again</p></div>');
+}
+function updateHud(){$("score").textContent=score;$("time").textContent=Math.ceil(tleft);}
+
+/* ---- input -------------------------------------------------------------- */
+addEventListener("keydown",e=>{
+  keys[e.code]=true;
+  if(e.code==="KeyR"){startGame();}
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))e.preventDefault();
+});
+addEventListener("keyup",e=>{keys[e.code]=false;});
+addEventListener("blur",()=>{for(const k in keys)keys[k]=false;}); // drop stuck keys on focus loss
+canvas.addEventListener("click",()=>{
+  if(state!=="play") startGame();
+  if(canvas.requestPointerLock) canvas.requestPointerLock();
+});
+addEventListener("mousemove",e=>{
+  if(document.pointerLockElement!==canvas) return;
+  yaw+=e.movementX*LOOK_SENS; pitch-=e.movementY*LOOK_SENS;
+  pitch=Math.max(-PITCH_LIM,Math.min(PITCH_LIM,pitch));
+});
+function startGame(){newWorld(seed++);state="play";setBanner("");}
+
+/* ---- resize (devicePixelRatio) ----------------------------------------- */
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=Math.floor(canvas.clientWidth*dpr),h=Math.floor(canvas.clientHeight*dpr);
+  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+addEventListener("resize",resize);
+
+/* ---- main loop ---------------------------------------------------------- */
+gl.enable(gl.DEPTH_TEST);
+gl.clearColor(0.05,0.07,0.11,1);
+const LIGHT=[0.5,0.9,0.4];
+let last=0;
+function frame(t){
+  const dt=Math.min(MAX_DT,(t-last)/1000||0); last=t; anim+=dt;
+  if(state==="play"){ step(dt); updateHud(); }
+  resize();
+  buildView();
+  const aspect=canvas.width/canvas.height||1;
+  gl.uniformMatrix4fv(U.proj,false,perspective(58*Math.PI/180,aspect,0.05,120));
+  gl.uniform3fv(U.light,LIGHT);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  render();
+  requestAnimationFrame(frame);
+}
+newWorld(seed);          // build a world so the menu shows a live scene
+menuBanner();
+resize();
+requestAnimationFrame(frame);
+</script>
