@@ -1,0 +1,283 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SO2 - 3D structure</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0e14;overflow:hidden;
+    font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;color:#c8d0dc}
+  #c{display:block;width:100vw;height:100vh;touch-action:none}
+  #hud{position:fixed;left:12px;top:10px;pointer-events:none;
+    text-shadow:0 1px 2px #000}
+  #hud b{color:#ffe27a}
+  #err{position:fixed;inset:0;display:none;place-content:center;
+    text-align:center;padding:2rem;color:#ff7a7a}
+  .k{color:#7aa2ff}
+</style>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div><b>SO&#8322;</b> sulfur dioxide &mdash; bent, C<sub>2v</sub></div>
+  <div>&angle;O&ndash;S&ndash;O = <b>119&deg;</b>&nbsp; d(S=O) = <b>1.431 &Aring;</b></div>
+  <div style="margin-top:6px;opacity:.75">
+    <span class="k">drag</span> rotate &middot;
+    <span class="k">wheel</span> zoom &middot;
+    <span class="k">space</span> spin</div>
+</div>
+<div id="err"></div>
+<script>
+"use strict";
+/* SO2 ball-and-stick viewer, raw WebGL, zero dependencies.
+   Geometry constants are the load-bearing values; keep them here as named
+   constants so a bond-length/angle correction is a text edit, not a code hunt.
+   Source: gas-phase microwave structure, S=O 1.4308 A, angle 119.33 deg. */
+const BOND_LEN  = 1.4308;              // Angstrom, S=O
+const BOND_ANG  = 119.33 * Math.PI/180; // O-S-O
+const R_S = 0.42, R_O = 0.34;          // draw radii (arbitrary, ball-and-stick)
+const R_BOND = 0.12;
+const COL_S = [1.00, 0.79, 0.16];      // CPK-ish sulfur (yellow)
+const COL_O = [0.94, 0.11, 0.11];      // CPK oxygen (red)
+
+/* ---- fail closed if the platform gives us nothing to draw on ------------- */
+function die(msg){
+  const e=document.getElementById("err");
+  e.style.display="grid"; e.textContent=msg;
+  throw new Error(msg);
+}
+const canvas=document.getElementById("c");
+const gl=canvas.getContext("webgl")||canvas.getContext("experimental-webgl");
+if(!gl) die("WebGL is unavailable in this browser/context.");
+
+/* ---- minimal column-major mat math (WebGL convention) -------------------- */
+function ident(){const m=new Float32Array(16);m[0]=m[5]=m[10]=m[15]=1;return m;}
+function mul(a,b){ // returns a*b
+  const o=new Float32Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++){
+    let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];
+    o[c*4+r]=s;
+  }
+  return o;
+}
+function translation(x,y,z){const m=ident();m[12]=x;m[13]=y;m[14]=z;return m;}
+function scaling(x,y,z){const m=ident();m[0]=x;m[5]=y;m[10]=z;return m;}
+function perspective(fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2),nf=1/(near-far);
+  return new Float32Array([
+    f/aspect,0,0,0, 0,f,0,0,
+    0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0]);
+}
+function lookAt(e,c,up){
+  let z0=e[0]-c[0],z1=e[1]-c[1],z2=e[2]-c[2];
+  let l=Math.hypot(z0,z1,z2)||1; z0/=l;z1/=l;z2/=l;
+  let x0=up[1]*z2-up[2]*z1,x1=up[2]*z0-up[0]*z2,x2=up[0]*z1-up[1]*z0;
+  l=Math.hypot(x0,x1,x2)||1; x0/=l;x1/=l;x2/=l;
+  const y0=z1*x2-z2*x1,y1=z2*x0-z0*x2,y2=z0*x1-z1*x0;
+  return new Float32Array([
+    x0,y0,z0,0, x1,y1,z1,0, x2,y2,z2,0,
+    -(x0*e[0]+x1*e[1]+x2*e[2]),
+    -(y0*e[0]+y1*e[1]+y2*e[2]),
+    -(z0*e[0]+z1*e[1]+z2*e[2]),1]);
+}
+function rotAxis(ax,ang){ // rotation about axis (mat4, column-major)
+  let x=ax[0],y=ax[1],z=ax[2],l=Math.hypot(x,y,z)||1; x/=l;y/=l;z/=l;
+  const c=Math.cos(ang),s=Math.sin(ang),t=1-c;
+  return new Float32Array([
+    t*x*x+c,   t*x*y+s*z, t*x*z-s*y, 0,
+    t*x*y-s*z, t*y*y+c,   t*y*z+s*x, 0,
+    t*x*z+s*y, t*y*z-s*x, t*z*z+c,   0,
+    0,0,0,1]);
+}
+// align +Y to unit dir; handles the parallel / anti-parallel singularities
+function alignYTo(d){
+  const c=d[1];
+  if(c> 0.99999) return ident();
+  if(c<-0.99999) return rotAxis([1,0,0],Math.PI);
+  return rotAxis([d[2],0,-d[0]],Math.acos(c)); // axis = (0,1,0) x d
+}
+// normal matrix = transpose(inverse(upper-left 3x3)); required because bond
+// cylinders use non-uniform scale (radius != length) and would otherwise light wrong.
+function normalMat3(a){
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+        a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,
+        b03=a01*a12-a02*a11,b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,
+        b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,b08=a20*a33-a23*a30,
+        b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;
+  let det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  const o=new Float32Array(9);
+  if(!det) return o;                 // singular -> zero normals, shading goes flat (visible, not silent)
+  det=1/det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det; o[1]=(a12*b08-a10*b11-a13*b07)*det; o[2]=(a10*b10-a11*b08+a13*b06)*det;
+  o[3]=(a02*b10-a01*b11-a03*b09)*det; o[4]=(a00*b11-a02*b08+a03*b07)*det; o[5]=(a01*b08-a00*b10-a03*b06)*det;
+  o[6]=(a31*b05-a32*b04+a33*b03)*det; o[7]=(a32*b02-a30*b05-a33*b01)*det; o[8]=(a30*b04-a31*b02+a33*b00)*det;
+  return o;
+}
+
+/* ---- meshes: unit sphere (r=1) and unit cylinder (+Y, len 1, r 1) -------- */
+function buildSphere(st,sl){
+  const pos=[],idx=[];
+  for(let i=0;i<=st;i++){
+    const phi=Math.PI*i/st,y=Math.cos(phi),r=Math.sin(phi);
+    for(let j=0;j<=sl;j++){
+      const th=2*Math.PI*j/sl;
+      pos.push(r*Math.cos(th),y,r*Math.sin(th)); // unit sphere: normal == position
+    }
+  }
+  const row=sl+1;
+  for(let i=0;i<st;i++)for(let j=0;j<sl;j++){
+    const a=i*row+j,b=a+row;
+    idx.push(a,b,a+1,a+1,b,b+1);
+  }
+  return {pos:new Float32Array(pos),norm:new Float32Array(pos),idx:new Uint16Array(idx)};
+}
+function buildCylinder(seg){
+  const pos=[],norm=[],idx=[];
+  for(let j=0;j<=seg;j++){
+    const t=2*Math.PI*j/seg,x=Math.cos(t),z=Math.sin(t);
+    pos.push(x,0,z); norm.push(x,0,z);
+    pos.push(x,1,z); norm.push(x,0,z); // radial normals; caps omitted (hidden in spheres)
+  }
+  for(let j=0;j<seg;j++){const a=j*2;idx.push(a,a+1,a+2,a+2,a+1,a+3);}
+  return {pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+/* ---- GL program --------------------------------------------------------- */
+const VS=`attribute vec3 aPos; attribute vec3 aNorm;
+uniform mat4 uProj,uMV; uniform mat3 uN;
+varying vec3 vN,vPos;
+void main(){vec4 p=uMV*vec4(aPos,1.0);vPos=p.xyz;vN=uN*aNorm;gl_Position=uProj*p;}`;
+const FS=`precision mediump float;
+varying vec3 vN,vPos;
+uniform vec3 uColor,uLightDir;
+void main(){
+  vec3 N=normalize(vN),L=normalize(uLightDir),V=normalize(-vPos),H=normalize(L+V);
+  float diff=max(dot(N,L),0.0);
+  float spec=pow(max(dot(N,H),0.0),40.0);
+  vec3 c=uColor*(0.18+0.82*diff)+vec3(0.9)*spec*0.45;
+  gl_FragColor=vec4(c,1.0);
+}`;
+function compile(type,src){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    die("shader compile: "+gl.getShaderInfoLog(s));
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) die("link: "+gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const A_POS=gl.getAttribLocation(prog,"aPos"),A_NORM=gl.getAttribLocation(prog,"aNorm");
+const U_PROJ=gl.getUniformLocation(prog,"uProj"),U_MV=gl.getUniformLocation(prog,"uMV"),
+      U_N=gl.getUniformLocation(prog,"uN"),U_COL=gl.getUniformLocation(prog,"uColor"),
+      U_LIGHT=gl.getUniformLocation(prog,"uLightDir");
+
+function upload(mesh){
+  const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+  gl.bufferData(gl.ARRAY_BUFFER,mesh.pos,gl.STATIC_DRAW);
+  const nb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,nb);
+  gl.bufferData(gl.ARRAY_BUFFER,mesh.norm,gl.STATIC_DRAW);
+  const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,mesh.idx,gl.STATIC_DRAW);
+  return {vb,nb,ib,n:mesh.idx.length};
+}
+const sphere=upload(buildSphere(24,32));
+const cyl=upload(buildCylinder(24));
+
+function drawMesh(g,mv,color){
+  gl.uniformMatrix4fv(U_MV,false,mv);
+  gl.uniformMatrix3fv(U_N,false,normalMat3(mv));
+  gl.uniform3fv(U_COL,color);
+  gl.bindBuffer(gl.ARRAY_BUFFER,g.vb);
+  gl.enableVertexAttribArray(A_POS);gl.vertexAttribPointer(A_POS,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,g.nb);
+  gl.enableVertexAttribArray(A_NORM);gl.vertexAttribPointer(A_NORM,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,g.ib);
+  gl.drawElements(gl.TRIANGLES,g.n,gl.UNSIGNED_SHORT,0);
+}
+
+/* ---- molecule: S at origin, two O symmetric about +Y, then re-center ----- */
+const half=BOND_ANG/2;
+let atoms=[
+  {p:[0,0,0],                                     col:COL_S,r:R_S},
+  {p:[ BOND_LEN*Math.sin(half),BOND_LEN*Math.cos(half),0],col:COL_O,r:R_O},
+  {p:[-BOND_LEN*Math.sin(half),BOND_LEN*Math.cos(half),0],col:COL_O,r:R_O},
+];
+(function center(){
+  const c=[0,0,0];
+  for(const a of atoms)for(let k=0;k<3;k++)c[k]+=a.p[k]/atoms.length;
+  for(const a of atoms)for(let k=0;k<3;k++)a.p[k]-=c[k];
+})();
+const bonds=[[0,1],[0,2]]; // S-O each drawn as two half-cylinders colored per atom
+
+function sub(a,b){return [a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
+function len(v){return Math.hypot(v[0],v[1],v[2]);}
+
+/* ---- camera / interaction ----------------------------------------------- */
+let angX=0.35,angY=0.6,dist=6.5,spin=true,drag=false,lx=0,ly=0;
+canvas.addEventListener("pointerdown",e=>{drag=true;spin=false;lx=e.clientX;ly=e.clientY;
+  canvas.setPointerCapture(e.pointerId);});
+canvas.addEventListener("pointerup",e=>{drag=false;});
+canvas.addEventListener("pointermove",e=>{
+  if(!drag)return;
+  angY+=(e.clientX-lx)*0.01; angX+=(e.clientY-ly)*0.01;
+  angX=Math.max(-1.5,Math.min(1.5,angX)); lx=e.clientX;ly=e.clientY;});
+canvas.addEventListener("wheel",e=>{
+  e.preventDefault();
+  dist*=Math.exp(e.deltaY*0.001);
+  dist=Math.max(3,Math.min(20,dist));},{passive:false});
+addEventListener("keydown",e=>{if(e.code==="Space"){spin=!spin;e.preventDefault();}});
+
+/* ---- resize with devicePixelRatio for crisp edges ----------------------- */
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=Math.floor(canvas.clientWidth*dpr),h=Math.floor(canvas.clientHeight*dpr);
+  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+addEventListener("resize",resize);
+
+/* ---- frame loop --------------------------------------------------------- */
+gl.enable(gl.DEPTH_TEST);
+gl.clearColor(0.043,0.055,0.078,1);
+const LIGHT=[0.4,0.7,1.0]; // eye-space directional light (constant)
+
+function frame(){
+  resize();
+  if(spin&&!drag) angY+=0.006;
+  const aspect=canvas.width/canvas.height||1;
+  const proj=perspective(50*Math.PI/180,aspect,0.1,100);
+  const view=lookAt([0,0,dist],[0,0,0],[0,1,0]);
+  const model=mul(rotAxis([0,1,0],angY),rotAxis([1,0,0],angX));
+  const base=mul(view,model);
+
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.uniformMatrix4fv(U_PROJ,false,proj);
+  gl.uniform3fv(U_LIGHT,LIGHT);
+
+  // atoms
+  for(const a of atoms){
+    const mv=mul(base,mul(translation(a.p[0],a.p[1],a.p[2]),scaling(a.r,a.r,a.r)));
+    drawMesh(sphere,mv,a.col);
+  }
+  // bonds: split at midpoint so each half wears its atom's color
+  for(const [i,j] of bonds){
+    const A=atoms[i],B=atoms[j];
+    const d=sub(B.p,A.p),L=len(d);
+    if(L<1e-6) continue;                 // coincident atoms -> skip (fail closed)
+    const u=[d[0]/L,d[1]/L,d[2]/L];
+    const orient=alignYTo(u);
+    const mid=0.5*L;
+    // A -> midpoint
+    let mv=mul(base,mul(translation(A.p[0],A.p[1],A.p[2]),
+                        mul(orient,scaling(R_BOND,mid,R_BOND))));
+    drawMesh(cyl,mv,A.col);
+    // midpoint -> B
+    const m=[A.p[0]+u[0]*mid,A.p[1]+u[1]*mid,A.p[2]+u[2]*mid];
+    mv=mul(base,mul(translation(m[0],m[1],m[2]),
+                    mul(orient,scaling(R_BOND,mid,R_BOND))));
+    drawMesh(cyl,mv,B.col);
+  }
+  requestAnimationFrame(frame);
+}
+resize();
+frame();
+</script>
