@@ -48,6 +48,7 @@ public class GavnaApplication extends com.kooapps.unity.UnityApplication {
 
         @Override
         public void onActivityResumed(Activity activity) {
+            Native.onPlayerResumed();
             if (!isGameActivity(activity)) {
                 return;
             }

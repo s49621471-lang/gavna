@@ -522,12 +522,19 @@ JNIEXPORT jboolean JNICALL Java_com_gavna_Native_nativeSetValue(JNIEnv*, jclass,
 
 JNIEXPORT jstring JNICALL Java_com_gavna_Native_nativeStatus(JNIEnv* env, jclass) {
     using namespace gavna;
-    char buf[512];
+    char buf[640];
     const char* state = g_engine_failed.load()  ? "failed"
                         : g_engine_ready.load() ? "ready"
                                                 : "waiting for il2cpp";
-    snprintf(buf, sizeof(buf), "engine: %s\n%s\nlog: %s", state, g_status_detail, LogPath());
+    void** slot = il2cpp::domain_slot();
+    snprintf(buf, sizeof(buf), "engine: %s\n%s\ndomain: %p\nlog: %s", state, g_status_detail,
+             slot != nullptr ? *slot : nullptr, LogPath());
     return env->NewStringUTF(buf);
+}
+
+JNIEXPORT void JNICALL Java_com_gavna_Native_nativeOnPlayerResumed(JNIEnv*, jclass) {
+    using namespace gavna;
+    il2cpp::NotifyPlayerResumed();
 }
 
 JNIEXPORT void JNICALL Java_com_gavna_Native_nativeLog(JNIEnv* env, jclass, jstring message) {

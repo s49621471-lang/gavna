@@ -21,9 +21,24 @@ struct Method {
     bool valid() const { return info != nullptr && code != nullptr; }
 };
 
-// Waits (up to timeout_ms) for libil2cpp.so to be loaded and its domain to have
-// assemblies attached, then resolves every runtime export we use.
+// Waits (up to timeout_ms) for the il2cpp runtime to finish initialising, then
+// resolves every runtime export we use.
+//
+// The wait deliberately touches no il2cpp API. libil2cpp.so is mapped long
+// before il2cpp_init() runs, and il2cpp_domain_get() is not a safe read in that
+// window: when the domain pointer is still null it takes a lazy-construct path
+// that walks metadata globals which do not exist yet, and crashes. So the gate
+// is the runtime's own domain slot, whose address is decoded out of
+// il2cpp_domain_get's prologue and then polled as plain memory.
 bool WaitUntilReady(int timeout_ms);
+
+// Called from Java when the game activity resumes. Only used as a fallback
+// signal if the domain slot could not be decoded.
+void NotifyPlayerResumed();
+
+// Address of the runtime's domain pointer, for diagnostics. Null when the
+// prologue could not be decoded.
+void** domain_slot();
 
 bool ready();
 

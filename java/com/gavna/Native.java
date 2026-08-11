@@ -89,6 +89,18 @@ public final class Native {
         }
     }
 
+    /** Tells the engine the game window is up; used as a readiness fallback. */
+    public static void onPlayerResumed() {
+        if (!sLoaded) {
+            return;
+        }
+        try {
+            nativeOnPlayerResumed();
+        } catch (Throwable t) {
+            android.util.Log.e("gavna", "onPlayerResumed failed", t);
+        }
+    }
+
     public static void log(String message) {
         if (!sLoaded) {
             android.util.Log.i("gavna", message);
@@ -108,6 +120,8 @@ public final class Native {
     private static native boolean nativeSetValue(int id, int value);
 
     private static native String nativeStatus();
+
+    private static native void nativeOnPlayerResumed();
 
     private static native void nativeLog(String message);
 }

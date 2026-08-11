@@ -10,7 +10,7 @@ Tap the white bar at the bottom of the screen to open the menu.
 The signed APK is published as a release asset:
 **[dist/SnakeIO-2.2.160-gavna.apk → Releases](../../releases/latest)**
 
-`sha256 edf5da1e38ddef801509fddc6e0a7ec8c3c9c85275095fe05837ff04f63a3831`
+`sha256 7274ee3dbc61954da929d473f0665f08eccd86c71a1bae726b9ecdf597d52973`
 
 Uninstall the Play Store copy first — this build carries a different signing key.
 
@@ -33,10 +33,19 @@ characters, so the swap is a byte-for-byte substitution in the AXML string pool 
 re-encoded and every other entry in the APK is copied verbatim. `GavnaApplication` extends the game's own
 Application class, so the original start-up path is untouched.
 
-**Engine.** `libgavna.so` waits for `libil2cpp.so` to be mapped and its domain to have assemblies, then
-resolves classes and methods **by name** through the exported il2cpp API (`il2cpp_class_from_name`,
-`il2cpp_class_get_methods`, …). The game is not obfuscated, so no hard-coded offsets are involved and the
-mod survives a rebuild of the same version.
+**Engine.** `libgavna.so` resolves classes and methods **by name** through the exported il2cpp API
+(`il2cpp_class_from_name`, `il2cpp_class_get_methods`, …). The game is not obfuscated, so no hard-coded
+offsets are involved and the mod survives a rebuild of the same version.
+
+**Waiting for the runtime.** `libil2cpp.so` is mapped long before `il2cpp_init()` runs, and in that window
+`il2cpp_domain_get()` is *not* a safe read: when the domain pointer is still null it falls into a
+lazy-construct path that walks metadata globals which do not exist yet. So the readiness gate touches no
+il2cpp API at all. The address of the runtime's domain pointer is decoded straight out of
+`il2cpp_domain_get`'s own prologue — follow the one-instruction `B` thunk, then read the `adrp xN, page` /
+`ldr x?, [xN, #off]` pair — and that slot is polled as plain memory until the runtime fills it in. Only then
+does anything call into il2cpp. `tools/test_decode_domain_slot.cpp` checks the decoder against the exact
+instruction words from the shipped binary. If the prologue ever stops being decodable, the engine falls back
+to waiting for the game window plus a fixed delay rather than guessing.
 
 **Patching.** Each switchable patch is a payload stub (`movz w0,#1; ret`, `ldr w0,[pc,#8]; ret; .word value`,
 `str xzr,[x4]; movz w0,#1; ret`) allocated within ±128 MB of `libil2cpp.so`, plus **one** `B stub`
