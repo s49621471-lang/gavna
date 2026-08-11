@@ -22,20 +22,15 @@ public final class MenuView extends LinearLayout {
         void onTitleTouch(View view, android.view.MotionEvent event);
     }
 
-    private static final String[] SIDE_TABS = {"coins", "unlocks", "player", "misc", "settings"};
+    private static final String[] SIDE_TABS = {"unlocks", "player"};
     private static final String[][] TOP_TABS = {
-            {"currency", "presets"},
             {"skins", "accessories"},
             {"god", "snake"},
-            {"engine"},
-            {"about"},
     };
 
-    private static final String[] COIN_PRESETS = {"1 000 000", "50 000 000", "999 000 000"};
-    private static final int[] COIN_PRESET_VALUES = {1000000, 50000000, 999000000};
     private static final String[] LENGTH_PRESETS = {"tiny (10)", "small (100)", "big (1000)",
-            "huge (5000)"};
-    private static final int[] LENGTH_PRESET_VALUES = {10, 100, 1000, 5000};
+            "huge (10000)", "max (50000)"};
+    private static final int[] LENGTH_PRESET_VALUES = {10, 100, 1000, 10000, 50000};
 
     private final Host host;
     private final MenuState state;
@@ -195,22 +190,10 @@ public final class MenuView extends LinearLayout {
         left.setLayoutParams(leftParams);
         right.setLayoutParams(rightParams);
 
-        switch (sideIndex) {
-            case 0:
-                buildCoinsPage(left, right);
-                break;
-            case 1:
-                buildUnlocksPage(left, right);
-                break;
-            case 2:
-                buildPlayerPage(left, right);
-                break;
-            case 3:
-                buildEnginePage(left, right);
-                break;
-            default:
-                buildAboutPage(left, right);
-                break;
+        if (sideIndex == 0) {
+            buildUnlocksPage(left, right);
+        } else {
+            buildPlayerPage(left, right);
         }
 
         pageHolder.addView(left);
@@ -218,58 +201,6 @@ public final class MenuView extends LinearLayout {
     }
 
     // ------------------------------------------------------------------ pages
-
-    private void buildCoinsPage(LinearLayout left, LinearLayout right) {
-        final Context ctx = getContext();
-        if (topIndex == 0) {
-            left.addView(Widgets.checkRow(ctx, "unlimited currency",
-                    state.isOn(Native.FEATURE_COINS) ? "[on]" : "[off]",
-                    state.isOn(Native.FEATURE_COINS), new Widgets.BoolListener() {
-                        @Override
-                        public void onChanged(boolean value) {
-                            state.setFeature(Native.FEATURE_COINS, value);
-                            rebuildPage();
-                        }
-                    }));
-            left.addView(Widgets.sliderRow(ctx, "amount (millions)", 1, 999,
-                    state.coinMillions(), new Widgets.IntListener() {
-                        @Override
-                        public void onChanged(int value) {
-                            state.setCoinAmount(value * 1000000);
-                        }
-                    }));
-            right.addView(Widgets.label(ctx, "covers", Theme.LABEL, 11f));
-            right.addView(Widgets.label(ctx, "coins", Theme.LABEL_DIM, 10f));
-            right.addView(Widgets.label(ctx, "gems", Theme.LABEL_DIM, 10f));
-            right.addView(Widgets.label(ctx, "tickets", Theme.LABEL_DIM, 10f));
-            right.addView(Widgets.separator(ctx));
-            right.addView(Widgets.label(ctx, "shop costs never", Theme.LABEL_DIM, 10f));
-            right.addView(Widgets.label(ctx, "leave the balance", Theme.LABEL_DIM, 10f));
-        } else {
-            left.addView(Widgets.dropdownRow(ctx, "preset", COIN_PRESETS, state.coinPreset(),
-                    new Widgets.IntListener() {
-                        @Override
-                        public void onChanged(int index) {
-                            state.setCoinPreset(index);
-                            state.setCoinAmount(COIN_PRESET_VALUES[index]);
-                            rebuildPage();
-                        }
-                    }));
-            left.addView(Widgets.button(ctx, "apply", new Widgets.ClickListener() {
-                @Override
-                public void onClick() {
-                    state.reapply();
-                    rebuildPage();
-                }
-            }));
-            right.addView(Widgets.label(ctx, "current", Theme.LABEL, 11f));
-            right.addView(Widgets.label(ctx, String.valueOf(state.coinAmount()), Theme.LABEL_DIM,
-                    10f));
-            right.addView(Widgets.separator(ctx));
-            right.addView(Widgets.label(ctx, state.isOn(Native.FEATURE_COINS) ? "active" : "idle",
-                    Theme.LABEL_DIM, 10f));
-        }
-    }
 
     private void buildUnlocksPage(LinearLayout left, LinearLayout right) {
         final Context ctx = getContext();
@@ -322,8 +253,8 @@ public final class MenuView extends LinearLayout {
                             state.setFeature(Native.FEATURE_LENGTH, value);
                         }
                     }));
-            left.addView(Widgets.sliderRow(ctx, "length", 2, 5000, state.length(),
-                    new Widgets.IntListener() {
+            left.addView(Widgets.sliderRow(ctx, "length", MenuState.MIN_LENGTH,
+                    MenuState.MAX_LENGTH, state.length(), new Widgets.IntListener() {
                         @Override
                         public void onChanged(int value) {
                             state.setLength(value);
@@ -341,49 +272,5 @@ public final class MenuView extends LinearLayout {
             right.addView(Widgets.label(ctx, "target " + state.length(), Theme.LABEL_DIM, 10f));
             right.addView(Widgets.label(ctx, "applied in game", Theme.LABEL_DIM, 10f));
         }
-    }
-
-    private void buildEnginePage(LinearLayout left, LinearLayout right) {
-        final Context ctx = getContext();
-        TextView status = Widgets.label(ctx, Native.status(), Theme.LABEL_DIM, 9f);
-        status.setSingleLine(false);
-        left.addView(status);
-        left.addView(Widgets.button(ctx, "refresh", new Widgets.ClickListener() {
-            @Override
-            public void onClick() {
-                rebuildPage();
-            }
-        }));
-
-        right.addView(Widgets.label(ctx, "log", Theme.LABEL, 11f));
-        TextView path = Widgets.label(ctx, com.gavna.GavnaLog.dir(), Theme.LABEL_DIM, 8f);
-        path.setSingleLine(false);
-        right.addView(path);
-        right.addView(Widgets.button(ctx, "write marker", new Widgets.ClickListener() {
-            @Override
-            public void onClick() {
-                com.gavna.GavnaLog.i("marker from menu");
-            }
-        }));
-    }
-
-    private void buildAboutPage(LinearLayout left, LinearLayout right) {
-        final Context ctx = getContext();
-        left.addView(Widgets.label(ctx, "gavna", Theme.LABEL, 12f));
-        left.addView(Widgets.label(ctx, "snake.io 2.2.160", Theme.LABEL_DIM, 10f));
-        left.addView(Widgets.label(ctx, "unity 2022.3 il2cpp", Theme.LABEL_DIM, 10f));
-        left.addView(Widgets.label(ctx, "arm64-v8a", Theme.LABEL_DIM, 10f));
-
-        right.addView(Widgets.label(ctx, "tap the white bar", Theme.LABEL_DIM, 10f));
-        right.addView(Widgets.label(ctx, "to open or close", Theme.LABEL_DIM, 10f));
-        right.addView(Widgets.label(ctx, "drag the title bar", Theme.LABEL_DIM, 10f));
-        right.addView(Widgets.button(ctx, "close", new Widgets.ClickListener() {
-            @Override
-            public void onClick() {
-                if (host != null) {
-                    host.onCloseRequested();
-                }
-            }
-        }));
     }
 }

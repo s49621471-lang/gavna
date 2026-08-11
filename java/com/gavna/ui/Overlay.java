@@ -9,7 +9,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 
-import com.gavna.GavnaLog;
+import android.util.Log;
 
 /**
  * Owns the two on-screen pieces: the white bar pinned to the bottom of the
@@ -17,6 +17,8 @@ import com.gavna.GavnaLog;
  * game activity's token, so no overlay permission is involved.
  */
 public final class Overlay {
+
+    private static final String TAG = "gavna";
 
     private static final int MENU_WIDTH_DP = 360;
     private static final int MENU_HEIGHT_DP = 250;
@@ -85,9 +87,9 @@ public final class Overlay {
             windowManager.addView(barView, params);
             barAdded = true;
             usingWindowManager = true;
-            GavnaLog.i("overlay bar attached (panel window)");
+            Log.i(TAG, "overlay bar attached (panel window)");
         } catch (Throwable t) {
-            GavnaLog.e("panel window refused, falling back to decor view", t);
+            Log.e(TAG, "panel window refused, falling back to decor view", t);
             addBarToDecor();
         }
     }
@@ -103,9 +105,9 @@ public final class Overlay {
             decor.addView(barView, params);
             barAdded = true;
             usingWindowManager = false;
-            GavnaLog.i("overlay bar attached (decor view)");
+            Log.i(TAG, "overlay bar attached (decor view)");
         } catch (Throwable t) {
-            GavnaLog.e("cannot attach overlay bar at all", t);
+            Log.e(TAG, "cannot attach overlay bar at all", t);
             barView = null;
             barAdded = false;
         }
@@ -124,7 +126,7 @@ public final class Overlay {
                 ((ViewGroup) barView.getParent()).removeView(barView);
             }
         } catch (Throwable t) {
-            GavnaLog.e("removeBar failed", t);
+            Log.e(TAG, "removeBar failed", t);
         }
         barView = null;
         barAdded = false;
@@ -199,9 +201,9 @@ public final class Overlay {
                 decor.addView(menuView, params);
             }
             menuAdded = true;
-            GavnaLog.i("menu opened");
+            Log.i(TAG, "menu opened");
         } catch (Throwable t) {
-            GavnaLog.e("cannot open menu", t);
+            Log.e(TAG, "cannot open menu", t);
             menuView = null;
             menuAdded = false;
         }
@@ -220,11 +222,11 @@ public final class Overlay {
                 ((ViewGroup) menuView.getParent()).removeView(menuView);
             }
         } catch (Throwable t) {
-            GavnaLog.e("hideMenu failed", t);
+            Log.e(TAG, "hideMenu failed", t);
         }
         menuView = null;
         menuAdded = false;
-        GavnaLog.i("menu closed");
+        Log.i(TAG, "menu closed");
     }
 
     private void handleDrag(MotionEvent event) {
@@ -245,7 +247,7 @@ public final class Overlay {
                 try {
                     windowManager.updateViewLayout(menuView, menuParams);
                 } catch (Throwable t) {
-                    GavnaLog.e("drag update failed", t);
+                    Log.e(TAG, "drag update failed", t);
                 }
                 break;
             default:

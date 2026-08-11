@@ -1,22 +1,23 @@
 package com.gavna;
 
+import android.util.Log;
+
 /** JNI bridge to libgavna.so. Every entry point is failure tolerant on purpose. */
 public final class Native {
 
     // Feature ids - must match the Feature enum in gavna_engine.cpp
-    public static final int FEATURE_COINS = 0;
-    public static final int FEATURE_UNLOCK_SKINS = 1;
-    public static final int FEATURE_UNLOCK_ACCESSORIES = 2;
-    public static final int FEATURE_IMMORTAL = 3;
-    public static final int FEATURE_LENGTH = 4;
-    public static final int FEATURE_COUNT = 5;
+    public static final int FEATURE_UNLOCK_SKINS = 0;
+    public static final int FEATURE_UNLOCK_ACCESSORIES = 1;
+    public static final int FEATURE_IMMORTAL = 2;
+    public static final int FEATURE_LENGTH = 3;
+    public static final int FEATURE_COUNT = 4;
 
     // Value ids - must match the Value enum in gavna_engine.cpp
-    public static final int VALUE_COIN_AMOUNT = 0;
-    public static final int VALUE_LENGTH = 1;
+    public static final int VALUE_LENGTH = 0;
+
+    private static final String TAG = "gavna";
 
     private static boolean sLoaded;
-    private static String sLoadError;
 
     private Native() {
     }
@@ -29,28 +30,19 @@ public final class Native {
             System.loadLibrary("gavna");
             sLoaded = true;
         } catch (Throwable t) {
-            sLoadError = String.valueOf(t.getMessage());
-            android.util.Log.e("gavna", "loadLibrary failed", t);
+            Log.e(TAG, "loadLibrary failed", t);
         }
         return sLoaded;
     }
 
-    public static boolean isLoaded() {
-        return sLoaded;
-    }
-
-    public static String loadError() {
-        return sLoadError;
-    }
-
-    public static void init(String logDir) {
+    public static void init() {
         if (!load()) {
             return;
         }
         try {
-            nativeInit(logDir);
+            nativeInit();
         } catch (Throwable t) {
-            android.util.Log.e("gavna", "nativeInit failed", t);
+            Log.e(TAG, "nativeInit failed", t);
         }
     }
 
@@ -61,7 +53,7 @@ public final class Native {
         try {
             return nativeSetFeature(feature, on);
         } catch (Throwable t) {
-            android.util.Log.e("gavna", "setFeature failed", t);
+            Log.e(TAG, "setFeature failed", t);
             return false;
         }
     }
@@ -73,19 +65,8 @@ public final class Native {
         try {
             return nativeSetValue(id, value);
         } catch (Throwable t) {
-            android.util.Log.e("gavna", "setValue failed", t);
+            Log.e(TAG, "setValue failed", t);
             return false;
-        }
-    }
-
-    public static String status() {
-        if (!sLoaded) {
-            return "engine: library not loaded\n" + sLoadError;
-        }
-        try {
-            return nativeStatus();
-        } catch (Throwable t) {
-            return "engine: status unavailable";
         }
     }
 
@@ -97,31 +78,15 @@ public final class Native {
         try {
             nativeOnPlayerResumed();
         } catch (Throwable t) {
-            android.util.Log.e("gavna", "onPlayerResumed failed", t);
+            Log.e(TAG, "onPlayerResumed failed", t);
         }
     }
 
-    public static void log(String message) {
-        if (!sLoaded) {
-            android.util.Log.i("gavna", message);
-            return;
-        }
-        try {
-            nativeLog(message);
-        } catch (Throwable ignored) {
-            // logging must never take the game down
-        }
-    }
-
-    private static native void nativeInit(String logDir);
+    private static native void nativeInit();
 
     private static native boolean nativeSetFeature(int feature, boolean on);
 
     private static native boolean nativeSetValue(int id, int value);
 
-    private static native String nativeStatus();
-
     private static native void nativeOnPlayerResumed();
-
-    private static native void nativeLog(String message);
 }

@@ -1,24 +1,8 @@
-// gavna - logging + crash reporting to a file inside the game folder
+// gavna - logcat only. Nothing is written to disk.
 #pragma once
 
-#include <stdarg.h>
+#include <android/log.h>
 
-namespace gavna {
-
-// Opens <dir>/gavna.log for append. Safe to call more than once.
-void LogInit(const char* dir);
-
-// Absolute path of the active log file (never null, may be "<none>").
-const char* LogPath();
-
-void LogWrite(const char* tag, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
-
-// Installs signal handlers that dump the faulting address / backtrace hint into
-// the log and then chain to whatever handler was installed before us.
-void InstallCrashHandler();
-
-}  // namespace gavna
-
-#define LOGI(...) ::gavna::LogWrite("I", __VA_ARGS__)
-#define LOGW(...) ::gavna::LogWrite("W", __VA_ARGS__)
-#define LOGE(...) ::gavna::LogWrite("E", __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "gavna", __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "gavna", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "gavna", __VA_ARGS__)

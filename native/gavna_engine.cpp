@@ -1,9 +1,16 @@
 // gavna - Snake.io (com.amelosinteractive.snake, Unity 2022.3 / IL2CPP arm64)
 //
-// Everything the menu can switch on is either a constant-return patch written
-// over a resolved il2cpp method entry, or the snake-length writer that runs from
-// an inline hook on PlayerSnakeController::OnUpdate so it executes on Unity's
-// main thread.
+// Three kinds of change are applied to the game:
+//
+//   * constant-return patches over a resolved il2cpp method entry, switched by
+//     the menu (unlocks, immortality);
+//   * native replacements, where the method entry branches into a function in
+//     this library instead (the ad entry points that have to run a callback);
+//   * the snake-length writer, driven from an inline hook on
+//     PlayerSnakeController::OnUpdate so it executes on Unity's main thread.
+//
+// Ads are not a menu option. Every ad entry point is neutralised as soon as the
+// runtime comes up and stays that way.
 
 #include <jni.h>
 #include <pthread.h>
@@ -12,7 +19,6 @@
 #include <string.h>
 
 #include <atomic>
-#include <string>
 #include <vector>
 
 #include "gavna_hook.h"
@@ -26,23 +32,24 @@ namespace {
 // Feature / value identifiers - kept in sync with com.gavna.Native
 // ---------------------------------------------------------------------------
 enum Feature {
-    kFeatureCoins = 0,
-    kFeatureUnlockSkins = 1,
-    kFeatureUnlockAccessories = 2,
-    kFeatureImmortal = 3,
-    kFeatureLength = 4,
-    kFeatureCount = 5,
+    kFeatureUnlockSkins = 0,
+    kFeatureUnlockAccessories = 1,
+    kFeatureImmortal = 2,
+    kFeatureLength = 3,
+    kFeatureCount = 4,
+
+    // Not exposed to the menu: applied at startup and never switched off.
+    kFeatureNoAds = 4,
+    kFeatureSlots = 5,
 };
 
 enum Value {
-    kValueCoinAmount = 0,
-    kValueLength = 1,
+    kValueLength = 0,
 };
 
-constexpr int kDefaultCoinAmount = 999000000;
 constexpr int kDefaultLength = 500;
 constexpr int kMinLength = 2;
-constexpr int kMaxLength = 20000;
+constexpr int kMaxLength = 50000;
 constexpr int kMaxLengthStepPerFrame = 250;
 constexpr int kMaxPatchWords = 4;
 
@@ -50,11 +57,12 @@ constexpr int kMaxPatchWords = 4;
 // Patch table
 // ---------------------------------------------------------------------------
 enum PatchKind {
-    kRetVoid,         // ret
-    kRetTrue,         // movz w0, #1 ; ret
-    kRetFalse,        // movz w0, #0 ; ret
-    kRetInt,          // ldr w0, [pc, #8] ; ret ; .word value
-    kRetTrueOutNull,  // str xzr, [x4] ; movz w0, #1 ; ret
+    kRetVoid,     // ret
+    kRetTrue,     // movz w0, #1 ; ret
+    kRetFalse,    // movz w0, #0 ; ret
+    kNativeShowInterstitial,       // -> HkShowInterstitialAd
+    kNativeShowInterstitialClean,  // -> HkShowInterstitialAdCleanFlow
+    kNativeShowDailyFreeCoinRv,    // -> HkShowDailyFreeCoinRewardedVideo
 };
 
 // One patched method entry. `patch_word` is a single instruction - either a
@@ -81,37 +89,14 @@ struct Target {
     bool resolved = false;
 };
 
+// Forward declarations for the native replacements.
+void HkShowInterstitialAd(void* thiz, int source, void* settings, void* completion, void* method);
+void HkShowInterstitialAdCleanFlow(void* thiz, int source, void* completion, void* method);
+void HkShowDailyFreeCoinRewardedVideo(void* thiz, void* completed, void* failed, void* method);
+
 // Class names come straight from the shipped global-metadata.dat; the game is
 // not obfuscated so every lookup below is a literal name match.
 Target g_targets[] = {
-    // ---- unlimited coins / gems / tickets -------------------------------
-    {kFeatureCoins, "SnakeIO", "LocalUser", "GetBalance", 1, kRetInt},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "get_CoinBalance", 0, kRetInt},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "get_GemBalance", 0, kRetInt},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "get_TicketBalance", 0, kRetInt},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "HasNoCurrency", 0, kRetFalse},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "ConsumeBalance", 2, kRetVoid},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "ConsumeCoin", 1, kRetVoid},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "ConsumeGems", 1, kRetVoid},
-    {kFeatureCoins, "SnakeIO", "LocalUser", "ConsumeTickets", 1, kRetVoid},
-    {kFeatureCoins, "SnakeIO", "CoreCurrencyController", "GetCurrencyBalance", 1, kRetInt},
-    {kFeatureCoins, "SnakeIO", "CoreCurrencyController", "CanConsumeCurrency", 2, kRetTrue},
-    {kFeatureCoins, "SnakeIO", "CoreCurrencyController", "ConsumeCurrency", 2, kRetTrue},
-    {kFeatureCoins, "SnakeIO", "CurrencyController", "GetBalance", 0, kRetInt},
-    {kFeatureCoins, "SnakeIO", "CurrencyController", "Consume", 1, kRetVoid},
-    // Balance validators run before a purchase clears. Each step writes its
-    // error message through an out-parameter in x4, so the patch nulls that out
-    // before returning success - leaving it untouched would hand the caller an
-    // uninitialised stack slot.
-    {kFeatureCoins, "SnakeIO", "LocalUserCurrencyBalanceValidationStep", "HasEnoughCurrencyForType",
-     4, kRetTrueOutNull},
-    {kFeatureCoins, "SnakeIO", "LocalUserCurrencyChecksumValidationStep", "HasEnoughCurrencyForType",
-     4, kRetTrueOutNull},
-    {kFeatureCoins, "SnakeIO", "TransactionDataValidationStep", "HasEnoughCurrencyForType", 4,
-     kRetTrueOutNull},
-    {kFeatureCoins, "SnakeIO", "TransactionIncrementalHashValidationStep",
-     "HasEnoughCurrencyForType", 4, kRetTrueOutNull},
-
     // ---- every snake skin unlocked --------------------------------------
     {kFeatureUnlockSkins, "SnakeIO", "LocalUser", "IsSkinUnlocked", 1, kRetTrue},
     {kFeatureUnlockSkins, "SnakeIO", "SkinHelper", "IsSkinUnlocked", -1, kRetTrue},
@@ -132,6 +117,34 @@ Target g_targets[] = {
     {kFeatureImmortal, "SnakeIO", "PlayerSnakeController", "IsInvincible", 0, kRetTrue},
     {kFeatureImmortal, "SnakeIO", "PlayerSnakeController", "Die", 2, kRetVoid},
     {kFeatureImmortal, "SnakeIO", "PlayerSnakeController", "StartDeathProcess", 2, kRetVoid},
+
+    // ---- no ads, ever ---------------------------------------------------
+    // The mediation adapter is never built and no ad SDK is ever initialised,
+    // so nothing is ever requested, cached or shown.
+    {kFeatureNoAds, "", "AdsManager", "InitializeAdsAdapter", 0, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "InitializeSDK", 0, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "InitializeAdsSdk", 0, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "LoadAds", 0, kRetVoid},
+    // Every "is there an ad to show" answer becomes no, which is a state the
+    // game already handles - it is what happens when a fill fails.
+    {kFeatureNoAds, "", "AdsManager", "IsInterstitialAdReady", 0, kRetFalse},
+    {kFeatureNoAds, "", "AdsManager", "ShouldShowInterstitialAd", 0, kRetFalse},
+    {kFeatureNoAds, "", "AdsManager", "ShouldShowInterstitialAdOnDeath", 1, kRetFalse},
+    {kFeatureNoAds, "", "AdsManager", "IsRewardedAdAvailable", -1, kRetFalse},
+    {kFeatureNoAds, "", "AdsManager", "IsAdShown", 0, kRetFalse},
+    // Rewarded video entry points that carry no callback simply do nothing.
+    {kFeatureNoAds, "", "AdsManager", "ShowRewardedAd", 0, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "ShowRewardedVideo", 0, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "ShowIncentivizedButtonRewardedVideo", 2, kRetVoid},
+    {kFeatureNoAds, "", "AdsManager", "ShowLiveEventRewardedVideo", 1, kRetVoid},
+    // These three hand a continuation to the ad; dropping it would leave the
+    // caller waiting forever, so they are replaced rather than stubbed and the
+    // continuation is run straight away.
+    {kFeatureNoAds, "", "AdsManager", "ShowInterstitialAd", 3, kNativeShowInterstitial},
+    {kFeatureNoAds, "", "AdsManager", "ShowInterstitialAdCleanFlow", 2,
+     kNativeShowInterstitialClean},
+    {kFeatureNoAds, "", "AdsManager", "ShowDailyFreeCoinRewardedVideo", 2,
+     kNativeShowDailyFreeCoinRv},
 };
 
 constexpr size_t kTargetCount = sizeof(g_targets) / sizeof(g_targets[0]);
@@ -141,15 +154,9 @@ constexpr size_t kTargetCount = sizeof(g_targets) / sizeof(g_targets[0]);
 // ---------------------------------------------------------------------------
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::atomic<bool> g_engine_ready{false};
-std::atomic<bool> g_engine_failed{false};
 std::atomic<bool> g_init_started{false};
-std::atomic<bool> g_feature_on[kFeatureCount];  // static storage: zero-initialised
-std::atomic<int> g_coin_amount{kDefaultCoinAmount};
+std::atomic<bool> g_feature_on[kFeatureSlots];  // static storage: zero-initialised
 std::atomic<int> g_length_target{kDefaultLength};
-std::atomic<int> g_resolved_sites{0};
-std::atomic<int> g_missing_targets{0};
-std::atomic<bool> g_hook_installed{false};
-char g_status_detail[256] = "starting";
 
 il2cpp::Method g_set_length;
 il2cpp::Method g_get_decrypted;
@@ -158,14 +165,66 @@ int32_t g_length_field_offset = -1;
 using OnUpdateFn = void (*)(void*, float, void*);
 using SetLengthFn = void (*)(void*, int, void*);
 using GetDecryptedFn = int (*)(void*, void*);
+using InvokeFn = void (*)(void*, void*);
 
 OnUpdateFn g_orig_on_update = nullptr;
 
-void SetStatus(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(g_status_detail, sizeof(g_status_detail), fmt, ap);
-    va_end(ap);
+// ---------------------------------------------------------------------------
+// Calling a managed delegate back
+// ---------------------------------------------------------------------------
+
+// Runs a System.Action. The delegate's own class is read off the object, so
+// this works for any Action-shaped delegate the game hands us.
+void InvokeAction(void* action) {
+    if (action == nullptr || !il2cpp::ready()) return;
+    void* klass = *reinterpret_cast<void**>(action);  // Il2CppObject::klass
+    if (klass == nullptr) return;
+    il2cpp::Method invoke = il2cpp::FindMethod(klass, "Invoke", 0);
+    if (!invoke.valid()) {
+        LOGW("delegate %p has no Invoke()", action);
+        return;
+    }
+    reinterpret_cast<InvokeFn>(invoke.code)(action, invoke.info);
+}
+
+void HkShowInterstitialAd(void* thiz, int source, void* settings, void* completion, void* method) {
+    (void)thiz;
+    (void)source;
+    (void)settings;
+    (void)method;
+    InvokeAction(completion);
+}
+
+void HkShowInterstitialAdCleanFlow(void* thiz, int source, void* completion, void* method) {
+    (void)thiz;
+    (void)source;
+    (void)method;
+    InvokeAction(completion);
+}
+
+void HkShowDailyFreeCoinRewardedVideo(void* thiz, void* completed, void* failed, void* method) {
+    (void)thiz;
+    (void)failed;
+    (void)method;
+    // No ad plays, but the reward the player asked for still lands.
+    InvokeAction(completed);
+}
+
+// ---------------------------------------------------------------------------
+// Patching
+// ---------------------------------------------------------------------------
+
+void* NativeReplacementFor(PatchKind kind) {
+    switch (kind) {
+        case kNativeShowInterstitial:
+            return reinterpret_cast<void*>(&HkShowInterstitialAd);
+        case kNativeShowInterstitialClean:
+            return reinterpret_cast<void*>(&HkShowInterstitialAdCleanFlow);
+        case kNativeShowDailyFreeCoinRv:
+            return reinterpret_cast<void*>(&HkShowDailyFreeCoinRewardedVideo);
+        default:
+            return nullptr;
+    }
 }
 
 size_t BuildStubWords(PatchKind kind, uint32_t* out) {
@@ -180,21 +239,20 @@ size_t BuildStubWords(PatchKind kind, uint32_t* out) {
             out[0] = EncMovzW(0, 0);
             out[1] = EncRet();
             return 2;
-        case kRetInt:
-            // The value is loaded from the word right after the stub, so the
-            // menu can change it later with one data store instead of rewriting
-            // live instructions.
-            out[0] = EncLdrWLiteral8();
-            out[1] = EncRet();
-            out[2] = static_cast<uint32_t>(g_coin_amount.load());
-            return 3;
-        case kRetTrueOutNull:
-            out[0] = EncStrXzr(4);  // out string = null before returning success
-            out[1] = EncMovzW(0, 1);
-            out[2] = EncRet();
-            return 3;
+        default: {
+            // Absolute jump into this library: the arguments stay untouched in
+            // x0-x7 and x30 still points at the game's caller, so the
+            // replacement returns straight back to it.
+            void* fn = NativeReplacementFor(kind);
+            if (fn == nullptr) return 0;
+            uintptr_t dest = reinterpret_cast<uintptr_t>(fn);
+            out[0] = 0x58000051u;  // ldr x17, [pc, #8]
+            out[1] = 0xD61F0220u;  // br  x17
+            out[2] = static_cast<uint32_t>(dest & 0xFFFFFFFFu);
+            out[3] = static_cast<uint32_t>((dest >> 32) & 0xFFFFFFFFu);
+            return 4;
+        }
     }
-    return 0;
 }
 
 // Builds the stub and the single instruction that jumps to it. Done once, at
@@ -206,6 +264,7 @@ bool PrepareSite(Site& site, PatchKind kind) {
     uint32_t words[kMaxPatchWords] = {0, 0, 0, 0};
     size_t count = BuildStubWords(kind, words);
     if (count == 0) {
+        if (kind != kRetVoid) return false;  // a native replacement went missing
         site.patch_word = EncRet();
         site.usable = true;
         return true;
@@ -248,18 +307,18 @@ void ResolveTargets() {
     for (size_t i = 0; i < kTargetCount; ++i) {
         Target& t = g_targets[i];
         void* klass = il2cpp::FindClass(t.name_space, t.klass);
-        if (klass == nullptr) {
+        if (klass == nullptr && t.name_space != nullptr) {
             // Second chance without a namespace in case the type moved.
             klass = il2cpp::FindClass(nullptr, t.klass);
         }
         if (klass == nullptr) {
-            LOGW("class not found: %s.%s", t.name_space, t.klass);
+            LOGW("class not found: %s", t.klass);
             ++missing;
             continue;
         }
         std::vector<il2cpp::Method> methods = il2cpp::FindMethods(klass, t.method, t.param_count);
         if (methods.empty()) {
-            LOGW("method not found: %s.%s::%s/%d", t.name_space, t.klass, t.method, t.param_count);
+            LOGW("method not found: %s::%s/%d", t.klass, t.method, t.param_count);
             ++missing;
             continue;
         }
@@ -279,21 +338,24 @@ void ResolveTargets() {
             Site s;
             s.code = m.code;
             if (!PrepareSite(s, t.kind)) {
-                LOGE("cannot prepare patch for %s.%s::%s", t.name_space, t.klass, t.method);
+                LOGE("cannot prepare patch for %s::%s", t.klass, t.method);
                 ++missing;
                 continue;
             }
             seen.push_back(s.code);
             t.sites.push_back(s);
             ++resolved;
-            LOGI("resolved %s.%s::%s(%u args) -> %p stub %p", t.name_space, t.klass, t.method,
-                 m.param_count, m.code, s.stub);
+            LOGI("resolved %s::%s(%u args) -> %p stub %p", t.klass, t.method, m.param_count, m.code,
+                 s.stub);
         }
         t.resolved = !t.sites.empty();
     }
-    g_resolved_sites.store(resolved);
-    g_missing_targets.store(missing);
+    LOGI("resolved %d patch sites, %d targets missing", resolved, missing);
 }
+
+// ---------------------------------------------------------------------------
+// Snake length
+// ---------------------------------------------------------------------------
 
 // The field offset comes from the runtime, but a nonsense value would turn into
 // an out-of-bounds read on the snake object, so it is range checked once.
@@ -320,8 +382,8 @@ void ApplyLengthTick(void* snake) {
     if (current > 0) {
         int delta = target - current;
         if (delta == 0) return;
-        // Grow/shrink in bounded steps: one 5000-part jump in a single frame
-        // stalls the body-part pool hard enough to look like a freeze.
+        // Grow/shrink in bounded steps: one huge jump in a single frame stalls
+        // the body-part pool hard enough to look like a freeze.
         if (delta > kMaxLengthStepPerFrame) delta = kMaxLengthStepPerFrame;
         if (delta < -kMaxLengthStepPerFrame) delta = -kMaxLengthStepPerFrame;
         next = current + delta;
@@ -365,8 +427,7 @@ void SetupLengthFeature() {
     if (g_length_field_offset < 0 || !g_get_decrypted.valid()) {
         // Without the current value we cannot ramp; SetLength still works, it
         // just applies the whole delta at once.
-        LOGW("length: cannot read current value (offset=%d decrypt=%d), stepping disabled",
-             g_length_field_offset, g_get_decrypted.valid() ? 1 : 0);
+        LOGW("length: cannot read current value, stepping disabled");
     }
 
     il2cpp::Method on_update = il2cpp::FindMethod(player_controller, "OnUpdate", 1);
@@ -382,43 +443,15 @@ void SetupLengthFeature() {
         LOGE("length: OnUpdate hook refused");
         return;
     }
-    g_hook_installed.store(true);
     LOGI("length: ready (field offset 0x%X)", g_length_field_offset);
 }
 
-// Re-applies whatever the user had toggled before the runtime came up.
-void ApplyPendingFeatures() {
-    for (size_t i = 0; i < kTargetCount; ++i) {
-        Target& t = g_targets[i];
-        if (!g_feature_on[t.feature].load()) continue;
-        for (Site& s : t.sites) ApplySite(s);
-    }
-}
-
-void* EngineThread(void*) {
-    LOGI("engine thread started");
-    if (!il2cpp::WaitUntilReady(240000)) {
-        g_engine_failed.store(true);
-        SetStatus("il2cpp runtime unavailable");
-        return nullptr;
-    }
-    il2cpp::AttachCurrentThread();
-
-    pthread_mutex_lock(&g_mutex);
-    ResolveTargets();
-    SetupLengthFeature();
-    ApplyPendingFeatures();
-    g_engine_ready.store(true);
-    SetStatus("%d patch sites, %d missing, hook %s", g_resolved_sites.load(),
-              g_missing_targets.load(), g_hook_installed.load() ? "ok" : "off");
-    pthread_mutex_unlock(&g_mutex);
-
-    LOGI("engine ready: %s", g_status_detail);
-    return nullptr;
-}
+// ---------------------------------------------------------------------------
+// Engine lifecycle
+// ---------------------------------------------------------------------------
 
 bool SetFeatureLocked(int feature, bool on) {
-    if (feature < 0 || feature >= kFeatureCount) return false;
+    if (feature < 0 || feature >= kFeatureSlots) return false;
     g_feature_on[feature].store(on);
 
     if (feature == kFeatureLength) return true;  // driven by the frame hook
@@ -435,18 +468,34 @@ bool SetFeatureLocked(int feature, bool on) {
     return ok;
 }
 
-// Updates the literal each balance stub reads. This is plain data, so no
-// instruction is ever rewritten while the game might be running it.
-void RefreshCoinPatches() {
-    if (!g_engine_ready.load()) return;
-    uint32_t value = static_cast<uint32_t>(g_coin_amount.load());
+// Re-applies whatever the user had toggled before the runtime came up, and
+// switches the ad blocking on unconditionally.
+void ApplyFeatures() {
+    g_feature_on[kFeatureNoAds].store(true);
     for (size_t i = 0; i < kTargetCount; ++i) {
         Target& t = g_targets[i];
-        if (t.kind != kRetInt) continue;
-        for (Site& s : t.sites) {
-            if (s.stub != nullptr) s.stub[2] = value;
-        }
+        if (!g_feature_on[t.feature].load()) continue;
+        for (Site& s : t.sites) ApplySite(s);
     }
+}
+
+void* EngineThread(void*) {
+    LOGI("engine thread started");
+    if (!il2cpp::WaitUntilReady(240000)) {
+        LOGE("il2cpp runtime never became usable");
+        return nullptr;
+    }
+    il2cpp::AttachCurrentThread();
+
+    pthread_mutex_lock(&g_mutex);
+    ResolveTargets();
+    SetupLengthFeature();
+    ApplyFeatures();
+    g_engine_ready.store(true);
+    pthread_mutex_unlock(&g_mutex);
+
+    LOGI("engine ready");
+    return nullptr;
 }
 
 }  // namespace
@@ -457,12 +506,8 @@ void RefreshCoinPatches() {
 // ---------------------------------------------------------------------------
 extern "C" {
 
-JNIEXPORT void JNICALL Java_com_gavna_Native_nativeInit(JNIEnv* env, jclass, jstring log_dir) {
+JNIEXPORT void JNICALL Java_com_gavna_Native_nativeInit(JNIEnv*, jclass) {
     using namespace gavna;
-
-    const char* dir = (log_dir != nullptr) ? env->GetStringUTFChars(log_dir, nullptr) : nullptr;
-    LogInit(dir);
-    if (dir != nullptr) env->ReleaseStringUTFChars(log_dir, dir);
 
     bool expected = false;
     if (!g_init_started.compare_exchange_strong(expected, true)) {
@@ -470,14 +515,11 @@ JNIEXPORT void JNICALL Java_com_gavna_Native_nativeInit(JNIEnv* env, jclass, jst
         return;
     }
 
-    InstallCrashHandler();
     LOGI("gavna native starting (build %s %s)", __DATE__, __TIME__);
 
     pthread_t thread;
     if (pthread_create(&thread, nullptr, EngineThread, nullptr) != 0) {
         LOGE("cannot spawn engine thread");
-        g_engine_failed.store(true);
-        SetStatus("engine thread failed to start");
         return;
     }
     pthread_detach(thread);
@@ -486,6 +528,7 @@ JNIEXPORT void JNICALL Java_com_gavna_Native_nativeInit(JNIEnv* env, jclass, jst
 JNIEXPORT jboolean JNICALL Java_com_gavna_Native_nativeSetFeature(JNIEnv*, jclass, jint feature,
                                                                  jboolean on) {
     using namespace gavna;
+    if (feature < 0 || feature >= kFeatureCount) return JNI_FALSE;  // menu features only
     pthread_mutex_lock(&g_mutex);
     bool ok = SetFeatureLocked(static_cast<int>(feature), on == JNI_TRUE);
     pthread_mutex_unlock(&g_mutex);
@@ -496,55 +539,18 @@ JNIEXPORT jboolean JNICALL Java_com_gavna_Native_nativeSetFeature(JNIEnv*, jclas
 JNIEXPORT jboolean JNICALL Java_com_gavna_Native_nativeSetValue(JNIEnv*, jclass, jint id,
                                                                jint value) {
     using namespace gavna;
-    switch (id) {
-        case kValueCoinAmount: {
-            int v = value;
-            if (v < 0) v = 0;
-            g_coin_amount.store(v);
-            pthread_mutex_lock(&g_mutex);
-            RefreshCoinPatches();
-            pthread_mutex_unlock(&g_mutex);
-            LOGI("coin amount -> %d", v);
-            return JNI_TRUE;
-        }
-        case kValueLength: {
-            int v = value;
-            if (v < kMinLength) v = kMinLength;
-            if (v > kMaxLength) v = kMaxLength;
-            g_length_target.store(v);
-            LOGI("length target -> %d", v);
-            return JNI_TRUE;
-        }
-        default:
-            return JNI_FALSE;
-    }
-}
-
-JNIEXPORT jstring JNICALL Java_com_gavna_Native_nativeStatus(JNIEnv* env, jclass) {
-    using namespace gavna;
-    char buf[640];
-    const char* state = g_engine_failed.load()  ? "failed"
-                        : g_engine_ready.load() ? "ready"
-                                                : "waiting for il2cpp";
-    void** slot = il2cpp::domain_slot();
-    snprintf(buf, sizeof(buf), "engine: %s\n%s\ndomain: %p\nlog: %s", state, g_status_detail,
-             slot != nullptr ? *slot : nullptr, LogPath());
-    return env->NewStringUTF(buf);
+    if (id != kValueLength) return JNI_FALSE;
+    int v = value;
+    if (v < kMinLength) v = kMinLength;
+    if (v > kMaxLength) v = kMaxLength;
+    g_length_target.store(v);
+    LOGI("length target -> %d", v);
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL Java_com_gavna_Native_nativeOnPlayerResumed(JNIEnv*, jclass) {
     using namespace gavna;
     il2cpp::NotifyPlayerResumed();
-}
-
-JNIEXPORT void JNICALL Java_com_gavna_Native_nativeLog(JNIEnv* env, jclass, jstring message) {
-    using namespace gavna;
-    if (message == nullptr) return;
-    const char* text = env->GetStringUTFChars(message, nullptr);
-    if (text != nullptr) {
-        LogWrite("J", "%s", text);
-        env->ReleaseStringUTFChars(message, text);
-    }
 }
 
 JNIEXPORT jint JNI_OnLoad(JavaVM*, void*) { return JNI_VERSION_1_6; }

@@ -3,8 +3,8 @@ package com.gavna.snakeio;
 import android.app.Activity;
 import android.app.Application;
 import android.os.Bundle;
+import android.util.Log;
 
-import com.gavna.GavnaLog;
 import com.gavna.Native;
 import com.gavna.ui.Overlay;
 
@@ -19,20 +19,19 @@ import com.gavna.ui.Overlay;
  */
 public class GavnaApplication extends com.kooapps.unity.UnityApplication {
 
+    private static final String TAG = "gavna";
+
     private final Overlay overlay = new Overlay();
 
     @Override
     public void onCreate() {
         super.onCreate();
         try {
-            GavnaLog.installExceptionHandler();
-            String dir = GavnaLog.resolveDir(this);
-            Native.init(dir);
-            GavnaLog.i("gavna attached to " + getPackageName() + ", log dir " + dir);
+            Native.init();
             registerActivityLifecycleCallbacks(new Callbacks());
         } catch (Throwable t) {
             // A failure here must never stop the game from booting.
-            GavnaLog.e("gavna init failed", t);
+            Log.e(TAG, "gavna init failed", t);
         }
     }
 
@@ -55,7 +54,7 @@ public class GavnaApplication extends com.kooapps.unity.UnityApplication {
             try {
                 overlay.attach(activity);
             } catch (Throwable t) {
-                GavnaLog.e("overlay attach failed", t);
+                Log.e(TAG, "overlay attach failed", t);
             }
         }
 
@@ -79,7 +78,7 @@ public class GavnaApplication extends com.kooapps.unity.UnityApplication {
             try {
                 overlay.detach();
             } catch (Throwable t) {
-                GavnaLog.e("overlay detach failed", t);
+                Log.e(TAG, "overlay detach failed", t);
             }
         }
 
