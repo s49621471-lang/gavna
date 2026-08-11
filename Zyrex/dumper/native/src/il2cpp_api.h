@@ -94,6 +94,7 @@ struct Api {
     Il2CppClass* (*object_get_class)(void*);
     void         (*field_static_get_value)(FieldInfo*, void*);
     uint16_t*    (*string_chars)(void*);
+    uint32_t     (*array_length)(void*);
 
     // thread / misc
     Il2CppThread* (*thread_attach)(Il2CppDomain*);

@@ -170,6 +170,7 @@ bool resolve_api(int timeout_ms) {
     bind(api.object_get_class,       "il2cpp_object_get_class",       false);
     bind(api.field_static_get_value, "il2cpp_field_static_get_value", false);
     bind(api.string_chars,           "il2cpp_string_chars",           false);
+    bind(api.array_length,           "il2cpp_array_length",           false);
 
     bind(api.thread_attach, "il2cpp_thread_attach", true);
     bind(api.thread_detach, "il2cpp_thread_detach", false);

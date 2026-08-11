@@ -31,7 +31,7 @@ constexpr int kIl2cppTimeoutMs  = 120000;
 
 // Long enough to get through the menu and play a couple of rounds. Samples
 // where no local player exists (menu, dead, loading) cost nothing but a skip.
-constexpr int kProbeDurationSec = 900;
+constexpr int kProbeDurationSec = 600;
 constexpr int kProbeIntervalMs  = 500;
 
 struct Args {
