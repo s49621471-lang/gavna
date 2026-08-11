@@ -6,14 +6,15 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.util.Log;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
 
 /**
  * Full-screen transparent view that paints the snapshot published by the native
- * poller. Touches are only consumed when they land on the drag handle or inside
- * an open menu; everything else falls through to the game.
+ * poller. Touches are only consumed on the handle bar or inside an open menu;
+ * everything else falls through to the game.
  */
 public class EspOverlay extends View implements Choreographer.FrameCallback {
 
@@ -56,29 +57,30 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private final String[] names = new String[Native.MAX_ENT];
 
     private final SharedPreferences prefs;
-    private final float d;                 // density scale
+    private final float d;
 
-    // ---- menu state --------------------------------------------------------
-    private float handleX, handleY;
-    private boolean menuOpen;
-    private boolean dragging;
-    private boolean onHandle;
+    /** Latches if a native call ever throws, so one failure cannot kill the game. */
+    private boolean nativeDead;
+
+    // ---- handle / menu state -----------------------------------------------
+    private final float barW, barH, barTouchH, rowH, panelW;
+    private float handleX = -1, handleY = -1;
+    private boolean menuOpen, dragging, onHandle;
     private float downX, downY, grabDX, grabDY;
-    private final float handleR;
-    private final float rowH, panelW;
 
     public EspOverlay(Context ctx) {
         super(ctx);
         d = ctx.getResources().getDisplayMetrics().density;
         prefs = ctx.getSharedPreferences("bpesp", Context.MODE_PRIVATE);
 
-        handleR = 22 * d;
-        rowH    = 34 * d;
-        panelW  = 190 * d;
-        handleX = handleR + 8 * d;
-        handleY = 120 * d;
-        handleX = prefs.getFloat("hx", handleX);
-        handleY = prefs.getFloat("hy", handleY);
+        barW      = 132 * d;
+        barH      = 5 * d;
+        barTouchH = 44 * d;
+        rowH      = 34 * d;
+        panelW    = 190 * d;
+
+        handleX = prefs.getFloat("bx", -1);
+        handleY = prefs.getFloat("by", -1);
         for (Opt o : opts) o.on = prefs.getBoolean("o_" + o.key, o.on);
 
         stroke.setStyle(Paint.Style.STROKE);
@@ -104,25 +106,41 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         if (isAttachedToWindow()) Choreographer.getInstance().postFrameCallback(this);
     }
 
+    /** Screen size is unknown in the constructor, so the bar is placed on first draw. */
+    private void placeHandle() {
+        if (handleX >= 0 && handleY >= 0) return;
+        handleX = getWidth() * 0.5f;
+        handleY = getHeight() - 14 * d;
+    }
+
     // ---- drawing -----------------------------------------------------------
     @Override protected void onDraw(Canvas c) {
-        int state = Native.state();
+        placeHandle();
 
-        if (on("master") && state == 2) drawEntities(c);
+        int state = -1;
+        if (!nativeDead) {
+            try {
+                state = Native.state();
+                if (on("master") && state == 2) drawEntities(c);
+            } catch (Throwable t) {
+                nativeDead = true;
+                Log.e("bpesp", "native call failed, overlay going quiet", t);
+            }
+        }
+
         if (on("status")) drawStatus(c, state);
-
         drawHandle(c);
         if (menuOpen) drawMenu(c);
     }
 
     private void drawStatus(Canvas c, int state) {
         String s;
-        switch (state) {
-            case 0:  s = "waiting for il2cpp"; break;
-            case 1:  s = "scanning: " + Native.status(); break;
-            case 2:  s = "live"; break;
-            default: s = Native.status(); break;
-        }
+        if (nativeDead)      s = "native unavailable";
+        else if (state == 0) s = "waiting for il2cpp";
+        else if (state == 1) s = "scanning: " + Native.status();
+        else if (state == 2) s = "live";
+        else if (state < 0)  s = "starting";
+        else                 s = Native.status();
         label(c, "[esp] " + s, 10 * d, 18 * d, state == 2 ? 0xFF66FF99 : 0xFFFFCC44);
     }
 
@@ -151,11 +169,13 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
             if (on("snap")) {
                 stroke.setColor(0x66FFFFFF);
+                stroke.setStrokeWidth(1.4f * d);
                 c.drawLine(cx, cy, fx, bottom, stroke);
             }
 
             if (on("look")) {
                 stroke.setColor(0xAA44CCFF);
+                stroke.setStrokeWidth(1.4f * d);
                 c.drawLine(fx, (top + bottom) * 0.5f,
                            buf[b + Native.F_DIR_X], buf[b + Native.F_DIR_Y], stroke);
             }
@@ -185,7 +205,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             if (on("name")) {
                 String nm = names[i] == null ? "?" : names[i];
                 centered(c, nm, fx, ty, alive ? 0xFFFFFFFF : 0xFF9E9E9E);
-                ty -= 12 * d;
             }
 
             StringBuilder sb = new StringBuilder();
@@ -238,8 +257,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     }
 
     private void centered(Canvas c, String s, float x, float y, int col) {
-        float w = text.measureText(s);
-        label(c, s, x - w * 0.5f, y, col);
+        label(c, s, x - text.measureText(s) * 0.5f, y, col);
     }
 
     private void label(Canvas c, String s, float x, float y, int col) {
@@ -248,36 +266,47 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         c.drawText(s, x, y, text);
     }
 
-    // ---- menu --------------------------------------------------------------
+    // ---- handle ------------------------------------------------------------
+    /** The gesture-pill style bar that opens the menu. */
     private void drawHandle(Canvas c) {
-        fill.setColor(menuOpen ? 0xE034C759 : 0xC0202020);
-        c.drawCircle(handleX, handleY, handleR, fill);
-        stroke.setColor(0xFFFFFFFF);
-        stroke.setStrokeWidth(1.5f * d);
-        c.drawCircle(handleX, handleY, handleR, stroke);
-        text.setColor(0xFFFFFFFF);
-        float w = text.measureText("P");
-        c.drawText("P", handleX - w * 0.5f, handleY + 4 * d, text);
+        rect.set(handleX - barW * 0.5f, handleY - barH * 0.5f,
+                 handleX + barW * 0.5f, handleY + barH * 0.5f);
+        float r = barH * 0.5f;
+
+        // dark halo so the bar stays visible over a light scene
+        fill.setColor(0x66000000);
+        c.drawRoundRect(handleX - barW * 0.5f - 1.5f * d, handleY - barH * 0.5f - 1.5f * d,
+                        handleX + barW * 0.5f + 1.5f * d, handleY + barH * 0.5f + 1.5f * d,
+                        r + 1.5f * d, r + 1.5f * d, fill);
+
+        fill.setColor(menuOpen ? 0xFF34C759 : 0xFFFFFFFF);
+        c.drawRoundRect(rect, r, r, fill);
     }
 
+    private boolean hitHandle(float x, float y) {
+        return Math.abs(x - handleX) <= barW * 0.5f + 12 * d
+            && Math.abs(y - handleY) <= barTouchH * 0.5f;
+    }
+
+    private float panelHeight() { return rowH * (opts.length + 1); }
+
     private float panelLeft() {
-        float l = handleX + handleR + 6 * d;
-        if (l + panelW > getWidth()) l = handleX - handleR - 6 * d - panelW;
+        float l = handleX - panelW * 0.5f;
+        if (l + panelW > getWidth()) l = getWidth() - panelW;
         if (l < 0) l = 0;
         return l;
     }
 
+    /** Menu opens upward from the bar, since the bar lives at the bottom. */
     private float panelTop() {
-        float t = handleY - handleR;
-        float h = rowH * (opts.length + 1);
-        if (t + h > getHeight()) t = getHeight() - h;
+        float t = handleY - barTouchH * 0.5f - 8 * d - panelHeight();
         if (t < 0) t = 0;
+        if (t + panelHeight() > getHeight()) t = getHeight() - panelHeight();
         return t;
     }
 
     private void drawMenu(Canvas c) {
-        float l = panelLeft(), t = panelTop();
-        float h = rowH * (opts.length + 1);
+        float l = panelLeft(), t = panelTop(), h = panelHeight();
 
         rect.set(l, t, l + panelW, t + h);
         fill.setColor(0xE81A1A1A);
@@ -310,7 +339,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
-                if (dist(x, y, handleX, handleY) <= handleR * 1.4f) {
+                if (hitHandle(x, y)) {
                     onHandle = true;
                     dragging = false;
                     downX = x; downY = y;
@@ -318,10 +347,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                     return true;
                 }
                 onHandle = false;
+
                 if (menuOpen) {
                     float l = panelLeft(), t = panelTop();
-                    float h = rowH * (opts.length + 1);
-                    if (x >= l && x <= l + panelW && y >= t && y <= t + h) {
+                    if (x >= l && x <= l + panelW && y >= t && y <= t + panelHeight()) {
                         int row = (int) ((y - t) / rowH) - 1;
                         if (row >= 0 && row < opts.length) {
                             opts[row].on = !opts[row].on;
@@ -329,7 +358,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                         }
                         return true;
                     }
-                    menuOpen = false;
+                    menuOpen = false;   // tap outside closes it
                     return true;
                 }
                 return false;
@@ -338,15 +367,15 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                 if (!onHandle) return false;
                 if (Math.abs(x - downX) > 8 * d || Math.abs(y - downY) > 8 * d) dragging = true;
                 if (dragging) {
-                    handleX = clamp(x + grabDX, handleR, getWidth() - handleR);
-                    handleY = clamp(y + grabDY, handleR, getHeight() - handleR);
+                    handleX = clamp(x + grabDX, barW * 0.5f, getWidth() - barW * 0.5f);
+                    handleY = clamp(y + grabDY, barTouchH * 0.5f, getHeight() - barH);
                 }
                 return true;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
                 if (!onHandle) return false;
-                if (dragging) prefs.edit().putFloat("hx", handleX).putFloat("hy", handleY).apply();
+                if (dragging) prefs.edit().putFloat("bx", handleX).putFloat("by", handleY).apply();
                 else if (e.getActionMasked() == MotionEvent.ACTION_UP) menuOpen = !menuOpen;
                 dragging = false;
                 onHandle = false;
@@ -354,11 +383,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             }
         }
         return false;
-    }
-
-    private static float dist(float x1, float y1, float x2, float y2) {
-        float dx = x1 - x2, dy = y1 - y2;
-        return (float) Math.sqrt(dx * dx + dy * dy);
     }
 
     private static float clamp(float v, float lo, float hi) {

@@ -22,7 +22,12 @@ public class EspOverlayApp extends androidx.multidex.MultiDexApplication {
     @Override
     public void onCreate() {
         super.onCreate();
-        Native.load();
+        if (!Native.load()) {
+            // Nothing to draw and every native entry point would throw on the
+            // first frame. Leave the game completely alone.
+            Log.e("bpesp", "libesp.so did not load, overlay disabled");
+            return;
+        }
         registerActivityLifecycleCallbacks(new Lifecycle(this));
     }
 

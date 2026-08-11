@@ -27,11 +27,21 @@ done
 rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/dex" "$ROOT/out"
 
 echo "[native] libesp.so"
+# -nostdlib++ matters: the default clang++ link pulls in libc++_shared.so, which
+# the target APK does not ship, so System.loadLibrary would fail at runtime with
+# nothing but a swallowed UnsatisfiedLinkError to show for it. Nothing here uses
+# the C++ runtime, so drop it and keep the dependency set to liblog/libdl/libc.
 "$CXX" -std=c++17 -O2 -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections \
+    -fno-exceptions -fno-rtti -nostdlib++ \
     -Wall -Wextra -Wno-unused-parameter \
     -shared -o "$ROOT/out/libesp.so" \
     "$ROOT/native/esp.cpp" "$ROOT/native/il2cpp.cpp" \
     -llog -ldl -Wl,--gc-sections -Wl,-z,max-page-size=16384
+
+if "$ANDROID_NDK"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d \
+        "$ROOT/out/libesp.so" | grep -q 'libc++'; then
+    echo "    libesp.so still needs the C++ runtime, which is not in the APK"; exit 1
+fi
 
 echo "[java] classes"
 javac -source 8 -target 8 -nowarn -bootclasspath "$ANDROID_JAR" -d "$WORK/classes" \
