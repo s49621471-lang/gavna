@@ -6,6 +6,7 @@
 
 #include "il2cpp_api.h"
 #include "dumper.h"
+#include "probe.h"
 #include "guard.h"
 #include "log.h"
 
@@ -27,6 +28,11 @@ std::atomic<bool> g_started{false};
 // scene load, and walking it too early is the surest way to fault.
 constexpr int kInitialDelayMs   = 20000;
 constexpr int kIl2cppTimeoutMs  = 120000;
+
+// Long enough to get through the menu and play a couple of rounds. Samples
+// where no local player exists (menu, dead, loading) cost nothing but a skip.
+constexpr int kProbeDurationSec = 900;
+constexpr int kProbeIntervalMs  = 500;
 
 struct Args {
     char out_dir[768];
@@ -89,8 +95,21 @@ void* worker(void* raw) {
     const bool guarded = zyrex::guard_install();
     if (!guarded) LOGW("running without fault guard");
 
-    write_marker(out_dir, "_status.txt", "dumping\n");
-    zyrex::run_dump(out_dir);
+    // The SDK dump only needs doing once — the class table is identical on
+    // every launch. Drop a file named dump_again.txt in the output folder to
+    // force it; otherwise go straight to probing, which is what this build is
+    // actually for.
+    char marker[1024];
+    snprintf(marker, sizeof(marker), "%s/dump_again.txt", out_dir);
+    if (FILE* m = fopen(marker, "r")) {
+        fclose(m);
+        LOGI("dump_again.txt present — running full SDK dump first");
+        write_marker(out_dir, "_status.txt", "dumping\n");
+        zyrex::run_dump(out_dir);
+    }
+
+    write_marker(out_dir, "_status.txt", "probing\n");
+    zyrex::run_probe(out_dir, kProbeDurationSec, kProbeIntervalMs);
 
     if (guarded) zyrex::guard_remove();
     if (zyrex::api.thread_detach) zyrex::api.thread_detach(attached);

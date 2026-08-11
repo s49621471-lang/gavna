@@ -8,6 +8,7 @@ add_library(zyrexdump SHARED
     src/main.cpp
     src/il2cpp_api.cpp
     src/dumper.cpp
+    src/probe.cpp
     src/guard.cpp
 )
 

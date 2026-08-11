@@ -84,12 +84,32 @@ bool resolve_api(int timeout_ms) {
     }
     LOGI("libil2cpp.so mapped after %d ms", waited);
 
-    if (!find_module_range("libil2cpp.so", il2cpp_base, il2cpp_size)) {
-        // Not fatal: only costs us RVA resolution, so keep going with 0/0 and
-        // let method_pointer() return 0 for everything.
-        LOGW("could not read libil2cpp.so range from /proc/self/maps");
-    } else {
-        LOGI("libil2cpp.so base=%p size=0x%zx", (void*)il2cpp_base, il2cpp_size);
+    // Load base comes from the linker, not from parsing /proc/self/maps. The
+    // maps route summed every line whose path mentioned libil2cpp.so and
+    // produced an 11.8 GB span on a 62 MB library, which put a constant skew
+    // on every recorded RVA. dladdr reports dli_fbase authoritatively.
+    {
+        void* probe = dlsym(g_handle, "il2cpp_domain_get");
+        Dl_info info{};
+        if (probe && dladdr(probe, &info) != 0 && info.dli_fbase) {
+            il2cpp_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+            // dladdr gives the base but not the extent, so the span still comes
+            // from maps — bounded to mappings that actually start at or after
+            // the real base.
+            uintptr_t lo = 0; size_t span = 0;
+            if (find_module_range("libil2cpp.so", lo, span) && lo <= il2cpp_base) {
+                il2cpp_size = (lo + span) - il2cpp_base;
+            }
+            if (il2cpp_size == 0 || il2cpp_size > 0x20000000) {
+                il2cpp_size = 0x8000000;   // 128 MB ceiling — generous for a 62 MB image
+            }
+            LOGI("libil2cpp.so base=%p size=0x%zx (dladdr)", (void*)il2cpp_base, il2cpp_size);
+        } else if (find_module_range("libil2cpp.so", il2cpp_base, il2cpp_size)) {
+            LOGW("dladdr unavailable, falling back to maps: base=%p size=0x%zx",
+                 (void*)il2cpp_base, il2cpp_size);
+        } else {
+            LOGW("could not determine libil2cpp.so range; RVAs will read 0");
+        }
     }
 
     bind(api.domain_get,           "il2cpp_domain_get",            true);
@@ -146,6 +166,10 @@ bool resolve_api(int timeout_ms) {
     bind(api.property_get_name,       "il2cpp_property_get_name",       false);
     bind(api.property_get_get_method, "il2cpp_property_get_get_method", false);
     bind(api.property_get_set_method, "il2cpp_property_get_set_method", false);
+
+    bind(api.object_get_class,       "il2cpp_object_get_class",       false);
+    bind(api.field_static_get_value, "il2cpp_field_static_get_value", false);
+    bind(api.string_chars,           "il2cpp_string_chars",           false);
 
     bind(api.thread_attach, "il2cpp_thread_attach", true);
     bind(api.thread_detach, "il2cpp_thread_detach", false);

@@ -65,7 +65,7 @@ public final class Zyrex {
         Context appContext = context.getApplicationContext();
         if (appContext == null) appContext = context;
 
-        toast(appContext, "Zyrex: dumping to " + outDir.getAbsolutePath());
+        toast(appContext, "Zyrex: probe armed — play a round, ~15 min");
         watchForCompletion(appContext, outDir);
     }
 
@@ -76,7 +76,8 @@ public final class Zyrex {
     private static void watchForCompletion(final Context context, final File outDir) {
         final Handler handler = new Handler(Looper.getMainLooper());
         final File status = new File(outDir, "_status.txt");
-        final long deadline = System.currentTimeMillis() + (10 * 60 * 1000);
+        // The probe samples for 15 minutes, so the watcher has to outlive it.
+        final long deadline = System.currentTimeMillis() + (20 * 60 * 1000);
 
         handler.postDelayed(new Runnable() {
             @Override public void run() {

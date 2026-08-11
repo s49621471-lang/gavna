@@ -90,6 +90,11 @@ struct Api {
     const MethodInfo* (*property_get_get_method)(PropertyInfo*);
     const MethodInfo* (*property_get_set_method)(PropertyInfo*);
 
+    // object / static access — used by the live probe
+    Il2CppClass* (*object_get_class)(void*);
+    void         (*field_static_get_value)(FieldInfo*, void*);
+    uint16_t*    (*string_chars)(void*);
+
     // thread / misc
     Il2CppThread* (*thread_attach)(Il2CppDomain*);
     void          (*thread_detach)(Il2CppThread*);

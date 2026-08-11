@@ -188,6 +188,48 @@ adb pull /sdcard/Android/data/com.skullcapstudios.bps/files/zyrex/
 
 ---
 
+## The live probe
+
+The SDK dump answered what exists. It could not answer what the members
+*mean*, because the obfuscator renamed everything Unity does not serialize.
+`Shooter` has 344 fields and not one surviving name — types and offsets are
+known, meanings are not.
+
+The probe closes that gap by watching values instead of reading names.
+
+`Shooter` holds a **static reference to itself** (`0x8` in the static block),
+which is the local player. The probe finds that field *by type* rather than by
+its obfuscated identifier, so it survives a rename, then samples every numeric,
+boolean, string and vector field on that instance twice a second.
+
+It calls **no Unity API at all**. Every read is a plain dereference of an
+object the runtime already produced, which means no main-thread requirement,
+no hooks, and no crash surface beyond a bad pointer — which the existing fault
+guard already covers. Liveness is checked by reading the object's class
+pointer under the guard before touching 344 fields behind it.
+
+Output:
+
+| File | Contents |
+|---|---|
+| `05_probe.csv` | one row per sample, one column per field, headed `name@offset:type` |
+| `06_probe_ranges.txt` | min / max / change-count per field across the session, plus last observed value for every string field |
+
+`06_probe_ranges.txt` is the one to read first. Health is the float that
+starts near 100 and drops when you get hit. Armor sits beside it with the same
+shape. Team is a small int that stays constant within a match. Ammo steps down
+as you fire and resets on reload. The nickname is whichever string reads back
+as your username.
+
+Samples taken while no local player exists — menu, dead, loading — are skipped
+and counted, not written, so idle time costs nothing.
+
+The full SDK dump is skipped by default in this build since the class table is
+identical on every launch. Drop a file named `dump_again.txt` in the output
+folder to force it.
+
+---
+
 ## Pass two
 
 With the dump in hand the obfuscated player class stops being a guess, and
