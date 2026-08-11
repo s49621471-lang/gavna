@@ -1,0 +1,8 @@
+# build scratch - the original bundle, the merged APK, object files, keystore
+build/
+
+# the assembled APK lives in dist/parts/ instead, split to fit GitHub's limit
+dist/*.apk
+native/libs/
+native/obj/
+dist/*.idsig

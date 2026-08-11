@@ -1,0 +1,61 @@
+name: release
+
+# Joins the split APK back into one file and publishes it as a release asset,
+# because a 145 MB APK cannot be committed directly (GitHub caps blobs at 100 MB).
+on:
+  push:
+    branches:
+      - claude/chat-session-ve6u4d
+    paths:
+      - 'dist/parts/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag'
+        required: false
+        default: 'v2.2.160-gavna'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Join the parts into a single APK
+        run: |
+          set -euo pipefail
+          cd dist
+          cat parts/SnakeIO-2.2.160-gavna.apk.part* > SnakeIO-2.2.160-gavna.apk
+          cp parts/SnakeIO-2.2.160-gavna.apk.sha256 .
+          sha256sum -c SnakeIO-2.2.160-gavna.apk.sha256
+          ls -l SnakeIO-2.2.160-gavna.apk
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || 'v2.2.160-gavna' }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "Snake.io 2.2.160 - gavna menu" \
+            --notes "Single universal APK (arm64-v8a), signed and zipaligned.
+
+          Tap the white bar at the bottom of the screen to open the menu.
+
+          | | |
+          |---|---|
+          | package | com.amelosinteractive.snake |
+          | version | 2.2.160 (1699) |
+          | abi | arm64-v8a |
+          | size | 145454613 bytes |
+          | sha256 | $(cut -d' ' -f1 dist/SnakeIO-2.2.160-gavna.apk.sha256) |
+
+          Uninstall the Play Store copy first - the signature is different." \
+            dist/SnakeIO-2.2.160-gavna.apk
+          gh release view "$TAG" --json assets --jq '.assets[].url'
