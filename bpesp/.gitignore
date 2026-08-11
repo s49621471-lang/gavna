@@ -1,0 +1,5 @@
+tools
+.work
+.build
+out/esp.keystore
+*.apk
