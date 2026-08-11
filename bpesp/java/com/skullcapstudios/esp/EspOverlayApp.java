@@ -48,6 +48,20 @@ public class EspOverlayApp extends androidx.multidex.MultiDexApplication {
         @Override public void onActivityDestroyed(Activity a) { app.detach(a); }
     }
 
+    /**
+     * /sdcard/Android/data/com.skullcapstudios.bps/files/bpesp.log — readable from
+     * a file manager or Termux with no permission and no root. Falls back to the
+     * private data dir if external storage is unavailable.
+     */
+    private static String logPath(Activity a) {
+        java.io.File dir = a.getExternalFilesDir(null);
+        if (dir == null) dir = a.getFilesDir();
+        dir.mkdirs();
+        String p = new java.io.File(dir, "bpesp.log").getAbsolutePath();
+        Log.i("bpesp", "log -> " + p);
+        return p;
+    }
+
     void detach(Activity a) {
         if (overlay != null && overlay.getContext() == a) overlay = null;
     }
@@ -62,6 +76,8 @@ public class EspOverlayApp extends androidx.multidex.MultiDexApplication {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
             overlay.bringToFront();
+
+            Native.setLog(logPath(a));
 
             // Size comes from the view's own onSizeChanged, not from the display:
             // under MIUI freeform or split screen the window is a fraction of it.

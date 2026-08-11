@@ -50,6 +50,9 @@ struct Il2CppApi {
     int32_t (*class_instance_size)(void *klass);
     void *(*class_get_method_from_name)(void *klass, const char *name, int argc);
     void *(*class_get_static_field_data)(void *klass);
+    const void *(*class_get_image)(void *klass);
+    void *(*class_get_type)(void *klass);
+    void *(*type_get_object)(void *type);
     void (*runtime_class_init)(void *klass);
     bool (*class_is_valuetype)(void *klass);
     const char *(*field_get_name)(void *field);

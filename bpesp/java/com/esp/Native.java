@@ -33,6 +33,8 @@ public final class Native {
         return loaded;
     }
 
+    /** Must be called before {@link #start} for the discovery trace to be captured. */
+    public static native void setLog(String path);
     public static native void start(int screenW, int screenH);
     /** Surface size the game renders into — not the physical display. */
     public static native void viewport(int w, int h);

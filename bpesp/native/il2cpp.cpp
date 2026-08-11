@@ -27,6 +27,9 @@ bool il2cpp_bind(void *handle) {
     BIND(class_instance_size,      "il2cpp_class_instance_size");
     BIND(class_get_method_from_name,"il2cpp_class_get_method_from_name");
     BIND(class_get_static_field_data,"il2cpp_class_get_static_field_data");
+    BIND(class_get_image,          "il2cpp_class_get_image");
+    BIND(class_get_type,           "il2cpp_class_get_type");
+    BIND(type_get_object,          "il2cpp_type_get_object");
     BIND(runtime_class_init,       "il2cpp_runtime_class_init");
     BIND(class_is_valuetype,       "il2cpp_class_is_valuetype");
     BIND(field_get_name,           "il2cpp_field_get_name");
