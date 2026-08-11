@@ -1,6 +1,6 @@
 #include "memory.h"
 
-#include <TlHelp32.h>
+#include <tlhelp32.h>
 
 #include <cwchar>
 #include <vector>

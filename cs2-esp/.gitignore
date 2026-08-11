@@ -10,3 +10,6 @@ out/
 *.pdb
 *.ilk
 *.obj
+
+# The shipped binary is tracked on purpose.
+!dist/cs2-esp.exe

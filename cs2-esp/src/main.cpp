@@ -1,11 +1,13 @@
 #include "config.h"
+#include "draw.h"
 #include "memory.h"
+#include "menu.h"
 #include "offsets.h"
 #include "overlay.h"
 #include "renderer.h"
 #include "sdk.h"
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <atomic>
 #include <chrono>
@@ -82,39 +84,6 @@ namespace
         return FindWindowW(nullptr, kWindowTitle);
     }
 
-    void HandleHotkeys()
-    {
-        if (KeyPressed(VK_INSERT))
-        {
-            g_config.enabled = !g_config.enabled;
-            wprintf(L"[esp] %s\n", g_config.enabled ? L"on" : L"off");
-        }
-
-        if (KeyPressed(VK_DELETE))
-        {
-            g_config.drawSkeleton = !g_config.drawSkeleton;
-            wprintf(L"[skeleton] %s\n", g_config.drawSkeleton ? L"on" : L"off");
-        }
-
-        if (KeyPressed(VK_HOME))
-        {
-            g_config.drawSnaplines = !g_config.drawSnaplines;
-            wprintf(L"[snaplines] %s\n", g_config.drawSnaplines ? L"on" : L"off");
-        }
-
-        if (KeyPressed(VK_PRIOR))
-        {
-            g_config.teamCheck = !g_config.teamCheck;
-            wprintf(L"[teamcheck] %s\n", g_config.teamCheck ? L"on" : L"off");
-        }
-
-        if (KeyPressed(VK_END))
-        {
-            wprintf(L"[exit] shutting down\n");
-            g_running = false;
-        }
-    }
-
     // Producer thread: keeps a fresh snapshot ready so the render loop never
     // blocks on ReadProcessMemory.
     void MemoryLoop(Memory* memory, Game* game)
@@ -154,9 +123,7 @@ int wmain()
     EnableDpiAwareness();
 
     wprintf(L"gavna cs2 esp\n");
-    wprintf(L"  INS  toggle esp      DEL  toggle skeleton\n");
-    wprintf(L"  HOME toggle snaplines PGUP toggle teamcheck\n");
-    wprintf(L"  END  exit\n\n");
+    wprintf(L"  INS  menu       DEL  toggle esp       END  exit\n\n");
 
     const std::wstring exeDir = ExecutableDirectory();
 
@@ -206,16 +173,21 @@ int wmain()
         return 1;
     }
 
-    Renderer renderer;
+    Draw draw;
 
-    if (!renderer.Init(overlay))
+    if (!draw.Init(overlay))
     {
-        wprintf(L"[renderer] init failed\n");
+        wprintf(L"[draw] init failed\n");
         overlay.Destroy();
         return 1;
     }
 
-    wprintf(L"[ready] drawing\n");
+    draw.SetFontSize(g_config.fontSize);
+
+    Renderer renderer(draw);
+    Menu     menu(draw);
+
+    wprintf(L"[ready] drawing — press INS for the menu\n");
 
     std::thread worker(MemoryLoop, &memory, &game);
 
@@ -228,7 +200,30 @@ int wmain()
         if (!overlay.PumpMessages())
             break;
 
-        HandleHotkeys();
+        if (KeyPressed(VK_INSERT))
+        {
+            menu.Toggle();
+            overlay.SetInteractive(menu.IsOpen(), gameWindow);
+        }
+
+        if (menu.IsOpen() && KeyPressed(VK_ESCAPE))
+        {
+            menu.Close();
+            overlay.SetInteractive(false, gameWindow);
+        }
+
+        if (KeyPressed(VK_DELETE))
+        {
+            g_config.enabled = !g_config.enabled;
+            wprintf(L"[esp] %s\n", g_config.enabled ? L"on" : L"off");
+        }
+
+        if (KeyPressed(VK_END))
+        {
+            wprintf(L"[exit] shutting down\n");
+            g_running = false;
+            break;
+        }
 
         if (!IsWindow(gameWindow))
         {
@@ -247,6 +242,8 @@ int wmain()
             continue;
         }
 
+        menu.Update(overlay);
+
         {
             std::lock_guard<std::mutex> lock(g_snapshotMutex);
             frame = g_snapshot;
@@ -262,6 +259,7 @@ int wmain()
         if (overlay.BeginFrame())
         {
             renderer.Render(overlay, frame, fps);
+            menu.Render(overlay);
             overlay.EndFrame();
         }
     }
@@ -271,7 +269,8 @@ int wmain()
     if (worker.joinable())
         worker.join();
 
-    renderer.Shutdown();
+    overlay.SetInteractive(false, gameWindow);
+    draw.Shutdown();
     overlay.Destroy();
 
     wprintf(L"[exit] done\n");

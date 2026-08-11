@@ -1,6 +1,8 @@
 #pragma once
 
-#include <Windows.h>
+#include "vec.h"
+
+#include <windows.h>
 
 #include <d2d1_1.h>
 #include <d3d11.h>
@@ -21,6 +23,16 @@ public:
     // Returns false when the target is gone or minimised.
     bool TrackTarget(HWND target);
 
+    // Interactive mode drops click-through and takes focus so the menu can be
+    // used; the game releases the cursor as soon as it loses foreground.
+    // Passing false hands focus straight back to restoreFocusTo.
+    void SetInteractive(bool interactive, HWND restoreFocusTo);
+
+    bool IsInteractive() const { return m_interactive; }
+
+    // Cursor position in overlay client pixels.
+    Vec2 CursorPosition() const;
+
     // Drains the message queue. Returns false once a quit was posted.
     bool PumpMessages();
 
@@ -29,6 +41,7 @@ public:
 
     ID2D1DeviceContext* Context() const { return m_d2dContext.Get(); }
     IDWriteFactory*     DWrite()  const { return m_dwrite.Get(); }
+    ID2D1Factory1*      Factory() const { return m_d2dFactory.Get(); }
 
     int  Width()  const { return m_width; }
     int  Height() const { return m_height; }
@@ -43,10 +56,11 @@ private:
     HWND      m_hwnd   = nullptr;
     HINSTANCE m_module = nullptr;
 
-    int m_width  = 0;
-    int m_height = 0;
-    int m_posX   = 0;
-    int m_posY   = 0;
+    int  m_width       = 0;
+    int  m_height      = 0;
+    int  m_posX        = 0;
+    int  m_posY        = 0;
+    bool m_interactive = false;
 
     Microsoft::WRL::ComPtr<ID3D11Device>          m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext>   m_deviceContext;

@@ -1,6 +1,7 @@
 #include "offsets.h"
 
-#include <fstream>
+#include <cstdio>
+#include <cwchar>
 #include <string>
 
 Offsets g_offsets;
@@ -76,15 +77,19 @@ namespace
 
 bool Offsets::LoadFromFile(const std::wstring& path)
 {
-    std::ifstream file(path);
+    // _wfopen rather than ifstream: wide paths work identically on both the
+    // MSVC and MinGW runtimes, so an install under a non-ASCII path still opens.
+    FILE* file = _wfopen(path.c_str(), L"r");
 
-    if (!file.is_open())
+    if (file == nullptr)
         return false;
 
-    std::string line;
+    char raw[512]{};
 
-    while (std::getline(file, line))
+    while (std::fgets(raw, static_cast<int>(sizeof(raw)), file) != nullptr)
     {
+        std::string line(raw);
+
         // Strip comments before parsing so trailing notes are legal.
         const auto comment = line.find_first_of(";#");
 
@@ -114,5 +119,6 @@ bool Offsets::LoadFromFile(const std::wstring& path)
         }
     }
 
+    std::fclose(file);
     return true;
 }

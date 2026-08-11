@@ -9,16 +9,27 @@ namespace
 
 LRESULT CALLBACK Overlay::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
+    if (msg == WM_NCCREATE)
+    {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+
+    auto* self = reinterpret_cast<Overlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
     switch (msg)
     {
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
 
-    // The overlay never takes input; refuse hit-testing outright so clicks fall
-    // through to the game even if the extended style is ever cleared.
+    // Outside menu mode the overlay refuses hit-testing entirely, so clicks
+    // reach the game even if the extended style is ever cleared. With the menu
+    // up we want those clicks.
     case WM_NCHITTEST:
-        return HTTRANSPARENT;
+        if (self == nullptr || !self->m_interactive)
+            return HTTRANSPARENT;
+        break;
 
     default:
         break;
@@ -48,7 +59,7 @@ bool Overlay::Create(const wchar_t* title)
         title,
         WS_POPUP,
         0, 0, 100, 100,
-        nullptr, nullptr, m_module, nullptr);
+        nullptr, nullptr, m_module, this);
 
     if (m_hwnd == nullptr)
         return false;
@@ -231,6 +242,50 @@ bool Overlay::TrackTarget(HWND target)
     }
 
     return true;
+}
+
+void Overlay::SetInteractive(bool interactive, HWND restoreFocusTo)
+{
+    if (m_hwnd == nullptr || interactive == m_interactive)
+        return;
+
+    m_interactive = interactive;
+
+    LONG_PTR style = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+
+    if (interactive)
+    {
+        // Dropping NOACTIVATE lets the overlay take foreground, which makes the
+        // game release its cursor clip and stop swallowing the pointer.
+        style &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, style);
+
+        ClipCursor(nullptr);
+        SetForegroundWindow(m_hwnd);
+        SetActiveWindow(m_hwnd);
+    }
+    else
+    {
+        style |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, style);
+
+        if (restoreFocusTo != nullptr && IsWindow(restoreFocusTo))
+            SetForegroundWindow(restoreFocusTo);
+    }
+
+    // Extended-style changes only take effect on the next frame-change pass.
+    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+}
+
+Vec2 Overlay::CursorPosition() const
+{
+    POINT point{};
+
+    if (m_hwnd == nullptr || !GetCursorPos(&point) || !ScreenToClient(m_hwnd, &point))
+        return { -1.f, -1.f };
+
+    return { static_cast<float>(point.x), static_cast<float>(point.y) };
 }
 
 bool Overlay::PumpMessages()

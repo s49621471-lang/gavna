@@ -6,8 +6,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(cs2-esp
+    src/draw.cpp
     src/main.cpp
     src/memory.cpp
+    src/menu.cpp
     src/offsets.cpp
     src/overlay.cpp
     src/renderer.cpp
@@ -39,6 +41,11 @@ target_link_libraries(cs2-esp PRIVATE
 if (MSVC)
     target_compile_options(cs2-esp PRIVATE /utf-8 /W4 /permissive-)
     set_property(TARGET cs2-esp PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    # MinGW: -municode selects the wmain entry point, and the static flags keep
+    # the binary free of libstdc++/libgcc/winpthread DLLs.
+    target_compile_options(cs2-esp PRIVATE -Wall -Wextra -municode)
+    target_link_options(cs2-esp PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
 # Keep the offset table next to the binary so a game patch is an ini edit.
