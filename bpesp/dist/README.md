@@ -4,7 +4,7 @@
 stored here as seven `.partNN` chunks. Concatenating them in order reproduces
 the signed APK byte for byte.
 
-    md5  1f10c366f3dbc5cbb3656cab8cc07afe  BLOCKPOST-ESP.apk
+    md5  e66625b8596fd00903258af46b054862  BLOCKPOST-ESP.apk
 
 ## Termux — fetch and rejoin
 
@@ -17,7 +17,7 @@ for i in 00 01 02 03 04 05 06; do
   curl -fL# -o BLOCKPOST-ESP.apk.part$i $B/BLOCKPOST-ESP.apk.part$i
 done
 cat BLOCKPOST-ESP.apk.part?? > BLOCKPOST-ESP.apk && rm BLOCKPOST-ESP.apk.part??
-md5sum BLOCKPOST-ESP.apk     # 1f10c366f3dbc5cbb3656cab8cc07afe
+md5sum BLOCKPOST-ESP.apk     # e66625b8596fd00903258af46b054862
 ```
 
 Then install it:

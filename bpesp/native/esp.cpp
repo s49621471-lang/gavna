@@ -492,11 +492,21 @@ static void *poll_thread(void *) {
 // ---------------------------------------------------------------------------
 extern "C" {
 
+// Fallback screen size, used only when the camera does not report its own.
+// Must be the surface the game renders into, not the physical display — under
+// MIUI freeform (and split screen) those differ by a large factor.
 JNIEXPORT void JNICALL
-Java_com_esp_Native_start(JNIEnv *, jclass, jint w, jint h) {
+Java_com_esp_Native_viewport(JNIEnv *, jclass, jint w, jint h) {
+    if (w > 1 && h > 1) {
+        g_screenW = (float)w;
+        g_screenH = (float)h;
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_esp_Native_start(JNIEnv *env, jclass cls, jint w, jint h) {
     static bool started = false;
-    g_screenW = (float)w;
-    g_screenH = (float)h;
+    Java_com_esp_Native_viewport(env, cls, w, h);
     if (started) return;
     started = true;
     pthread_t t;

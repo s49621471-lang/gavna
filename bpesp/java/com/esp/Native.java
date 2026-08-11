@@ -34,6 +34,8 @@ public final class Native {
     }
 
     public static native void start(int screenW, int screenH);
+    /** Surface size the game renders into — not the physical display. */
+    public static native void viewport(int w, int h);
     public static native int state();          // 0 wait, 1 scanning, 2 live, 3 no list
     public static native String status();
     public static native int fetch(float[] data, String[] names);

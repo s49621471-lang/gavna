@@ -6,7 +6,6 @@ import com.esp.Native;
 import android.app.Activity;
 import android.app.Application;
 import android.os.Bundle;
-import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.ViewGroup;
 
@@ -58,16 +57,15 @@ public class EspOverlayApp extends androidx.multidex.MultiDexApplication {
         if (!a.getClass().getName().contains("unity3d")) return;
 
         try {
-            DisplayMetrics dm = new DisplayMetrics();
-            a.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
-
             overlay = new EspOverlay(a);
             a.addContentView(overlay, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
             overlay.bringToFront();
 
-            Native.start(dm.widthPixels, dm.heightPixels);
+            // Size comes from the view's own onSizeChanged, not from the display:
+            // under MIUI freeform or split screen the window is a fraction of it.
+            Native.start(0, 0);
             Log.i("bpesp", "overlay attached to " + a.getClass().getName());
         } catch (Throwable t) {
             Log.e("bpesp", "attach failed", t);

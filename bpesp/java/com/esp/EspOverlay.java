@@ -26,19 +26,19 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     }
 
     private final Opt[] opts = {
-            new Opt("master",   "ESP enabled",     true),
-            new Opt("box",      "Box",             true),
-            new Opt("corners",  "Corner box",      false),
-            new Opt("name",     "Name",            true),
-            new Opt("hpbar",    "Health bar",      true),
-            new Opt("armorbar", "Armor bar",       true),
-            new Opt("hptext",   "Health number",   false),
-            new Opt("dist",     "Distance",        true),
-            new Opt("kd",       "Kills / deaths",  false),
-            new Opt("snap",     "Snap line",       false),
-            new Opt("look",     "Look direction",  false),
-            new Opt("dead",     "Show dead",       false),
-            new Opt("status",   "Debug status",    true),
+            new Opt("master",   "ESP on",    true),
+            new Opt("box",      "Box",       true),
+            new Opt("corners",  "Corners",   false),
+            new Opt("name",     "Name",      true),
+            new Opt("hpbar",    "HP bar",    true),
+            new Opt("armorbar", "Armor",     true),
+            new Opt("hptext",   "HP text",   false),
+            new Opt("dist",     "Distance",  true),
+            new Opt("kd",       "K / D",     false),
+            new Opt("snap",     "Snapline",  false),
+            new Opt("look",     "Look dir",  false),
+            new Opt("dead",     "Dead",      false),
+            new Opt("status",   "Status",    true),
     };
 
     private boolean on(String key) {
@@ -50,6 +50,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill   = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text   = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mtext  = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect   = new RectF();
 
@@ -61,12 +62,17 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
     /** Latches if a native call ever throws, so one failure cannot kill the game. */
     private boolean nativeDead;
+    private int lastCount;
 
     // ---- handle / menu state -----------------------------------------------
-    private final float barW, barH, barTouchH, rowH, panelW;
+    private final float barW, barH, barTouchH;
     private float handleX = -1, handleY = -1;
     private boolean menuOpen, dragging, onHandle;
     private float downX, downY, grabDX, grabDY;
+
+    // menu geometry, recomputed whenever the window size changes
+    private int cols = 1, rowsPerCol = 1;
+    private float rowH, panelW, headerH, colW;
 
     public EspOverlay(Context ctx) {
         super(ctx);
@@ -76,8 +82,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         barW      = 132 * d;
         barH      = 5 * d;
         barTouchH = 44 * d;
-        rowH      = 34 * d;
-        panelW    = 190 * d;
 
         handleX = prefs.getFloat("bx", -1);
         handleY = prefs.getFloat("by", -1);
@@ -88,6 +92,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         fill.setStyle(Paint.Style.FILL);
         text.setTextSize(11 * d);
         text.setFakeBoldText(true);
+        mtext.setFakeBoldText(true);
         shadow.setTextSize(11 * d);
         shadow.setFakeBoldText(true);
         shadow.setColor(0xC0000000);
@@ -106,11 +111,52 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         if (isAttachedToWindow()) Choreographer.getInstance().postFrameCallback(this);
     }
 
+    @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+        super.onSizeChanged(w, h, ow, oh);
+        // The view is the game's surface, so this is the projection target the
+        // native side should fall back to.
+        if (!nativeDead) {
+            try { Native.viewport(w, h); } catch (Throwable ignored) { }
+        }
+        layoutMenu();
+        if (handleX > w || handleY > h) { handleX = -1; handleY = -1; }
+    }
+
     /** Screen size is unknown in the constructor, so the bar is placed on first draw. */
     private void placeHandle() {
         if (handleX >= 0 && handleY >= 0) return;
         handleX = getWidth() * 0.5f;
         handleY = getHeight() - 14 * d;
+    }
+
+    /**
+     * Picks a column count and row height that actually fit the window. The game
+     * can be in freeform or split screen, where the usable height is a fraction
+     * of the display and a single 13-row column runs off the top.
+     */
+    private void layoutMenu() {
+        float availH = getHeight() - 12 * d;
+        float availW = getWidth() - 12 * d;
+        if (availH <= 0 || availW <= 0) return;
+
+        headerH = 26 * d;
+        rowH    = 30 * d;
+
+        for (cols = 1; cols <= 3; cols++) {
+            rowsPerCol = (opts.length + cols - 1) / cols;
+            if (headerH + rowsPerCol * rowH <= availH) break;
+        }
+        if (cols > 3) cols = 3;
+        rowsPerCol = (opts.length + cols - 1) / cols;
+
+        // Three columns still too tall: shrink the rows to whatever is left.
+        float need = headerH + rowsPerCol * rowH;
+        if (need > availH) rowH = Math.max(16 * d, (availH - headerH) / rowsPerCol);
+
+        panelW = Math.min(cols * 150 * d, availW);
+        colW   = panelW / cols;
+        // text has to survive both a squeezed row and a narrow column
+        mtext.setTextSize(Math.min(11 * d, Math.min(rowH * 0.38f, colW * 0.105f)));
     }
 
     // ---- drawing -----------------------------------------------------------
@@ -138,7 +184,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         if (nativeDead)      s = "native unavailable";
         else if (state == 0) s = "waiting for il2cpp";
         else if (state == 1) s = "scanning: " + Native.status();
-        else if (state == 2) s = "live";
+        else if (state == 2) s = "live \u00b7 " + lastCount + " ent";
         else if (state < 0)  s = "starting";
         else                 s = Native.status();
         label(c, "[esp] " + s, 10 * d, 18 * d, state == 2 ? 0xFF66FF99 : 0xFFFFCC44);
@@ -146,6 +192,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
     private void drawEntities(Canvas c) {
         int n = Native.fetch(buf, names);
+        lastCount = n;
         boolean showDead = on("dead");
         float cx = getWidth() * 0.5f, cy = getHeight();
 
@@ -288,7 +335,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             && Math.abs(y - handleY) <= barTouchH * 0.5f;
     }
 
-    private float panelHeight() { return rowH * (opts.length + 1); }
+    private float panelHeight() { return headerH + rowsPerCol * rowH; }
 
     private float panelLeft() {
         float l = handleX - panelW * 0.5f;
@@ -300,37 +347,63 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     /** Menu opens upward from the bar, since the bar lives at the bottom. */
     private float panelTop() {
         float t = handleY - barTouchH * 0.5f - 8 * d - panelHeight();
-        if (t < 0) t = 0;
         if (t + panelHeight() > getHeight()) t = getHeight() - panelHeight();
+        if (t < 0) t = 0;   // top clamp last: never push the header off-screen
         return t;
     }
 
+    private void menuText(Canvas c, String s, float x, float y, int col) {
+        c.drawText(s, x + 1, y + 1, shadow);
+        mtext.setColor(col);
+        c.drawText(s, x, y, mtext);
+    }
+
     private void drawMenu(Canvas c) {
+        if (rowH <= 0) layoutMenu();
         float l = panelLeft(), t = panelTop(), h = panelHeight();
 
         rect.set(l, t, l + panelW, t + h);
-        fill.setColor(0xE81A1A1A);
+        fill.setColor(0xEE1A1A1A);
         c.drawRoundRect(rect, 8 * d, 8 * d, fill);
         stroke.setColor(0xFF34C759);
         stroke.setStrokeWidth(1.5f * d);
         c.drawRoundRect(rect, 8 * d, 8 * d, stroke);
 
-        label(c, "BLOCKPOST ESP", l + 12 * d, t + rowH * 0.65f, 0xFF34C759);
+        float saved = shadow.getTextSize();
+        shadow.setTextSize(mtext.getTextSize());
+        menuText(c, "BLOCKPOST ESP", l + 10 * d, t + headerH * 0.72f, 0xFF34C759);
 
+        float knob = Math.min(6 * d, rowH * 0.22f);
         for (int i = 0; i < opts.length; i++) {
-            float ry = t + rowH * (i + 1);
             Opt o = opts[i];
+            float cx0 = l + (i / rowsPerCol) * colW;
+            float ry  = t + headerH + (i % rowsPerCol) * rowH;
+            float mid = ry + rowH * 0.5f;
 
-            rect.set(l + panelW - 44 * d, ry + 9 * d, l + panelW - 12 * d, ry + 25 * d);
+            rect.set(cx0 + colW - 36 * d, mid - knob * 1.35f,
+                     cx0 + colW - 10 * d, mid + knob * 1.35f);
             fill.setColor(o.on ? 0xFF34C759 : 0xFF4A4A4A);
-            c.drawRoundRect(rect, 8 * d, 8 * d, fill);
+            c.drawRoundRect(rect, knob * 1.35f, knob * 1.35f, fill);
             fill.setColor(0xFFFFFFFF);
-            c.drawCircle(o.on ? rect.right - 8 * d : rect.left + 8 * d,
-                         (rect.top + rect.bottom) * 0.5f, 6 * d, fill);
+            c.drawCircle(o.on ? rect.right - knob : rect.left + knob, mid, knob, fill);
 
-            label(c, o.label, l + 12 * d, ry + rowH * 0.65f,
-                  o.on ? 0xFFFFFFFF : 0xFF9E9E9E);
+            menuText(c, o.label, cx0 + 10 * d, mid + mtext.getTextSize() * 0.35f,
+                     o.on ? 0xFFFFFFFF : 0xFF9E9E9E);
         }
+        shadow.setTextSize(saved);
+    }
+
+    /** Option index under a point inside the panel, or -1. */
+    private int optionAt(float x, float y) {
+        float l = panelLeft(), t = panelTop();
+        if (x < l || x > l + panelW || y < t + headerH || y > t + panelHeight()) return -1;
+        int col = (int) ((x - l) / colW);
+        int row = (int) ((y - t - headerH) / rowH);
+        if (col < 0) col = 0;
+        if (col >= cols) col = cols - 1;
+        if (row < 0 || row >= rowsPerCol) return -1;
+        int idx = col * rowsPerCol + row;
+        return idx < opts.length ? idx : -1;
     }
 
     // ---- input -------------------------------------------------------------
@@ -351,10 +424,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                 if (menuOpen) {
                     float l = panelLeft(), t = panelTop();
                     if (x >= l && x <= l + panelW && y >= t && y <= t + panelHeight()) {
-                        int row = (int) ((y - t) / rowH) - 1;
-                        if (row >= 0 && row < opts.length) {
-                            opts[row].on = !opts[row].on;
-                            prefs.edit().putBoolean("o_" + opts[row].key, opts[row].on).apply();
+                        int idx = optionAt(x, y);
+                        if (idx >= 0) {
+                            opts[idx].on = !opts[idx].on;
+                            prefs.edit().putBoolean("o_" + opts[idx].key, opts[idx].on).apply();
                         }
                         return true;
                     }
