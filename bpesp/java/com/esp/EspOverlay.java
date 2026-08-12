@@ -85,7 +85,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                     new String[] { "Head", "Chest", "Hip", "Nearest" }),
             new Opt(TAB_COMBAT,  "rcs",      "Recoil control", false),
             new Opt(TAB_COMBAT,  "trigger",  "Triggerbot",     false),
-            new Opt(TAB_COMBAT,  "setfire",  "Set fire button",false),
+            new Opt(TAB_COMBAT,  "forget",   "Relearn fire",   false),
             new Opt(TAB_COMBAT,  "fovring",  "Show FOV circle",true),
             new Opt(TAB_COMBAT,  "aimdebug", "Aim indicator",  true),
     };
@@ -148,6 +148,16 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private float fireX = -1, fireY = -1;
     private boolean firing;
 
+    // Tap clusters, used to find the fire button without asking and without
+    // touching Unity. The overlay sees every press before the game does, and the
+    // fire button is by a wide margin the most pressed spot on the right side.
+    private static final int MAX_CLUSTERS = 8;
+    private final float[] tapX = new float[MAX_CLUSTERS];
+    private final float[] tapY = new float[MAX_CLUSTERS];
+    private final int[]   tapN = new int[MAX_CLUSTERS];
+    private int clusters;
+    private int fireTaps;
+
     // ---- handle / menu state -----------------------------------------------
     private final float barW, barH, barTouchH;
     private boolean menuOpen;
@@ -175,6 +185,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         for (Slider s : sliders) s.value = prefs.getFloat("s_" + s.key, s.value);
         fireX = prefs.getFloat("fireX", -1);
         fireY = prefs.getFloat("fireY", -1);
+        fireTaps = prefs.getInt("fireTaps", 0);
         tab = prefs.getInt("tab", 0);
         if (tab >= TAB_NAMES.length) tab = 0;
 
@@ -327,7 +338,9 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             String s = state == 2 ? "aim: steering"
                      : state == 1 ? "aim: probing"
                                   : "aim: searching";
-            if (on("trigger") && fireX < 0) s += "  (fire button not set)";
+            if (on("trigger"))
+                s += fireX > 0 ? ("  fire: learned x" + fireTaps)
+                               : "  fire: learning, keep shooting";
             label(c, s, 10 * d, 34 * d,
                   state == 2 ? 0xFF66FF99 : (state == 1 ? 0xFFFFCC44 : 0xFFFF9E9E));
         }
@@ -339,6 +352,56 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             firing = shouldFire;
             sendTouch(shouldFire ? MotionEvent.ACTION_DOWN : MotionEvent.ACTION_UP, fireX, fireY);
         }
+    }
+
+    /**
+     * Folds a press into the nearest cluster and re-picks the fire point. Only
+     * the right of the screen is considered: the left half is the movement stick,
+     * which is dragged rather than tapped and would otherwise win on volume.
+     */
+    private void observeTap(float x, float y) {
+        if (fireTaps >= 200) return;                     // settled, stop churning
+        if (x < getWidth() * 0.5f) return;
+        if (Math.abs(y - handleY()) < barTouchH) return;  // our own handle
+
+        float radius = 70 * d;
+        for (int i = 0; i < clusters; i++) {
+            if (Math.hypot(x - tapX[i], y - tapY[i]) < radius) {
+                tapX[i] += (x - tapX[i]) * 0.25f;
+                tapY[i] += (y - tapY[i]) * 0.25f;
+                tapN[i]++;
+                pickFirePoint();
+                return;
+            }
+        }
+        if (clusters < MAX_CLUSTERS) {
+            tapX[clusters] = x;
+            tapY[clusters] = y;
+            tapN[clusters] = 1;
+            clusters++;
+        }
+    }
+
+    private void pickFirePoint() {
+        int best = -1;
+        for (int i = 0; i < clusters; i++)
+            if (tapN[i] >= 4 && (best < 0 || tapN[i] > tapN[best])) best = i;
+        if (best < 0) return;
+
+        fireX = tapX[best];
+        fireY = tapY[best];
+        fireTaps = tapN[best];
+        prefs.edit().putFloat("fireX", fireX).putFloat("fireY", fireY)
+                    .putInt("fireTaps", fireTaps).apply();
+        pushConfig();
+    }
+
+    private void forgetFirePoint() {
+        clusters = 0;
+        fireTaps = 0;
+        fireX = fireY = -1;
+        prefs.edit().remove("fireX").remove("fireY").remove("fireTaps").apply();
+        pushConfig();
     }
 
     private void sendTouch(int action, float x, float y) {
@@ -698,20 +761,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             case MotionEvent.ACTION_DOWN: {
                 if (hitHandle(x, y)) { menuOpen = !menuOpen; return true; }
 
-                // Learning the fire button: the next tap anywhere outside the
-                // menu records where the game's trigger sits.
-                Opt setFire = opt("setfire");
-                if (setFire != null && setFire.on && !menuOpen) {
-                    fireX = x; fireY = y;
-                    setFire.on = false;
-                    prefs.edit().putFloat("fireX", x).putFloat("fireY", y)
-                                .putBoolean("o_setfire", false).apply();
-                    Log.i("bpesp", "fire button set to " + x + "," + y);
-                    pushConfig();
-                    return true;
-                }
-
-                if (!menuOpen) return false;
+                if (!menuOpen) { observeTap(x, y); return false; }
 
                 boolean inWindow = x >= winL && x <= winL + winW
                                 && y >= winT && y <= winT + winH;
@@ -738,6 +788,8 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                     if (o.choices != null) {
                         o.choice = (o.choice + 1) % o.choices.length;
                         prefs.edit().putInt("c_" + o.key, o.choice).apply();
+                    } else if (o.key.equals("forget")) {
+                        forgetFirePoint();
                     } else {
                         o.on = !o.on;
                         prefs.edit().putBoolean("o_" + o.key, o.on).apply();
