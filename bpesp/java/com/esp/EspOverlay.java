@@ -78,7 +78,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Opt(TAB_VISUALS, "kd",       "Kills / deaths", false),
             new Opt(TAB_VISUALS, "snap",     "Snap line",      false),
             new Opt(TAB_VISUALS, "team",     "Enemies only",   true),
-            new Opt(TAB_VISUALS, "status",   "Debug status",   true),
+            new Opt(TAB_VISUALS, "status",   "Debug status",   false),
 
             new Opt(TAB_COMBAT,  "aimbot",   "Aimbot",         false),
             new Opt(TAB_COMBAT,  "bone",     "Target",         true,

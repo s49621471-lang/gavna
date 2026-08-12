@@ -706,28 +706,40 @@ static bool unity_alive(void *obj) {
 }
 
 typedef void (*TransformEuler)(void *transform, Vec3 *v);
-static TransformEuler g_getEuler, g_setEuler;
-static void *g_mGetTransform;
+static TransformEuler g_getEulerI, g_setEulerI;      // icall fast path, often absent
+static void *g_mGetTransform, *g_mGetEuler, *g_mSetEuler;
 static bool  g_viewReady;
 
 static void resolve_view() {
     void *ue = unity_image();
     if (!ue) return;
 
+    // The injected icalls do not exist under those names in this build — both
+    // resolved to null — so the property accessors are the real path, which is
+    // also what the reference implementation uses.
     void *(*resolve)(const char *) =
         (void *(*)(const char *))dlsym(g_il2.handle, "il2cpp_resolve_icall");
     if (resolve) {
-        g_getEuler = (TransformEuler)resolve("UnityEngine.Transform::get_eulerAngles_Injected");
-        g_setEuler = (TransformEuler)resolve("UnityEngine.Transform::set_eulerAngles_Injected");
+        g_getEulerI = (TransformEuler)resolve("UnityEngine.Transform::get_eulerAngles_Injected");
+        g_setEulerI = (TransformEuler)resolve("UnityEngine.Transform::set_eulerAngles_Injected");
     }
 
+    void *tf = g_il2.class_from_name(ue, "UnityEngine", "Transform");
+    if (tf) {
+        g_mGetEuler = g_il2.class_get_method_from_name(tf, "get_eulerAngles", 0);
+        g_mSetEuler = g_il2.class_get_method_from_name(tf, "set_eulerAngles", 1);
+    }
     void *comp = g_il2.class_from_name(ue, "UnityEngine", "Component");
     if (comp) g_mGetTransform = g_il2.class_get_method_from_name(comp, "get_transform", 0);
 
-    g_viewReady = g_getEuler && g_setEuler && g_mGetTransform;
-    bplog("view: getEuler=%p setEuler=%p get_transform=%p -> %s",
-          (void *)g_getEuler, (void *)g_setEuler, g_mGetTransform,
-          g_viewReady ? "ready" : "UNAVAILABLE");
+    bool icall  = g_getEulerI && g_setEulerI;
+    bool method = g_mGetEuler && g_mSetEuler;
+    g_viewReady = g_mGetTransform && (icall || method);
+
+    bplog("view: icall get=%p set=%p | method get=%p set=%p | transform=%p -> %s",
+          (void *)g_getEulerI, (void *)g_setEulerI, g_mGetEuler, g_mSetEuler,
+          g_mGetTransform, g_viewReady ? (icall ? "ready (icall)" : "ready (method)")
+                                       : "UNAVAILABLE");
 }
 
 /** Applies a change to the camera's yaw and pitch, in degrees. */
@@ -737,12 +749,25 @@ static bool steer_view(void *cam, float dYaw, float dPitch) {
     if (!unity_alive(tr)) return false;
 
     Vec3 e{0, 0, 0};
-    g_getEuler(tr, &e);
+    if (g_getEulerI) {
+        g_getEulerI(tr, &e);
+    } else {
+        void *boxed = invoke(g_mGetEuler, tr, nullptr);
+        if (!boxed) return false;
+        e = rd<Vec3>(unbox(boxed), 0);
+    }
+
     e.x += dPitch;      // Unity: x is pitch, positive looking down
     e.y += dYaw;
     e.z = 0;            // never leave the horizon tilted
     if (e.x > 89.0f && e.x < 271.0f) e.x = (dPitch > 0) ? 89.0f : 271.0f;
-    g_setEuler(tr, &e);
+
+    if (g_setEulerI) {
+        g_setEulerI(tr, &e);
+    } else {
+        void *params[1] = { &e };      // value types are passed by data pointer
+        invoke(g_mSetEuler, tr, params);
+    }
     return true;
 }
 
