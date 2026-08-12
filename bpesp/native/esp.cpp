@@ -895,9 +895,18 @@ static void match_rigs(void **ents, int n) {
     }
 
     g_rigN = 0;
+    int noAnchor = 0;
     for (int c = 0; c < g_cacheN && g_rigN < MAX_ENT; c++) {
-        Vec3 anchor = bone_pos(g_cache[c].bone[3] ? g_cache[c].bone[3] : g_cache[c].bone[2]);
-        if (anchor.x == 0 && anchor.y == 0 && anchor.z == 0) continue;
+        // Any live bone will do as the anchor. Insisting on one particular slot
+        // meant a rig whose hips or spine happened to be unmapped or already
+        // destroyed was dropped whole, which is how the skeleton stopped
+        // animating even though the cache was healthy.
+        Vec3 anchor{0, 0, 0};
+        for (int k = 0; k < JOINTS && anchor.x == 0 && anchor.y == 0 && anchor.z == 0; k++) {
+            static const int ORDER[JOINTS] = { 3, 2, 1, 0, 8, 9, 4, 5, 10, 11, 6, 7 };
+            anchor = bone_pos(g_cache[c].bone[ORDER[k]]);
+        }
+        if (anchor.x == 0 && anchor.y == 0 && anchor.z == 0) { noAnchor++; continue; }
 
         void *best = nullptr;
         float bestD = 2.5f;
@@ -913,6 +922,13 @@ static void match_rigs(void **ents, int n) {
         Rig &rig = g_rig[g_rigN++];
         rig.ent = best;
         memcpy(rig.bone, g_cache[c].bone, sizeof(rig.bone));
+    }
+
+    static int lastReported = -1;
+    if (g_rigN != lastReported) {
+        lastReported = g_rigN;
+        bplog("bones: %d rig(s) matched of %d cached (%d had no live anchor)",
+              g_rigN, g_cacheN, noAnchor);
     }
 }
 
@@ -1075,7 +1091,9 @@ static Vec3 camera_pos(const Mat4 &v) {
 struct AimCand {
     void  *obj;
     size_t off;
-    int8_t formYaw, formPitch;
+    float  prev;
+    bool   havePrev;
+    int8_t kYaw, kPitch;         // +1 or -1, 0 = undecided
     int8_t hitsYaw, hitsPitch;
     float  accYaw, accPitch;     // camera travel survived while still matching
     bool   dead;                 // failed the live write check, never offer again
@@ -1085,34 +1103,16 @@ static AimCand g_aimCand[AIM_MAX_CAND];
 static int     g_aimCandN = 0;
 static bool    g_aimCollected = false;
 
+// A locked axis is described by angle = k * value + c, with k either +1 or -1.
+// Correlating on *changes* rather than absolute values means the offset c never
+// has to be guessed — it drops out of a difference — and it survives the frame
+// of lag between sampling the camera matrix and sampling the field, which
+// absolute matching at a degree and a half of tolerance did not.
 static void  *g_yawObj, *g_pitchObj;
 static size_t g_yawOff, g_pitchOff;
-static int8_t g_yawForm = -1, g_pitchForm = -1;
+static int8_t g_yawK, g_pitchK;          // 0 = not locked
+static float  g_yawC, g_pitchC;
 static bool   g_aimVerified = false;
-
-// form: 0:v  1:-v  2:v+180  3:v-180  4:-v+180  5:-v-180
-static float apply_form(int form, float v) {
-    switch (form) {
-        case 0: return v;
-        case 1: return -v;
-        case 2: return v + 180.0f;
-        case 3: return v - 180.0f;
-        case 4: return -v + 180.0f;
-        default: return -v - 180.0f;
-    }
-}
-
-/** Inverse of apply_form: what to store so the angle reads back as `want`. */
-static float unapply_form(int form, float want) {
-    switch (form) {
-        case 0: return want;
-        case 1: return -want;
-        case 2: return want - 180.0f;
-        case 3: return want + 180.0f;
-        case 4: return -(want - 180.0f);
-        default: return -(want + 180.0f);
-    }
-}
 
 static void aim_collect() {
     if (g_aimCollected) return;
@@ -1160,7 +1160,9 @@ static void aim_collect() {
                 AimCand &c = g_aimCand[g_aimCandN++];
                 c.obj = objs[i];
                 c.off = base + s * sizeof(float);
-                c.formYaw = c.formPitch = 0;
+                c.prev = 0;
+                c.havePrev = false;
+                c.kYaw = c.kPitch = 0;
                 c.hitsYaw = c.hitsPitch = 0;
                 c.accYaw = c.accPitch = 0;
                 c.dead = false;
@@ -1178,7 +1180,7 @@ static void aim_correlate(float yaw, float pitch) {
     static float lastYaw = 0, lastPitch = 0;
     static bool  have = false;
 
-    if (g_yawForm >= 0 && g_pitchForm >= 0) return;
+    if (g_yawK && g_pitchK) return;
     aim_collect();
     if (!g_aimCandN) return;
 
@@ -1201,47 +1203,61 @@ static void aim_correlate(float yaw, float pitch) {
         if (c.dead) continue;
         float v = rd<float>(c.obj, c.off);
         if (!(v == v) || fabsf(v) > 100000.0f) {
+            c.havePrev = false;
             c.hitsYaw = c.hitsPitch = 0;
             c.accYaw = c.accPitch = 0;
             continue;
         }
+        if (!c.havePrev) { c.prev = v; c.havePrev = true; continue; }
 
-        if (g_yawForm < 0 && yawMoved) {
-            bool hit = false;
-            for (int form = 0; form < 6; form++)
-                if (fabsf(angle_delta(apply_form(form, v), yaw)) < 1.5f) {
-                    if (c.hitsYaw == 0) c.formYaw = (int8_t)form;
-                    if (c.formYaw == form) { hit = true; break; }
-                }
-            if (hit) { c.hitsYaw++; c.accYaw += fabsf(dYaw); }
-            else     { c.hitsYaw = 0; c.accYaw = 0; }
+        float dv = angle_delta(c.prev, v);
+        c.prev = v;
 
-            // Enough samples *and* enough travel: a field has to follow the
-            // camera through a real sweep, not agree with it once.
+        if (!g_yawK && yawMoved) {
+            // Tolerance scales with the size of the turn: a fixed window is
+            // either too tight for a fast flick or too loose for a slow pan.
+            float tol = 2.0f + 0.15f * fabsf(dYaw);
+            int8_t k = 0;
+            if (fabsf(dv - dYaw) < tol)      k = 1;
+            else if (fabsf(dv + dYaw) < tol) k = -1;
+
+            if (k && (c.kYaw == 0 || c.kYaw == k)) {
+                c.kYaw = k;
+                c.hitsYaw++;
+                c.accYaw += fabsf(dYaw);
+            } else {
+                c.kYaw = 0; c.hitsYaw = 0; c.accYaw = 0;
+            }
+
             if (c.hitsYaw >= AIM_LOCK_HITS && c.accYaw >= AIM_LOCK_YAW) {
-                g_yawObj = c.obj; g_yawOff = c.off; g_yawForm = c.formYaw;
-                bplog("aim: yaw field locked at %p+0x%zx form=%d after %.0f deg",
-                      c.obj, c.off, c.formYaw, c.accYaw);
+                g_yawObj = c.obj; g_yawOff = c.off; g_yawK = c.kYaw;
+                g_yawC = angle_delta(c.kYaw * v, yaw);
+                bplog("aim: yaw locked at %p+0x%zx k=%d c=%.1f after %.0f deg over %d samples",
+                      c.obj, c.off, c.kYaw, g_yawC, c.accYaw, c.hitsYaw);
             }
         }
 
-        if (g_pitchForm < 0 && pitchMoved) {
-            // Never accept the same address for both axes.
-            if (g_yawForm >= 0 && c.obj == g_yawObj && c.off == g_yawOff) continue;
+        if (!g_pitchK && pitchMoved) {
+            if (g_yawK && c.obj == g_yawObj && c.off == g_yawOff) continue;
 
-            bool hit = false;
-            for (int form = 0; form < 2; form++)
-                if (fabsf(angle_delta(apply_form(form, v), pitch)) < 1.5f) {
-                    if (c.hitsPitch == 0) c.formPitch = (int8_t)form;
-                    if (c.formPitch == form) { hit = true; break; }
-                }
-            if (hit) { c.hitsPitch++; c.accPitch += fabsf(dPitch); }
-            else     { c.hitsPitch = 0; c.accPitch = 0; }
+            float tol = 1.0f + 0.15f * fabsf(dPitch);
+            int8_t k = 0;
+            if (fabsf(dv - dPitch) < tol)      k = 1;
+            else if (fabsf(dv + dPitch) < tol) k = -1;
+
+            if (k && (c.kPitch == 0 || c.kPitch == k)) {
+                c.kPitch = k;
+                c.hitsPitch++;
+                c.accPitch += fabsf(dPitch);
+            } else {
+                c.kPitch = 0; c.hitsPitch = 0; c.accPitch = 0;
+            }
 
             if (c.hitsPitch >= AIM_LOCK_HITS && c.accPitch >= AIM_LOCK_PITCH) {
-                g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchForm = c.formPitch;
-                bplog("aim: pitch field locked at %p+0x%zx form=%d after %.0f deg",
-                      c.obj, c.off, c.formPitch, c.accPitch);
+                g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchK = c.kPitch;
+                g_pitchC = angle_delta(c.kPitch * v, pitch);
+                bplog("aim: pitch locked at %p+0x%zx k=%d c=%.1f after %.0f deg over %d samples",
+                      c.obj, c.off, c.kPitch, g_pitchC, c.accPitch, c.hitsPitch);
             }
         }
     }
@@ -1270,20 +1286,21 @@ static void aim_forget(const char *why) {
         c.hitsYaw = c.hitsPitch = 0;
         c.accYaw = c.accPitch = 0;
     }
-    g_yawForm = g_pitchForm = -1;
+    g_yawK = g_pitchK = 0;
     g_yawObj = g_pitchObj = nullptr;
     g_aimVerified = false;
 }
 
-static bool aim_ready() { return g_yawForm >= 0 && g_pitchForm >= 0 && g_aimVerified; }
+static bool aim_ready() { return g_yawK && g_pitchK && g_aimVerified; }
 
+/** angle = k*v + c, so v = k*(angle - c). NaN means "leave this axis alone". */
 static void aim_write(float yaw, float pitch) {
-    if (g_yawForm >= 0 && yaw == yaw) {
-        float v = unapply_form(g_yawForm, yaw);
+    if (g_yawK && yaw == yaw) {
+        float v = g_yawK * angle_delta(g_yawC, yaw);
         memcpy((uint8_t *)g_yawObj + g_yawOff, &v, sizeof(float));
     }
-    if (g_pitchForm >= 0 && pitch == pitch) {   // NaN means "leave this axis"
-        float v = unapply_form(g_pitchForm, pitch);
+    if (g_pitchK && pitch == pitch) {
+        float v = g_pitchK * (pitch - g_pitchC);
         memcpy((uint8_t *)g_pitchObj + g_pitchOff, &v, sizeof(float));
     }
 }
@@ -1438,7 +1455,7 @@ static void *poll_thread(void *) {
         } else {
             g_rigN = 0;
         }
-        bool probing = wantAim && g_yawForm >= 0 && g_pitchForm >= 0 && !g_aimVerified;
+        bool probing = wantAim && g_yawK && g_pitchK && !g_aimVerified;
         if (probing) aim_verify(camYaw);
 
         // Team. The local player is the entity whose position is never
