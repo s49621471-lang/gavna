@@ -1053,10 +1053,14 @@ static float deg_pitch(Vec3 f) {
     return -asinf(y) * 57.29578f;
 }
 
-/** Signed shortest way round from a to b, in degrees. */
+/** Signed shortest way round from a to b, in degrees, always within +-180.
+ *  fmodf keeps the sign of its dividend, so the difference has to be pushed
+ *  positive before it is folded — otherwise anything more than a turn apart
+ *  comes back out of range, which is how a -401 degree offset got computed. */
 static float angle_delta(float a, float b) {
-    float d = fmodf(b - a + 540.0f, 360.0f) - 180.0f;
-    return d;
+    float d = fmodf(b - a + 180.0f, 360.0f);
+    if (d < 0.0f) d += 360.0f;
+    return d - 180.0f;
 }
 
 /** Camera world position, recovered from the rigid view transform: -R^T * t. */
@@ -1103,15 +1107,15 @@ static AimCand g_aimCand[AIM_MAX_CAND];
 static int     g_aimCandN = 0;
 static bool    g_aimCollected = false;
 
-// A locked axis is described by angle = k * value + c, with k either +1 or -1.
-// Correlating on *changes* rather than absolute values means the offset c never
-// has to be guessed — it drops out of a difference — and it survives the frame
-// of lag between sampling the camera matrix and sampling the field, which
-// absolute matching at a degree and a half of tolerance did not.
+// A locked axis is known only by its sign: the field moves with the camera (+1)
+// or against it (-1). No offset is kept, because the game's yaw turned out to be
+// an unwrapped accumulator — it had run past -400 degrees — so there is no fixed
+// constant relating it to a wrapped heading. Steering is therefore relative:
+// read the field, add the change we want, write it back. That is immune to the
+// accumulator, to whatever origin the field uses, and to wrapping.
 static void  *g_yawObj, *g_pitchObj;
 static size_t g_yawOff, g_pitchOff;
 static int8_t g_yawK, g_pitchK;          // 0 = not locked
-static float  g_yawC, g_pitchC;
 static bool   g_aimVerified = false;
 
 static void aim_collect() {
@@ -1231,9 +1235,8 @@ static void aim_correlate(float yaw, float pitch) {
 
             if (c.hitsYaw >= AIM_LOCK_HITS && c.accYaw >= AIM_LOCK_YAW) {
                 g_yawObj = c.obj; g_yawOff = c.off; g_yawK = c.kYaw;
-                g_yawC = angle_delta(c.kYaw * v, yaw);
-                bplog("aim: yaw locked at %p+0x%zx k=%d c=%.1f after %.0f deg over %d samples",
-                      c.obj, c.off, c.kYaw, g_yawC, c.accYaw, c.hitsYaw);
+                bplog("aim: yaw locked at %p+0x%zx k=%d (value %.1f) after %.0f deg over %d samples",
+                      c.obj, c.off, c.kYaw, v, c.accYaw, c.hitsYaw);
             }
         }
 
@@ -1255,9 +1258,8 @@ static void aim_correlate(float yaw, float pitch) {
 
             if (c.hitsPitch >= AIM_LOCK_HITS && c.accPitch >= AIM_LOCK_PITCH) {
                 g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchK = c.kPitch;
-                g_pitchC = angle_delta(c.kPitch * v, pitch);
-                bplog("aim: pitch locked at %p+0x%zx k=%d c=%.1f after %.0f deg over %d samples",
-                      c.obj, c.off, c.kPitch, g_pitchC, c.accPitch, c.hitsPitch);
+                bplog("aim: pitch locked at %p+0x%zx k=%d (value %.1f) after %.0f deg over %d samples",
+                      c.obj, c.off, c.kPitch, v, c.accPitch, c.hitsPitch);
             }
         }
     }
@@ -1293,14 +1295,14 @@ static void aim_forget(const char *why) {
 
 static bool aim_ready() { return g_yawK && g_pitchK && g_aimVerified; }
 
-/** angle = k*v + c, so v = k*(angle - c). NaN means "leave this axis alone". */
-static void aim_write(float yaw, float pitch) {
-    if (g_yawK && yaw == yaw) {
-        float v = g_yawK * angle_delta(g_yawC, yaw);
+/** Adds a change to each axis in place. Zero leaves an axis alone. */
+static void aim_nudge(float dYaw, float dPitch) {
+    if (g_yawK && dYaw != 0.0f && dYaw == dYaw) {
+        float v = rd<float>(g_yawObj, g_yawOff) + g_yawK * dYaw;
         memcpy((uint8_t *)g_yawObj + g_yawOff, &v, sizeof(float));
     }
-    if (g_pitchK && pitch == pitch) {
-        float v = g_pitchK * (pitch - g_pitchC);
+    if (g_pitchK && dPitch != 0.0f && dPitch == dPitch) {
+        float v = rd<float>(g_pitchObj, g_pitchOff) + g_pitchK * dPitch;
         memcpy((uint8_t *)g_pitchObj + g_pitchOff, &v, sizeof(float));
     }
 }
@@ -1314,24 +1316,28 @@ static void aim_write(float yaw, float pitch) {
  */
 static void aim_verify(float camYaw) {
     static int    phase = 0;
-    static float  wanted = 0, before = 0;
+    static float  target = 0, before = 0;
     static double at = 0;
 
     if (phase == 0) {
         before = camYaw;
-        wanted = camYaw + 6.0f;
-        aim_write(wanted, 0.0f / 0.0f);   // pitch left alone during the probe
+        target = camYaw + 8.0f;
         at = now_s();
         phase = 1;
-        return;
     }
 
+    // Closed loop rather than a single write: the game reasserts its own view
+    // every frame, so one nudge can be overwritten before the camera ever
+    // reflects it. Steer towards the target each tick until it is reached.
+    float remaining = angle_delta(camYaw, target);
+    aim_nudge(remaining, 0.0f);
+
     float moved = angle_delta(before, camYaw);
-    if (moved > 2.0f) {
+    if (fabsf(moved) > 3.0f) {
         g_aimVerified = true;
         phase = 0;
         bplog("aim: write confirmed, camera followed %.1f deg", moved);
-    } else if (now_s() - at > 0.6) {
+    } else if (now_s() - at > 1.0) {
         phase = 0;
         aim_forget("write had no effect on the camera");
     }
@@ -1594,18 +1600,14 @@ static void *poll_thread(void *) {
         }
 
         // ---- aim actuation -------------------------------------------------
-        float wantYaw = camYaw, wantPitch = camPitch;
-        bool  writeAim = false;
+        float dYawWanted = 0, dPitchWanted = 0;
 
         if (C.rcs && havePrevPitch && aim_ready()) {
             // Recoil pushes the view up, which drives pitch negative. Only a
             // kick sharper than deliberate look-up input is fought, and only
             // downward, so ordinary aiming is left alone.
             float dp = camPitch - prevPitch;
-            if (dp < -0.15f) {
-                wantPitch = camPitch - dp * (C.rcsPower / 100.0f);
-                writeAim = true;
-            }
+            if (dp < -0.15f) dPitchWanted -= dp * (C.rcsPower / 100.0f);
         }
 
         if (C.aimbot && haveTarget && aim_ready()) {
@@ -1613,17 +1615,16 @@ static void *poll_thread(void *) {
             float m = sqrtf(dx * dx + dy * dy + dz * dz);
             if (m > 0.01f) {
                 Vec3 want{dx / m, dy / m, dz / m};
-                float ty = deg_yaw(want), tp = deg_pitch(want);
                 float k = C.speed / 100.0f;
                 if (k > 1) k = 1;
                 if (k < 0.01f) k = 0.01f;
-                wantYaw   = camYaw   + angle_delta(camYaw, ty) * k;
-                wantPitch = wantPitch + (tp - wantPitch) * k;
-                writeAim = true;
+                dYawWanted   += angle_delta(camYaw, deg_yaw(want)) * k;
+                dPitchWanted += (deg_pitch(want) - camPitch) * k;
             }
         }
 
-        if (writeAim && !probing) aim_write(wantYaw, wantPitch);
+        if (!probing && (dYawWanted != 0 || dPitchWanted != 0))
+            aim_nudge(dYawWanted, dPitchWanted);
         prevPitch = camPitch;
         havePrevPitch = true;
 
