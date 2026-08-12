@@ -1,10 +1,10 @@
 # dist — split APK
 
-`BLOCKPOST-ESP.apk` is 307 MB, past GitHub's 100 MB per-file limit, so it is
-stored here as seven `.partNN` chunks. Concatenating them in order reproduces
-the signed APK byte for byte.
+`BLOCKPOST-ESP.apk` is 344 MB (game 1.00f4), past GitHub's 100 MB per-file
+limit, so it is stored here as eight `.partNN` chunks. Concatenating them in
+order reproduces the signed APK byte for byte.
 
-    md5  b48d7674d2b53290518ce18dd7fc75d8  BLOCKPOST-ESP.apk
+    md5  66f90cb975eee31dcb69a1defdbf9b03  BLOCKPOST-ESP.apk
 
 ## Termux — fetch and rejoin
 
@@ -13,11 +13,11 @@ Downloads the parts straight from raw.githubusercontent.com, no clone:
 ```sh
 pkg install -y curl coreutils
 B=https://raw.githubusercontent.com/s49621471-lang/gavna/claude/chat-session-wsivnr/bpesp/dist
-for i in 00 01 02 03 04 05 06; do
+for i in 00 01 02 03 04 05 06 07; do
   curl -fL# -o BLOCKPOST-ESP.apk.part$i $B/BLOCKPOST-ESP.apk.part$i
 done
 cat BLOCKPOST-ESP.apk.part?? > BLOCKPOST-ESP.apk && rm BLOCKPOST-ESP.apk.part??
-md5sum BLOCKPOST-ESP.apk     # b48d7674d2b53290518ce18dd7fc75d8
+md5sum BLOCKPOST-ESP.apk     # 66f90cb975eee31dcb69a1defdbf9b03
 ```
 
 Then install it:

@@ -1,9 +1,14 @@
 # bpesp — BLOCKPOST ESP, no root
 
-Player ESP for BLOCKPOST (`com.skullcapstudios.bps`, tested against 1.00f3,
+Player ESP for BLOCKPOST (`com.skullcapstudios.bps`, built against 1.00f4,
 arm64-v8a). Ships as a patched APK: no root, no Xposed/LSPosed, no Frida, no
 separate injector process. Everything runs inside the game's own process
 because it *is* part of the app after patching.
+
+1.00f4 ships the same game code as 1.00f3 — `global-metadata.dat`,
+`libil2cpp.so` and all eight dex files are byte-identical between the two, so
+every offset here carries over untouched. What the update actually changed is
+the manifest version, a repacked `libmain.so`, and an added armeabi-v7a ABI.
 
 ## What it draws
 
