@@ -104,10 +104,7 @@ struct Resolved {
     char  playerName[64] = {0};
     bool  offsetsExact = false;
 
-    void  *ownerStaticData = nullptr;
-    size_t rootOff  = 0;
-    size_t chainOff = NO_HOP;
-    int    kind     = 0;            // 1 = T[], 2 = List<T>
+    void *objectCls = nullptr;      // UnityEngine.Object, for the scene sweep
 
     size_t oSlot = OFF_SLOT,      oName  = OFF_NAME,        oHp    = OFF_HEALTH;
     size_t oArm  = OFF_ARMOR,     oKill  = OFF_KILLS,       oDeath = OFF_DEATHS;
@@ -381,84 +378,65 @@ static int container_kind(void *type) {
     return kind;
 }
 
-static bool find_container() {
-    size_t n = g_il2.image_get_class_count(R.image);
-    int withStatics = 0;
+// A place an entity container might live. Several will match on type and only
+// one of them is ever populated, so every candidate is kept and the populated
+// one is chosen by counting live elements each frame.
+#define MAX_CAND 48
 
-    for (size_t i = 0; i < n; i++) {
-        void *cls = (void *)g_il2.image_get_class(R.image, i);
-        if (!cls) continue;
-        void *sd = g_il2.class_get_static_field_data(cls);
-        if (!sd) continue;
-        withStatics++;
+struct Cand {
+    void  *base     = nullptr;   // static field block, or null when cls is set
+    void  *cls      = nullptr;   // scene-resident holder, instances looked up live
+    size_t rootOff  = 0;
+    size_t chainOff = NO_HOP;
+    int    kind     = 0;         // 1 = T[], 2 = List<T>
+    int    lastCount = 0;
+    char   desc[112] = {0};
+};
 
-        void *iter = nullptr, *f;
-        while ((f = g_il2.class_get_fields(cls, &iter)) != nullptr) {
-            if (!(g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC)) continue;
-            int k = container_kind(g_il2.field_get_type(f));
-            if (!k) continue;
-            R.ownerStaticData = sd;
-            R.rootOff  = g_il2.field_get_offset(f);
-            R.chainOff = NO_HOP;
-            R.kind     = k;
-            bplog("container: static %s.%s kind=%d off=0x%zx",
-                  cls_name(cls), g_il2.field_get_name(f), k, R.rootOff);
-            return true;
-        }
-    }
+static Cand g_cand[MAX_CAND];
+static int  g_candCount = 0;
+static int  g_bestCand  = -1;
 
-    // Singleton pattern: static Manager instance; instance.list
-    for (size_t i = 0; i < n; i++) {
-        void *cls = (void *)g_il2.image_get_class(R.image, i);
-        if (!cls) continue;
-        void *sd = g_il2.class_get_static_field_data(cls);
-        if (!sd) continue;
-
-        void *iter = nullptr, *f;
-        while ((f = g_il2.class_get_fields(cls, &iter)) != nullptr) {
-            if (!(g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC)) continue;
-            void *fc = g_il2.class_from_type(g_il2.field_get_type(f));
-            if (!fc || g_il2.class_is_valuetype(fc)) continue;
-
-            size_t sOff = g_il2.field_get_offset(f);
-            void *inst = rd<void *>(sd, sOff);
-            if (!inst) continue;
-
-            void *it2 = nullptr, *f2;
-            while ((f2 = g_il2.class_get_fields(fc, &it2)) != nullptr) {
-                if (g_il2.field_get_flags(f2) & FIELD_ATTRIBUTE_STATIC) continue;
-                int k = container_kind(g_il2.field_get_type(f2));
-                if (!k) continue;
-                R.ownerStaticData = sd;
-                R.rootOff  = sOff;
-                R.chainOff = g_il2.field_get_offset(f2);
-                R.kind     = k;
-                bplog("container: %s.%s -> .%s kind=%d",
-                      cls_name(cls), g_il2.field_get_name(f),
-                      g_il2.field_get_name(f2), k);
-                return true;
-            }
-        }
-    }
-
-    bplog("no container yet (%d classes with static data, looking for %s[] or List<%s>)",
-          withStatics, R.playerName, R.playerName);
-    return false;
+static void add_cand(const Cand &c) {
+    if (g_candCount >= MAX_CAND) return;
+    for (int i = 0; i < g_candCount; i++)
+        if (g_cand[i].base == c.base && g_cand[i].cls == c.cls &&
+            g_cand[i].rootOff == c.rootOff && g_cand[i].chainOff == c.chainOff) return;
+    g_cand[g_candCount++] = c;
+    bplog("  candidate container: %s", c.desc);
 }
 
-static int read_entities(void **out, int cap) {
-    if (!R.ownerStaticData) return 0;
+/** UnityEngine.Object.FindObjectsOfType(typeof(cls)) */
+static void *find_objects(void *cls) {
+    if (!R.objectCls || !cls) return nullptr;
+    void *typeObj = g_il2.type_get_object(g_il2.class_get_type(cls));
+    if (!typeObj) return nullptr;
 
-    void *root = rd<void *>(R.ownerStaticData, R.rootOff);
+    void *params[2] = { typeObj, nullptr };
+    void *arr = invoke(g_il2.class_get_method_from_name(R.objectCls, "FindObjectsOfType", 1),
+                       nullptr, params);
+    if (!arr) {
+        bool inc = true;
+        params[1] = &inc;
+        arr = invoke(g_il2.class_get_method_from_name(R.objectCls, "FindObjectsOfType", 2),
+                     nullptr, params);
+    }
+    return arr;
+}
+
+/** Resolves one candidate to its element array and copies out non-null entries. */
+static int eval_cand(Cand &c, void *base, void **out, int cap) {
+    if (!base) return 0;
+    void *root = rd<void *>(base, c.rootOff);
     if (!root) return 0;
-    if (R.chainOff != NO_HOP) {
-        root = rd<void *>(root, R.chainOff);
+    if (c.chainOff != NO_HOP) {
+        root = rd<void *>(root, c.chainOff);
         if (!root) return 0;
     }
 
     void *arr = root;
     int count;
-    if (R.kind == 2) {
+    if (c.kind == 2) {
         arr   = rd<void *>(root, LIST_ITEMS_OFF);
         count = rd<int32_t>(root, LIST_SIZE_OFF);
         if (!arr) return 0;
@@ -475,6 +453,144 @@ static int read_entities(void **out, int cap) {
     int got = 0;
     for (int i = 0; i < count; i++) if (data[i]) out[got++] = data[i];
     return got;
+}
+
+/** For a scene-resident holder, tries every live instance and keeps the best. */
+static int eval_scene_cand(Cand &c, void **out, int cap) {
+    void *arr = find_objects(c.cls);
+    if (!arr) return 0;
+    size_t n = rd<uint64_t>(arr, 0x18);
+    if (n > 256) n = 256;
+    void **objs = (void **)IL2CPP_ARRAY_DATA(arr);
+
+    int best = 0;
+    void *tmp[MAX_ENT];
+    for (size_t i = 0; i < n; i++) {
+        if (!objs[i]) continue;
+        int got = eval_cand(c, objs[i], tmp, cap);
+        if (got > best) { best = got; memcpy(out, tmp, sizeof(void *) * got); }
+    }
+    return best;
+}
+
+static int eval_any(Cand &c, void **out, int cap) {
+    return c.cls ? eval_scene_cand(c, out, cap) : eval_cand(c, c.base, out, cap);
+}
+
+// --- collection passes ------------------------------------------------------
+static void collect_static_containers() {
+    for (int im = 0; im < g_imageCount; im++) {
+        size_t n = g_il2.image_get_class_count(g_images[im]);
+        for (size_t i = 0; i < n; i++) {
+            void *cls = (void *)g_il2.image_get_class(g_images[im], i);
+            if (!cls) continue;
+            void *sd = g_il2.class_get_static_field_data(cls);
+            if (!sd) continue;
+
+            void *iter = nullptr, *f;
+            while ((f = g_il2.class_get_fields(cls, &iter)) != nullptr) {
+                if (!(g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC)) continue;
+                size_t sOff = g_il2.field_get_offset(f);
+
+                int k = container_kind(g_il2.field_get_type(f));
+                if (k) {
+                    Cand c;
+                    c.base = sd; c.rootOff = sOff; c.chainOff = NO_HOP; c.kind = k;
+                    snprintf(c.desc, sizeof(c.desc), "static %s.%s kind=%d",
+                             cls_name(cls), g_il2.field_get_name(f), k);
+                    add_cand(c);
+                    continue;
+                }
+
+                // static Manager instance; instance.list
+                void *fc = g_il2.class_from_type(g_il2.field_get_type(f));
+                if (!fc || g_il2.class_is_valuetype(fc)) continue;
+                if (!rd<void *>(sd, sOff)) continue;
+
+                void *it2 = nullptr, *f2;
+                while ((f2 = g_il2.class_get_fields(fc, &it2)) != nullptr) {
+                    if (g_il2.field_get_flags(f2) & FIELD_ATTRIBUTE_STATIC) continue;
+                    int k2 = container_kind(g_il2.field_get_type(f2));
+                    if (!k2) continue;
+                    Cand c;
+                    c.base = sd; c.rootOff = sOff;
+                    c.chainOff = g_il2.field_get_offset(f2); c.kind = k2;
+                    snprintf(c.desc, sizeof(c.desc), "static %s.%s -> .%s kind=%d",
+                             cls_name(cls), g_il2.field_get_name(f),
+                             g_il2.field_get_name(f2), k2);
+                    add_cand(c);
+                }
+            }
+        }
+    }
+}
+
+/** The list is very often an instance field on a scene component, reachable
+ *  from no static at all. Sweep live objects and remember the holder classes. */
+static void collect_scene_containers() {
+    void *ue = unity_image();
+    void *mb = ue ? g_il2.class_from_name(ue, "UnityEngine", "MonoBehaviour") : nullptr;
+    if (!mb) return;
+
+    void *arr = find_objects(mb);
+    if (!arr) { bplog("scene sweep: FindObjectsOfType(MonoBehaviour) returned nothing"); return; }
+    size_t n = rd<uint64_t>(arr, 0x18);
+    if (n > 8192) n = 8192;
+    void **objs = (void **)IL2CPP_ARRAY_DATA(arr);
+    bplog("scene sweep: %zu live MonoBehaviours", n);
+
+    void *seen[256];
+    int seenN = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        if (!objs[i]) continue;
+        void *cls = rd<void *>(objs[i], 0);
+        if (!cls) continue;
+
+        bool dup = false;
+        for (int s = 0; s < seenN; s++) if (seen[s] == cls) { dup = true; break; }
+        if (dup) continue;
+        if (seenN < 256) seen[seenN++] = cls;
+
+        void *iter = nullptr, *f;
+        while ((f = g_il2.class_get_fields(cls, &iter)) != nullptr) {
+            if (g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC) continue;
+            int k = container_kind(g_il2.field_get_type(f));
+            if (!k) continue;
+            Cand c;
+            c.cls = cls; c.rootOff = g_il2.field_get_offset(f);
+            c.chainOff = NO_HOP; c.kind = k;
+            snprintf(c.desc, sizeof(c.desc), "scene %s.%s kind=%d",
+                     cls_name(cls), g_il2.field_get_name(f), k);
+            add_cand(c);
+        }
+    }
+}
+
+/** Picks the candidate holding the most entities right now. */
+static int read_entities(void **out, int cap, bool verbose) {
+    int bestCount = 0, bestIdx = -1;
+    void *tmp[MAX_ENT];
+
+    for (int i = 0; i < g_candCount; i++) {
+        int got = eval_any(g_cand[i], tmp, cap);
+        g_cand[i].lastCount = got;
+        if (got > bestCount) {
+            bestCount = got;
+            bestIdx = i;
+            memcpy(out, tmp, sizeof(void *) * got);
+        }
+    }
+
+    if (verbose) {
+        for (int i = 0; i < g_candCount; i++)
+            bplog("  cand[%d] n=%-3d %s", i, g_cand[i].lastCount, g_cand[i].desc);
+    }
+    if (bestIdx >= 0 && bestIdx != g_bestCand) {
+        g_bestCand = bestIdx;
+        bplog("using container: %s (%d entities)", g_cand[bestIdx].desc, bestCount);
+    }
+    return bestCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,24 +675,38 @@ static void *poll_thread(void *) {
 
     if (!resolve_camera()) bplog("camera api unresolved — nothing can be projected");
 
+    {
+        void *ue = unity_image();
+        if (ue) R.objectCls = g_il2.class_from_name(ue, "UnityEngine", "Object");
+        bplog("UnityEngine.Object = %p", R.objectCls);
+    }
+
+    set_status(1, "collecting containers");
+    collect_static_containers();
+    collect_scene_containers();
+    bplog("%d container candidate(s)", g_candCount);
+
     void *ents[MAX_ENT];
-    double lastDiag = 0;
+    double lastDiag = 0, lastSweep = now_s();
 
     for (;;) {
         bool diag = now_s() - lastDiag > 3.0;
         if (diag) lastDiag = now_s();
 
-        if (!R.ownerStaticData) {
-            if (find_container()) set_status(2, "live");
-            else { set_status(3, "no entity list yet"); sleep(2); continue; }
-        }
-
-        int n = read_entities(ents, MAX_ENT);
+        int n = read_entities(ents, MAX_ENT, diag);
         if (n == 0) {
-            if (diag) bplog("container resolved but 0 entities in it");
-            usleep(200 * 1000);
+            // Holders spawn with the match, so keep re-sweeping the scene: a
+            // list that does not exist at menu time will appear later.
+            if (now_s() - lastSweep > 8.0) {
+                lastSweep = now_s();
+                collect_scene_containers();
+                collect_static_containers();
+            }
+            set_status(3, "no players yet (%d candidates)", g_candCount);
+            usleep(300 * 1000);
             continue;
         }
+        if (g_state != 2) set_status(2, "live");
 
         void *cam = camera_object();
         void *vBox = cam ? invoke(R.mView, cam, nullptr) : nullptr;
