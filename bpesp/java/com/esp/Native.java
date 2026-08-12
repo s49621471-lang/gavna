@@ -39,6 +39,14 @@ public final class Native {
     /** Must be called before {@link #start} for the discovery trace to be captured. */
     public static native void setLog(String path);
     public static native void start(int screenW, int screenH);
+
+    /** Pushes menu state to the poller. bone: 0 head, 1 chest, 2 hip, 3 nearest. */
+    public static native void config(boolean teamCheck, boolean aimbot,
+                                     float fov, float speed, int bone,
+                                     boolean rcs, float rcsPower);
+
+    /** True once the local yaw/pitch fields have been identified by correlation. */
+    public static native boolean aimReady();
     /** Surface size the game renders into — not the physical display. */
     public static native void viewport(int w, int h);
     public static native int state();          // 0 wait, 1 scanning, 2 live, 3 no list

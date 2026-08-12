@@ -18,60 +18,80 @@ import android.view.View;
  */
 public class EspOverlay extends View implements Choreographer.FrameCallback {
 
-    // ---- options -----------------------------------------------------------
-    private static final int TAB_ESP = 0, TAB_VISUAL = 1, TAB_INFO = 2, TAB_MISC = 3;
+    private static final int TAB_VISUALS = 0, TAB_COMBAT = 1;
+    private static final String[] TAB_NAMES = { "Visuals", "Combat" };
 
+    // ---- options -----------------------------------------------------------
     private static final class Opt {
         final String key, label;
         final int tab;
+        final String[] choices;   // null for a plain toggle
         boolean on;
+        int choice;
         Opt(int tab, String key, String label, boolean on) {
-            this.tab = tab; this.key = key; this.label = label; this.on = on;
+            this(tab, key, label, on, null);
+        }
+        Opt(int tab, String key, String label, boolean on, String[] choices) {
+            this.tab = tab; this.key = key; this.label = label;
+            this.on = on; this.choices = choices;
         }
     }
 
     private static final class Slider {
+        final int tab;
         final String key, label;
         final float min, max;
+        final boolean integral;
         float value;
-        Slider(String key, String label, float min, float max, float value) {
-            this.key = key; this.label = label; this.min = min; this.max = max; this.value = value;
+        Slider(int tab, String key, String label, float min, float max, float value,
+               boolean integral) {
+            this.tab = tab; this.key = key; this.label = label;
+            this.min = min; this.max = max; this.value = value; this.integral = integral;
         }
         float frac() { return (value - min) / (max - min); }
         void setFrac(float f) {
             if (f < 0) f = 0;
             if (f > 1) f = 1;
             value = min + f * (max - min);
+            if (integral) value = Math.round(value);
+        }
+        String text() {
+            return integral ? String.valueOf((int) value) : String.format("%.1f", value);
         }
     }
 
     private final Opt[] opts = {
-            new Opt(TAB_ESP,    "master",   "ESP enabled",   true),
-            new Opt(TAB_ESP,    "box",      "Box",           true),
-            new Opt(TAB_ESP,    "corners",  "Corner box",    false),
-            new Opt(TAB_ESP,    "skeleton", "Skeleton",      true),
-            new Opt(TAB_ESP,    "dead",     "Show dead",     false),
+            new Opt(TAB_VISUALS, "master",   "ESP enabled",    true),
+            new Opt(TAB_VISUALS, "box",      "Box",            true),
+            new Opt(TAB_VISUALS, "corners",  "Corner box",     false),
+            new Opt(TAB_VISUALS, "skeleton", "Skeleton",       true),
+            new Opt(TAB_VISUALS, "hpbar",    "Health bar",     true),
+            new Opt(TAB_VISUALS, "armorbar", "Armor bar",      true),
+            new Opt(TAB_VISUALS, "name",     "Name",           true),
+            new Opt(TAB_VISUALS, "hptext",   "Health number",  false),
+            new Opt(TAB_VISUALS, "dist",     "Distance",       true),
+            new Opt(TAB_VISUALS, "kd",       "Kills / deaths", false),
+            new Opt(TAB_VISUALS, "snap",     "Snap line",      false),
+            new Opt(TAB_VISUALS, "look",     "Look direction", false),
+            new Opt(TAB_VISUALS, "team",     "Enemies only",   true),
+            new Opt(TAB_VISUALS, "dead",     "Show dead",      false),
+            new Opt(TAB_VISUALS, "status",   "Debug status",   true),
 
-            new Opt(TAB_VISUAL, "hpbar",    "Health bar",    true),
-            new Opt(TAB_VISUAL, "armorbar", "Armor bar",     true),
-            new Opt(TAB_VISUAL, "snap",     "Snap line",     false),
-            new Opt(TAB_VISUAL, "look",     "Look direction",false),
-
-            new Opt(TAB_INFO,   "name",     "Name",          true),
-            new Opt(TAB_INFO,   "hptext",   "Health number", false),
-            new Opt(TAB_INFO,   "dist",     "Distance",      true),
-            new Opt(TAB_INFO,   "kd",       "Kills / deaths",false),
-
-            new Opt(TAB_MISC,   "status",   "Debug status",  true),
+            new Opt(TAB_COMBAT,  "aimbot",   "Aimbot",         false),
+            new Opt(TAB_COMBAT,  "bone",     "Target",         true,
+                    new String[] { "Head", "Chest", "Hip", "Nearest" }),
+            new Opt(TAB_COMBAT,  "rcs",      "Recoil control", false),
     };
 
     private final Slider[] sliders = {
-            new Slider("thick",  "Line width",   1f,   4f,   1.4f),
-            new Slider("textsz", "Text size",    8f,   16f,  11f),
-            new Slider("maxdist","Max distance", 10f,  300f, 300f),
-    };
+            new Slider(TAB_VISUALS, "thick",   "Line width",   1f,  4f,   1.4f, false),
+            new Slider(TAB_VISUALS, "textsz",  "Text size",    8f,  16f,  11f,  false),
+            new Slider(TAB_VISUALS, "maxdist", "Max distance", 10f, 300f, 300f, true),
 
-    private static final String[] TAB_NAMES = { "ESP", "Visuals", "Info", "Misc" };
+            new Slider(TAB_COMBAT,  "fov",     "Aim FOV",      1f,  360f, 90f,  true),
+            new Slider(TAB_COMBAT,  "speed",   "Aim speed",    1f,  100f, 25f,  true),
+            new Slider(TAB_COMBAT,  "rcspow",  "RCS power",    0f,  100f, 60f,  true),
+    };
 
     /** Bone pairs, indices into the 12 joints the native side projects. */
     private static final int[] BONES = {
@@ -80,9 +100,14 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             3, 8,   8, 10,  3, 9,   9, 11,
     };
 
+    private Opt opt(String key) {
+        for (Opt o : opts) if (o.key.equals(key)) return o;
+        return null;
+    }
+
     private boolean on(String key) {
-        for (Opt o : opts) if (o.key.equals(key)) return o.on;
-        return false;
+        Opt o = opt(key);
+        return o != null && o.on;
     }
 
     private float slider(String key) {
@@ -104,7 +129,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private final SharedPreferences prefs;
     private final float d;
 
-    /** Latches if a native call ever throws, so one failure cannot kill the game. */
     private boolean nativeDead;
     private int lastCount;
 
@@ -114,9 +138,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private int tab;
     private int dragSlider = -1;
 
-    // window geometry, recomputed on resize
     private float winW, winH, winL, winT;
     private float titleH, tabH, navW, rowH, pad;
+    private int rowsPerCol = 1, cols = 1;
+    private float colW;
 
     public EspOverlay(Context ctx) {
         super(ctx);
@@ -127,9 +152,13 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         barH      = 5 * d;
         barTouchH = 44 * d;
 
-        for (Opt o : opts) o.on = prefs.getBoolean("o_" + o.key, o.on);
+        for (Opt o : opts) {
+            o.on = prefs.getBoolean("o_" + o.key, o.on);
+            o.choice = prefs.getInt("c_" + o.key, 0);
+        }
         for (Slider s : sliders) s.value = prefs.getFloat("s_" + s.key, s.value);
         tab = prefs.getInt("tab", 0);
+        if (tab >= TAB_NAMES.length) tab = 0;
 
         stroke.setStyle(Paint.Style.STROKE);
         fill.setStyle(Paint.Style.FILL);
@@ -140,6 +169,21 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
         setWillNotDraw(false);
         setBackgroundColor(Color.TRANSPARENT);
+        pushConfig();
+    }
+
+    /** Menu state is authoritative; the poller only ever reads what it is told. */
+    private void pushConfig() {
+        if (nativeDead) return;
+        try {
+            Opt bone = opt("bone");
+            Native.config(on("team"), on("aimbot"),
+                          slider("fov"), slider("speed"),
+                          bone == null ? 0 : bone.choice,
+                          on("rcs"), slider("rcspow"));
+        } catch (Throwable t) {
+            Log.e("bpesp", "config push failed", t);
+        }
     }
 
     @Override protected void onAttachedToWindow() {
@@ -164,23 +208,34 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private float handleX() { return getWidth() * 0.5f; }
     private float handleY() { return getHeight() - 14 * d; }
 
-    /** Sizes the window to the view, so it fits freeform and split screen too. */
     private void layoutMenu() {
         float vw = getWidth(), vh = getHeight();
         if (vw <= 0 || vh <= 0) return;
 
-        winW = Math.min(420 * d, vw - 24 * d);
-        winH = Math.min(260 * d, vh - barTouchH - 24 * d);
+        winW = Math.min(440 * d, vw - 24 * d);
+        winH = Math.min(280 * d, vh - barTouchH - 20 * d);
         winL = (vw - winW) * 0.5f;
-        winT = Math.max(12 * d, handleY() - barTouchH - winH);
+        winT = Math.max(10 * d, handleY() - barTouchH * 0.6f - winH);
 
-        titleH = Math.max(20 * d, winH * 0.11f);
-        tabH   = Math.max(20 * d, winH * 0.12f);
-        navW   = winW * 0.24f;
-        pad    = 8 * d;
-        rowH   = Math.max(18 * d, (winH - titleH - tabH - pad * 3) / 6f);
+        titleH = Math.max(20 * d, winH * 0.10f);
+        tabH   = Math.max(20 * d, winH * 0.11f);
+        navW   = winW * 0.22f;
+        pad    = 6 * d;
+        rowH   = 22 * d;
 
-        mtext.setTextSize(Math.min(11 * d, rowH * 0.42f));
+        float contentH = winH - titleH - tabH - sliderAreaH() - pad * 2;
+        rowsPerCol = Math.max(1, (int) (contentH / rowH));
+
+        int maxOpts = 0;
+        for (int t = 0; t < TAB_NAMES.length; t++) {
+            int c = 0;
+            for (Opt o : opts) if (o.tab == t) c++;
+            maxOpts = Math.max(maxOpts, c);
+        }
+        cols = Math.max(1, (maxOpts + rowsPerCol - 1) / rowsPerCol);
+        colW = (winW - navW) / cols;
+
+        mtext.setTextSize(Math.min(10 * d, rowH * 0.44f));
     }
 
     // ---- drawing -----------------------------------------------------------
@@ -213,6 +268,12 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         else if (state == 2) s = "live · " + lastCount + " ent";
         else if (state < 0)  s = "starting";
         else                 s = Native.status();
+
+        if (on("aimbot") || on("rcs")) {
+            boolean ready = false;
+            try { ready = Native.aimReady(); } catch (Throwable ignored) { }
+            s += ready ? " · aim locked" : " · aim searching";
+        }
         label(c, "[esp] " + s, 10 * d, 18 * d, state == 2 ? 0xFF66FF99 : 0xFFFFCC44);
     }
 
@@ -386,15 +447,24 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     }
 
     // ---- menu --------------------------------------------------------------
-    private float contentTop() { return winT + titleH + tabH; }
+    private float contentTop()  { return winT + titleH + tabH + pad; }
     private float contentLeft() { return winL + navW; }
-    private float contentW() { return winW - navW; }
+    private float sliderAreaH() { return countSliders() * 20 * d + pad * 2; }
+
+    private int countSliders() {
+        int max = 0;
+        for (int t = 0; t < TAB_NAMES.length; t++) {
+            int c = 0;
+            for (Slider s : sliders) if (s.tab == t) c++;
+            max = Math.max(max, c);
+        }
+        return max;
+    }
 
     private void drawMenu(Canvas c) {
         if (winW <= 0) layoutMenu();
         if (winW <= 0) return;
 
-        // window
         rect.set(winL, winT, winL + winW, winT + winH);
         fill.setColor(0xF2101012);
         c.drawRoundRect(rect, 6 * d, 6 * d, fill);
@@ -402,11 +472,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         stroke.setStrokeWidth(1 * d);
         c.drawRoundRect(rect, 6 * d, 6 * d, stroke);
 
-        // title bar
+        // title bar + close
         rect.set(winL, winT, winL + winW, winT + titleH);
         fill.setColor(0xFF17171A);
         c.drawRoundRect(rect, 6 * d, 6 * d, fill);
-        fill.setColor(0xFF17171A);
         c.drawRect(winL, winT + titleH - 6 * d, winL + winW, winT + titleH, fill);
         menuText(c, "BPESP", winL + 10 * d, winT + titleH * 0.66f, 0xFF6E6E76);
 
@@ -417,59 +486,70 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         c.drawLine(cxx + cs, cyy - cs, cxx - cs, cyy + cs, stroke);
 
         // tab strip
-        float tw = (winW - 20 * d) / (TAB_NAMES.length + 1);
+        float tw = (winW - 20 * d) / 4f;
         for (int i = 0; i < TAB_NAMES.length; i++) {
             float tx = winL + 10 * d + i * tw;
-            rect.set(tx, winT + titleH + 4 * d, tx + tw - 4 * d, winT + titleH + tabH - 4 * d);
+            rect.set(tx, winT + titleH + 3 * d, tx + tw - 4 * d, winT + titleH + tabH - 3 * d);
             fill.setColor(i == tab ? 0xFF2C2C32 : 0xFF1B1B1F);
             c.drawRoundRect(rect, 3 * d, 3 * d, fill);
             menuText(c, TAB_NAMES[i], tx + 8 * d, rect.centerY() + mtext.getTextSize() * 0.36f,
                      i == tab ? 0xFFE8E8EE : 0xFF6E6E76);
         }
 
-        // left nav — tab list mirrored as a column, current one highlighted
+        // left nav
         for (int i = 0; i < TAB_NAMES.length; i++) {
-            float ry = contentTop() + pad + i * rowH;
+            float ry = contentTop() + i * rowH;
             if (i == tab) {
-                rect.set(winL + 6 * d, ry, winL + navW - 4 * d, ry + rowH - 3 * d);
+                rect.set(winL + 5 * d, ry, winL + navW - 4 * d, ry + rowH - 2 * d);
                 fill.setColor(0xFF232329);
                 c.drawRoundRect(rect, 3 * d, 3 * d, fill);
             }
             fill.setColor(i == tab ? 0xFF34C759 : 0xFF3A3A42);
-            c.drawCircle(winL + 15 * d, ry + rowH * 0.45f, 3.2f * d, fill);
-            menuText(c, TAB_NAMES[i], winL + 24 * d, ry + rowH * 0.45f + mtext.getTextSize() * 0.36f,
+            c.drawCircle(winL + 14 * d, ry + rowH * 0.45f, 3f * d, fill);
+            menuText(c, TAB_NAMES[i], winL + 22 * d,
+                     ry + rowH * 0.45f + mtext.getTextSize() * 0.36f,
                      i == tab ? 0xFFE8E8EE : 0xFF6E6E76);
         }
 
-        // option rows for the active tab
+        // option rows, flowed into columns
         int shown = 0;
         for (Opt o : opts) {
             if (o.tab != tab) continue;
-            float ry = contentTop() + pad + shown * rowH;
-            if (ry + rowH > winT + winH - sliderAreaH()) break;
+            int col = shown / rowsPerCol, row = shown % rowsPerCol;
+            if (col >= cols) break;
+            float ox = contentLeft() + col * colW;
+            float ry = contentTop() + row * rowH;
+            float mid = ry + rowH * 0.5f;
 
-            float knob = Math.min(5.5f * d, rowH * 0.24f);
-            float sw = 26 * d;
-            float sx = contentLeft() + contentW() - sw - 12 * d;
-            rect.set(sx, ry + rowH * 0.5f - knob * 1.3f, sx + sw, ry + rowH * 0.5f + knob * 1.3f);
-            fill.setColor(o.on ? 0xFF34C759 : 0xFF3A3A42);
-            c.drawRoundRect(rect, knob * 1.3f, knob * 1.3f, fill);
-            fill.setColor(0xFFF0F0F4);
-            c.drawCircle(o.on ? rect.right - knob * 1.15f : rect.left + knob * 1.15f,
-                         rect.centerY(), knob, fill);
+            if (o.choices != null) {
+                String v = o.choices[o.choice % o.choices.length];
+                float bw2 = 46 * d;
+                rect.set(ox + colW - bw2 - 8 * d, mid - 7 * d, ox + colW - 8 * d, mid + 7 * d);
+                fill.setColor(0xFF2C2C32);
+                c.drawRoundRect(rect, 3 * d, 3 * d, fill);
+                menuText(c, v, rect.left + 5 * d, mid + mtext.getTextSize() * 0.36f, 0xFFE8E8EE);
+            } else {
+                float knob = 5f * d, sw = 24 * d;
+                float sx = ox + colW - sw - 8 * d;
+                rect.set(sx, mid - knob * 1.3f, sx + sw, mid + knob * 1.3f);
+                fill.setColor(o.on ? 0xFF34C759 : 0xFF3A3A42);
+                c.drawRoundRect(rect, knob * 1.3f, knob * 1.3f, fill);
+                fill.setColor(0xFFF0F0F4);
+                c.drawCircle(o.on ? rect.right - knob * 1.15f : rect.left + knob * 1.15f,
+                             mid, knob, fill);
+            }
 
-            menuText(c, o.label, contentLeft() + 6 * d,
-                     ry + rowH * 0.5f + mtext.getTextSize() * 0.36f,
-                     o.on ? 0xFFE8E8EE : 0xFF8A8A92);
+            menuText(c, o.label, ox + 5 * d, mid + mtext.getTextSize() * 0.36f,
+                     (o.choices != null || o.on) ? 0xFFE8E8EE : 0xFF8A8A92);
             shown++;
         }
 
-        // sliders along the bottom
-        float sy0 = winT + winH - sliderAreaH() + pad;
-        for (int i = 0; i < sliders.length; i++) {
-            Slider s = sliders[i];
-            float sy = sy0 + i * (sliderAreaH() - pad * 2) / sliders.length;
-            float sl = contentLeft() + 6 * d, sr = winL + winW - 12 * d;
+        // sliders for this tab along the bottom
+        int si = 0;
+        for (Slider s : sliders) {
+            if (s.tab != tab) continue;
+            float sy = winT + winH - sliderAreaH() + pad + si * 20 * d + 8 * d;
+            float sl = contentLeft() + 5 * d, sr = winL + winW - 34 * d;
 
             menuText(c, s.label, winL + 10 * d, sy + mtext.getTextSize() * 0.36f, 0xFF6E6E76);
             stroke.setColor(0xFF33333A);
@@ -480,18 +560,21 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             c.drawLine(sl, sy, px, sy, stroke);
             fill.setColor(0xFFF0F0F4);
             c.drawCircle(px, sy, 4.5f * d, fill);
+            menuText(c, s.text(), sr + 6 * d, sy + mtext.getTextSize() * 0.36f, 0xFFB9B9C0);
+            si++;
         }
     }
-
-    private float sliderAreaH() { return sliders.length * 16 * d + pad * 2; }
 
     private int optionAt(float x, float y) {
         int shown = 0;
         for (int i = 0; i < opts.length; i++) {
             if (opts[i].tab != tab) continue;
-            float ry = contentTop() + pad + shown * rowH;
-            if (ry + rowH > winT + winH - sliderAreaH()) break;
-            if (x >= contentLeft() && x <= winL + winW && y >= ry && y < ry + rowH) return i;
+            int col = shown / rowsPerCol, row = shown % rowsPerCol;
+            if (col < cols) {
+                float ox = contentLeft() + col * colW;
+                float ry = contentTop() + row * rowH;
+                if (x >= ox && x < ox + colW && y >= ry && y < ry + rowH) return i;
+            }
             shown++;
         }
         return -1;
@@ -500,7 +583,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private int navAt(float x, float y) {
         if (x < winL || x > winL + navW) return -1;
         for (int i = 0; i < TAB_NAMES.length; i++) {
-            float ry = contentTop() + pad + i * rowH;
+            float ry = contentTop() + i * rowH;
             if (y >= ry && y < ry + rowH) return i;
         }
         return -1;
@@ -508,25 +591,29 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
     private int tabAt(float x, float y) {
         if (y < winT + titleH || y > winT + titleH + tabH) return -1;
-        float tw = (winW - 20 * d) / (TAB_NAMES.length + 1);
+        float tw = (winW - 20 * d) / 4f;
         int i = (int) ((x - winL - 10 * d) / tw);
         return (i >= 0 && i < TAB_NAMES.length) ? i : -1;
     }
 
     private int sliderAt(float x, float y) {
-        float sy0 = winT + winH - sliderAreaH() + pad;
+        if (x < winL || x > winL + winW) return -1;
+        int si = 0;
         for (int i = 0; i < sliders.length; i++) {
-            float sy = sy0 + i * (sliderAreaH() - pad * 2) / sliders.length;
-            if (Math.abs(y - sy) <= 12 * d && x >= winL && x <= winL + winW) return i;
+            if (sliders[i].tab != tab) continue;
+            float sy = winT + winH - sliderAreaH() + pad + si * 20 * d + 8 * d;
+            if (Math.abs(y - sy) <= 10 * d) return i;
+            si++;
         }
         return -1;
     }
 
     private void applySlider(int i, float x) {
         Slider s = sliders[i];
-        float sl = contentLeft() + 6 * d, sr = winL + winW - 12 * d;
+        float sl = contentLeft() + 5 * d, sr = winL + winW - 34 * d;
         s.setFrac((x - sl) / (sr - sl));
         prefs.edit().putFloat("s_" + s.key, s.value).apply();
+        pushConfig();
     }
 
     // ---- input -------------------------------------------------------------
@@ -542,7 +629,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                                 && y >= winT && y <= winT + winH;
                 if (!inWindow) { menuOpen = false; return true; }
 
-                // close button
                 if (y <= winT + titleH) {
                     if (x >= winL + winW - 28 * d) menuOpen = false;
                     return true;
@@ -559,10 +645,17 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                 int sl = sliderAt(x, y);
                 if (sl >= 0) { dragSlider = sl; applySlider(sl, x); return true; }
 
-                int o = optionAt(x, y);
-                if (o >= 0) {
-                    opts[o].on = !opts[o].on;
-                    prefs.edit().putBoolean("o_" + opts[o].key, opts[o].on).apply();
+                int oi = optionAt(x, y);
+                if (oi >= 0) {
+                    Opt o = opts[oi];
+                    if (o.choices != null) {
+                        o.choice = (o.choice + 1) % o.choices.length;
+                        prefs.edit().putInt("c_" + o.key, o.choice).apply();
+                    } else {
+                        o.on = !o.on;
+                        prefs.edit().putBoolean("o_" + o.key, o.on).apply();
+                    }
+                    pushConfig();
                 }
                 return true;
             }

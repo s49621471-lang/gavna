@@ -104,6 +104,28 @@ static void set_status(int st, const char *fmt, ...) {
 }
 
 // ---------------------------------------------------------------------------
+// config, pushed from the menu
+// ---------------------------------------------------------------------------
+struct Config {
+    bool  teamCheck = true;
+    bool  aimbot    = false;
+    float fov       = 90.0f;    // degrees, full cone; 360 means no limit
+    float speed     = 25.0f;    // 1..100, percent of the remaining angle per tick
+    int   bone      = 0;        // 0 head, 1 chest, 2 hip, 3 nearest
+    bool  rcs       = false;
+    float rcsPower  = 60.0f;    // 0..100
+};
+static Config          g_cfg;
+static pthread_mutex_t g_cfgLock = PTHREAD_MUTEX_INITIALIZER;
+
+static Config cfg() {
+    pthread_mutex_lock(&g_cfgLock);
+    Config c = g_cfg;
+    pthread_mutex_unlock(&g_cfgLock);
+    return c;
+}
+
+// ---------------------------------------------------------------------------
 // resolved game types
 // ---------------------------------------------------------------------------
 struct Resolved {
@@ -623,7 +645,7 @@ static void collect_scene_containers() {
 
 /** Merges every candidate. The roster is split across containers — one array
  *  per team — so taking only the fullest one silently drops the other side. */
-static int read_entities(void **out, int cap, bool verbose) {
+static int read_entities(void **out, int *outCand, int cap, bool verbose) {
     int total = 0, live = 0;
     void *tmp[MAX_ENT];
 
@@ -635,7 +657,7 @@ static int read_entities(void **out, int cap, bool verbose) {
         for (int j = 0; j < got && total < cap; j++) {
             bool dup = false;
             for (int k = 0; k < total; k++) if (out[k] == tmp[j]) { dup = true; break; }
-            if (!dup) out[total++] = tmp[j];
+            if (!dup) { outCand[total] = i; out[total++] = tmp[j]; }
         }
     }
 
@@ -738,6 +760,25 @@ static void build_joints(Vec3 p, Vec3 dir, Vec3 *j) {
     j[11] = Vec3{p.x + r.x * hw, p.y, p.z + r.z * hw};                       // R foot
 }
 
+/** Camera forward in world space. Unity's view matrix looks down -Z. */
+static Vec3 camera_forward(const Mat4 &v) {
+    return Vec3{-v.m[2], -v.m[6], -v.m[10]};
+}
+
+static float deg_yaw(Vec3 f)   { return atan2f(f.x, f.z) * 57.29578f; }
+static float deg_pitch(Vec3 f) {
+    float y = f.y;
+    if (y > 1) y = 1;
+    if (y < -1) y = -1;
+    return -asinf(y) * 57.29578f;
+}
+
+/** Signed shortest way round from a to b, in degrees. */
+static float angle_delta(float a, float b) {
+    float d = fmodf(b - a + 540.0f, 360.0f) - 180.0f;
+    return d;
+}
+
 /** Camera world position, recovered from the rigid view transform: -R^T * t. */
 static Vec3 camera_pos(const Mat4 &v) {
     float t0 = v.m[12], t1 = v.m[13], t2 = v.m[14];
@@ -746,6 +787,160 @@ static Vec3 camera_pos(const Mat4 &v) {
     c.y = -(v.m[4] * t0 + v.m[5] * t1 + v.m[6]  * t2);
     c.z = -(v.m[8] * t0 + v.m[9] * t1 + v.m[10] * t2);
     return c;
+}
+
+// ---------------------------------------------------------------------------
+// aim actuation
+// ---------------------------------------------------------------------------
+// Nothing in the entity layout drives the local view — 0xF0 and 0xEC are
+// replicated data for *other* players. The fields that steer the camera live on
+// some local controller component whose name we do not know, so they are found
+// by correlation instead: sample every float field on every live component and
+// keep the ones that track the camera's own yaw and pitch across several
+// rotations. A field may store the angle negated or offset by half a turn, so
+// each of those forms is tested and the matching one is inverted on write.
+
+#define AIM_MAX_CAND 3000
+#define AIM_LOCK_HITS 6
+
+struct AimCand {
+    void  *obj;
+    size_t off;
+    int8_t formYaw, formPitch;   // -1 = ruled out
+    int8_t hitsYaw, hitsPitch;
+};
+
+static AimCand g_aimCand[AIM_MAX_CAND];
+static int     g_aimCandN = 0;
+static bool    g_aimCollected = false;
+
+static void  *g_yawObj, *g_pitchObj;
+static size_t g_yawOff, g_pitchOff;
+static int8_t g_yawForm = -1, g_pitchForm = -1;
+
+// form: 0:v  1:-v  2:v+180  3:v-180  4:-v+180  5:-v-180
+static float apply_form(int form, float v) {
+    switch (form) {
+        case 0: return v;
+        case 1: return -v;
+        case 2: return v + 180.0f;
+        case 3: return v - 180.0f;
+        case 4: return -v + 180.0f;
+        default: return -v - 180.0f;
+    }
+}
+
+/** Inverse of apply_form: what to store so the angle reads back as `want`. */
+static float unapply_form(int form, float want) {
+    switch (form) {
+        case 0: return want;
+        case 1: return -want;
+        case 2: return want - 180.0f;
+        case 3: return want + 180.0f;
+        case 4: return -(want - 180.0f);
+        default: return -(want + 180.0f);
+    }
+}
+
+static void aim_collect() {
+    if (g_aimCollected) return;
+    void *ue = unity_image();
+    void *mb = ue ? g_il2.class_from_name(ue, "UnityEngine", "MonoBehaviour") : nullptr;
+    if (!mb) return;
+    void *arr = find_objects(mb);
+    if (!arr) return;
+
+    size_t n = rd<uint64_t>(arr, 0x18);
+    if (n > 2048) n = 2048;
+    void **objs = (void **)IL2CPP_ARRAY_DATA(arr);
+
+    g_aimCandN = 0;
+    for (size_t i = 0; i < n && g_aimCandN < AIM_MAX_CAND; i++) {
+        if (!objs[i]) continue;
+        void *cls = rd<void *>(objs[i], 0);
+        if (!cls) continue;
+
+        void *iter = nullptr, *f;
+        while ((f = g_il2.class_get_fields(cls, &iter)) != nullptr && g_aimCandN < AIM_MAX_CAND) {
+            if (g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC) continue;
+            char *tn = g_il2.type_get_name(g_il2.field_get_type(f));
+            if (!tn) continue;
+            if (!strcmp(tn, "System.Single")) {
+                AimCand &c = g_aimCand[g_aimCandN++];
+                c.obj = objs[i];
+                c.off = g_il2.field_get_offset(f);
+                c.formYaw = c.formPitch = 0;
+                c.hitsYaw = c.hitsPitch = 0;
+            }
+            g_il2.free(tn);
+        }
+    }
+    g_aimCollected = true;
+    bplog("aim: %d float fields under observation across %zu components", g_aimCandN, n);
+}
+
+/** Call once per tick with the camera's true angles. Locks on when a field has
+ *  tracked them through enough distinct rotations to not be a coincidence. */
+static void aim_correlate(float yaw, float pitch) {
+    static float lastYaw = 0, lastPitch = 0;
+    static bool  have = false;
+
+    if (g_yawForm >= 0 && g_pitchForm >= 0) return;
+    aim_collect();
+    if (!g_aimCandN) return;
+
+    // Only sample when the view actually moved, or every constant float matches.
+    if (have && fabsf(angle_delta(lastYaw, yaw)) < 2.0f &&
+                fabsf(pitch - lastPitch) < 1.0f) return;
+    bool first = !have;
+    lastYaw = yaw; lastPitch = pitch; have = true;
+    if (first) return;
+
+    for (int i = 0; i < g_aimCandN; i++) {
+        AimCand &c = g_aimCand[i];
+        float v = rd<float>(c.obj, c.off);
+        if (!(v == v) || fabsf(v) > 100000.0f) { c.hitsYaw = c.hitsPitch = 0; continue; }
+
+        if (g_yawForm < 0) {
+            bool hit = false;
+            for (int form = 0; form < 6; form++)
+                if (fabsf(angle_delta(apply_form(form, v), yaw)) < 1.5f) {
+                    if (c.hitsYaw == 0) c.formYaw = (int8_t)form;
+                    if (c.formYaw == form) { hit = true; break; }
+                }
+            c.hitsYaw = hit ? (int8_t)(c.hitsYaw + 1) : 0;
+            if (c.hitsYaw >= AIM_LOCK_HITS) {
+                g_yawObj = c.obj; g_yawOff = c.off; g_yawForm = c.formYaw;
+                bplog("aim: yaw field locked at %p+0x%zx form=%d", c.obj, c.off, c.formYaw);
+            }
+        }
+        if (g_pitchForm < 0) {
+            bool hit = false;
+            for (int form = 0; form < 2; form++)
+                if (fabsf(angle_delta(apply_form(form, v), pitch)) < 1.5f) {
+                    if (c.hitsPitch == 0) c.formPitch = (int8_t)form;
+                    if (c.formPitch == form) { hit = true; break; }
+                }
+            c.hitsPitch = hit ? (int8_t)(c.hitsPitch + 1) : 0;
+            if (c.hitsPitch >= AIM_LOCK_HITS) {
+                g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchForm = c.formPitch;
+                bplog("aim: pitch field locked at %p+0x%zx form=%d", c.obj, c.off, c.formPitch);
+            }
+        }
+    }
+}
+
+static bool aim_ready() { return g_yawForm >= 0 && g_pitchForm >= 0; }
+
+static void aim_write(float yaw, float pitch) {
+    if (g_yawForm >= 0) {
+        float v = unapply_form(g_yawForm, yaw);
+        memcpy((uint8_t *)g_yawObj + g_yawOff, &v, sizeof(float));
+    }
+    if (g_pitchForm >= 0) {
+        float v = unapply_form(g_pitchForm, pitch);
+        memcpy((uint8_t *)g_pitchObj + g_pitchOff, &v, sizeof(float));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -796,13 +991,16 @@ static void *poll_thread(void *) {
     bplog("%d container candidate(s)", g_candCount);
 
     void *ents[MAX_ENT];
+    int   entCand[MAX_ENT];
     double lastDiag = 0, lastSweep = now_s();
+    float prevPitch = 0;
+    bool  havePrevPitch = false;
 
     for (;;) {
         bool diag = now_s() - lastDiag > 3.0;
         if (diag) lastDiag = now_s();
 
-        int n = read_entities(ents, MAX_ENT, diag);
+        int n = read_entities(ents, entCand, MAX_ENT, diag);
         if (n == 0) {
             publish(nullptr, 0);
             // Holders spawn with the match, so keep re-sweeping the scene: a
@@ -837,10 +1035,30 @@ static void *poll_thread(void *) {
         // The eye comes from the view matrix, not from an entity: the local
         // player's replicated position is never filled in (it stays 0,0,0).
         Vec3 eye = camera_pos(view);
+        Vec3 fwd = camera_forward(view);
+        float camYaw = deg_yaw(fwd), camPitch = deg_pitch(fwd);
+
+        Config C = cfg();
+        if (C.aimbot || C.rcs) aim_correlate(camYaw, camPitch);
+
+        // Team: the roster is one container per side, and the entity with no
+        // replicated position is us, so whichever container holds it is ours.
+        int ownCand = -1;
+        if (C.teamCheck)
+            for (int i = 0; i < n; i++) {
+                Vec3 p = rd<Vec3>(ents[i], R.oPos);
+                if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f &&
+                    g_cand[entCand[i]].kind != 3) { ownCand = entCand[i]; break; }
+            }
 
         EntityView tmp[MAX_ENT];
         int out = 0;
-        int skipZero = 0, skipProj = 0;
+        int skipZero = 0, skipProj = 0, skipTeam = 0;
+
+        // best aimbot target this tick
+        float bestAngle = 1e9f;
+        Vec3  bestPoint{0, 0, 0};
+        bool  haveTarget = false;
 
         for (int i = 0; i < n && out < MAX_ENT; i++) {
             void *e = ents[i];
@@ -866,6 +1084,7 @@ static void *poll_thread(void *) {
             // so keying off it deleted every bot from the overlay.
             Vec3 p = rd<Vec3>(e, R.oPos);
             if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) { skipZero++; continue; }
+            if (ownCand >= 0 && entCand[i] == ownCand) { skipTeam++; continue; }
 
             int hp = rd<int32_t>(e, R.oHp);
             Vec3 head{p.x, p.y + PLAYER_HEIGHT, p.z};
@@ -900,6 +1119,29 @@ static void *poll_thread(void *) {
 
             Vec3 joints[JOINTS];
             build_joints(p, d, joints);
+
+            // Aimbot target selection. Head/chest/hip map onto the same rig the
+            // skeleton uses; "nearest" takes whichever joint is closest to where
+            // the view already points, which needs the least correction.
+            if (C.aimbot && hp > 0) {
+                static const int BONE_JOINT[3] = { 0, 2, 3 };
+                int lo = (C.bone == 3) ? 0 : BONE_JOINT[C.bone < 3 ? C.bone : 0];
+                int hi = (C.bone == 3) ? JOINTS : lo + 1;
+
+                for (int k = lo; k < hi; k++) {
+                    Vec3 t = joints[k];
+                    float dx = t.x - eye.x, dy = t.y - eye.y, dz = t.z - eye.z;
+                    float m = sqrtf(dx * dx + dy * dy + dz * dz);
+                    if (m < 0.01f) continue;
+                    float cosA = (fwd.x * dx + fwd.y * dy + fwd.z * dz) / m;
+                    if (cosA > 1) cosA = 1;
+                    if (cosA < -1) cosA = -1;
+                    float ang = acosf(cosA) * 57.29578f;
+                    if (ang > C.fov * 0.5f) continue;
+                    if (ang < bestAngle) { bestAngle = ang; bestPoint = t; haveTarget = true; }
+                }
+            }
+
             for (int k = 0; k < JOINTS; k++) {
                 float jx = fx, jy = fy;
                 world_to_screen(vp, joints[k], &jx, &jy);
@@ -911,10 +1153,46 @@ static void *poll_thread(void *) {
             out++;
         }
 
+        // ---- aim actuation -------------------------------------------------
+        float wantYaw = camYaw, wantPitch = camPitch;
+        bool  writeAim = false;
+
+        if (C.rcs && havePrevPitch && aim_ready()) {
+            // Recoil pushes the view up, which drives pitch negative. Only a
+            // kick sharper than deliberate look-up input is fought, and only
+            // downward, so ordinary aiming is left alone.
+            float dp = camPitch - prevPitch;
+            if (dp < -0.15f) {
+                wantPitch = camPitch - dp * (C.rcsPower / 100.0f);
+                writeAim = true;
+            }
+        }
+
+        if (C.aimbot && haveTarget && aim_ready()) {
+            float dx = bestPoint.x - eye.x, dy = bestPoint.y - eye.y, dz = bestPoint.z - eye.z;
+            float m = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (m > 0.01f) {
+                Vec3 want{dx / m, dy / m, dz / m};
+                float ty = deg_yaw(want), tp = deg_pitch(want);
+                float k = C.speed / 100.0f;
+                if (k > 1) k = 1;
+                if (k < 0.01f) k = 0.01f;
+                wantYaw   = camYaw   + angle_delta(camYaw, ty) * k;
+                wantPitch = wantPitch + (tp - wantPitch) * k;
+                writeAim = true;
+            }
+        }
+
+        if (writeAim) aim_write(wantYaw, wantPitch);
+        prevPitch = camPitch;
+        havePrevPitch = true;
+
         if (diag)
-            bplog("entities=%d drawn=%d (skip zeroPos=%d behind=%d) eye=(%.2f,%.2f,%.2f) "
-                  "cam=%p view0=%.3f",
-                  n, out, skipZero, skipProj, eye.x, eye.y, eye.z, cam, view.m[0]);
+            bplog("entities=%d drawn=%d (skip zeroPos=%d team=%d behind=%d) "
+                  "eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f aimFields=%s target=%s",
+                  n, out, skipZero, skipTeam, skipProj, eye.x, eye.y, eye.z,
+                  camYaw, camPitch, aim_ready() ? "locked" : "searching",
+                  haveTarget ? "yes" : "no");
 
         publish(tmp, out);
 
@@ -948,6 +1226,24 @@ Java_com_esp_Native_setLog(JNIEnv *env, jclass, jstring path) {
         log_open();
     }
 }
+
+JNIEXPORT void JNICALL
+Java_com_esp_Native_config(JNIEnv *, jclass, jboolean teamCheck, jboolean aimbot,
+                           jfloat fov, jfloat speed, jint bone,
+                           jboolean rcs, jfloat rcsPower) {
+    pthread_mutex_lock(&g_cfgLock);
+    g_cfg.teamCheck = teamCheck;
+    g_cfg.aimbot    = aimbot;
+    g_cfg.fov       = fov;
+    g_cfg.speed     = speed;
+    g_cfg.bone      = bone;
+    g_cfg.rcs       = rcs;
+    g_cfg.rcsPower  = rcsPower;
+    pthread_mutex_unlock(&g_cfgLock);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_esp_Native_aimReady(JNIEnv *, jclass) { return aim_ready(); }
 
 JNIEXPORT void JNICALL
 Java_com_esp_Native_viewport(JNIEnv *, jclass, jint w, jint h) {
