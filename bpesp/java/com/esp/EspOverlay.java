@@ -218,12 +218,12 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         winT = Math.max(10 * d, handleY() - barTouchH * 0.6f - winH);
 
         titleH = Math.max(20 * d, winH * 0.10f);
-        tabH   = Math.max(20 * d, winH * 0.11f);
-        navW   = winW * 0.22f;
+        tabH   = 0;                       // navigation lives in the sidebar only
+        navW   = winW * 0.24f;
         pad    = 6 * d;
         rowH   = 22 * d;
 
-        float contentH = winH - titleH - tabH - sliderAreaH() - pad * 2;
+        float contentH = winH - titleH - sliderAreaH() - pad * 2;
         rowsPerCol = Math.max(1, (int) (contentH / rowH));
 
         int maxOpts = 0;
@@ -485,18 +485,13 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         c.drawLine(cxx - cs, cyy - cs, cxx + cs, cyy + cs, stroke);
         c.drawLine(cxx + cs, cyy - cs, cxx - cs, cyy + cs, stroke);
 
-        // tab strip
-        float tw = (winW - 20 * d) / 4f;
-        for (int i = 0; i < TAB_NAMES.length; i++) {
-            float tx = winL + 10 * d + i * tw;
-            rect.set(tx, winT + titleH + 3 * d, tx + tw - 4 * d, winT + titleH + tabH - 3 * d);
-            fill.setColor(i == tab ? 0xFF2C2C32 : 0xFF1B1B1F);
-            c.drawRoundRect(rect, 3 * d, 3 * d, fill);
-            menuText(c, TAB_NAMES[i], tx + 8 * d, rect.centerY() + mtext.getTextSize() * 0.36f,
-                     i == tab ? 0xFFE8E8EE : 0xFF6E6E76);
-        }
+        // divider between the sidebar and the content area
+        stroke.setColor(0xFF232329);
+        stroke.setStrokeWidth(1 * d);
+        c.drawLine(winL + navW - 2 * d, winT + titleH + 2 * d,
+                   winL + navW - 2 * d, winT + winH - sliderAreaH(), stroke);
 
-        // left nav
+        // sidebar — the only navigation
         for (int i = 0; i < TAB_NAMES.length; i++) {
             float ry = contentTop() + i * rowH;
             if (i == tab) {
@@ -589,13 +584,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         return -1;
     }
 
-    private int tabAt(float x, float y) {
-        if (y < winT + titleH || y > winT + titleH + tabH) return -1;
-        float tw = (winW - 20 * d) / 4f;
-        int i = (int) ((x - winL - 10 * d) / tw);
-        return (i >= 0 && i < TAB_NAMES.length) ? i : -1;
-    }
-
     private int sliderAt(float x, float y) {
         if (x < winL || x > winL + winW) return -1;
         int si = 0;
@@ -634,8 +622,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                     return true;
                 }
 
-                int t = tabAt(x, y);
-                if (t < 0) t = navAt(x, y);
+                int t = navAt(x, y);
                 if (t >= 0) {
                     tab = t;
                     prefs.edit().putInt("tab", tab).apply();

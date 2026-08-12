@@ -806,8 +806,10 @@ static Vec3 camera_pos(const Mat4 &v) {
 struct AimCand {
     void  *obj;
     size_t off;
-    int8_t formYaw, formPitch;   // -1 = ruled out
+    int8_t formYaw, formPitch;
     int8_t hitsYaw, hitsPitch;
+    float  accYaw, accPitch;     // camera travel survived while still matching
+    bool   dead;                 // failed the live write check, never offer again
 };
 
 static AimCand g_aimCand[AIM_MAX_CAND];
@@ -817,6 +819,7 @@ static bool    g_aimCollected = false;
 static void  *g_yawObj, *g_pitchObj;
 static size_t g_yawOff, g_pitchOff;
 static int8_t g_yawForm = -1, g_pitchForm = -1;
+static bool   g_aimVerified = false;
 
 // form: 0:v  1:-v  2:v+180  3:v-180  4:-v+180  5:-v-180
 static float apply_form(int form, float v) {
@@ -871,6 +874,8 @@ static void aim_collect() {
                 c.off = g_il2.field_get_offset(f);
                 c.formYaw = c.formPitch = 0;
                 c.hitsYaw = c.hitsPitch = 0;
+                c.accYaw = c.accPitch = 0;
+                c.dead = false;
             }
             g_il2.free(tn);
         }
@@ -889,57 +894,127 @@ static void aim_correlate(float yaw, float pitch) {
     aim_collect();
     if (!g_aimCandN) return;
 
-    // Only sample when the view actually moved, or every constant float matches.
-    if (have && fabsf(angle_delta(lastYaw, yaw)) < 2.0f &&
-                fabsf(pitch - lastPitch) < 1.0f) return;
+    float dYaw = have ? angle_delta(lastYaw, yaw) : 0;
+    float dPitch = have ? pitch - lastPitch : 0;
     bool first = !have;
     lastYaw = yaw; lastPitch = pitch; have = true;
     if (first) return;
 
+    // Each axis is judged only while that axis is actually turning. Gating on
+    // "either axis moved" is what let a field frozen at zero pass as yaw: during
+    // pitch-only movement the yaw test still ran, and a constant matched a yaw
+    // that was equally constant.
+    bool yawMoved   = fabsf(dYaw) > 3.0f;
+    bool pitchMoved = fabsf(dPitch) > 2.0f;
+    if (!yawMoved && !pitchMoved) return;
+
     for (int i = 0; i < g_aimCandN; i++) {
         AimCand &c = g_aimCand[i];
+        if (c.dead) continue;
         float v = rd<float>(c.obj, c.off);
-        if (!(v == v) || fabsf(v) > 100000.0f) { c.hitsYaw = c.hitsPitch = 0; continue; }
+        if (!(v == v) || fabsf(v) > 100000.0f) {
+            c.hitsYaw = c.hitsPitch = 0;
+            c.accYaw = c.accPitch = 0;
+            continue;
+        }
 
-        if (g_yawForm < 0) {
+        if (g_yawForm < 0 && yawMoved) {
             bool hit = false;
             for (int form = 0; form < 6; form++)
                 if (fabsf(angle_delta(apply_form(form, v), yaw)) < 1.5f) {
                     if (c.hitsYaw == 0) c.formYaw = (int8_t)form;
                     if (c.formYaw == form) { hit = true; break; }
                 }
-            c.hitsYaw = hit ? (int8_t)(c.hitsYaw + 1) : 0;
-            if (c.hitsYaw >= AIM_LOCK_HITS) {
+            if (hit) { c.hitsYaw++; c.accYaw += fabsf(dYaw); }
+            else     { c.hitsYaw = 0; c.accYaw = 0; }
+
+            // Enough samples *and* enough travel: a field has to follow the
+            // camera through a real sweep, not agree with it once.
+            if (c.hitsYaw >= AIM_LOCK_HITS && c.accYaw >= 45.0f) {
                 g_yawObj = c.obj; g_yawOff = c.off; g_yawForm = c.formYaw;
-                bplog("aim: yaw field locked at %p+0x%zx form=%d", c.obj, c.off, c.formYaw);
+                bplog("aim: yaw field locked at %p+0x%zx form=%d after %.0f deg",
+                      c.obj, c.off, c.formYaw, c.accYaw);
             }
         }
-        if (g_pitchForm < 0) {
+
+        if (g_pitchForm < 0 && pitchMoved) {
+            // Never accept the same address for both axes.
+            if (g_yawForm >= 0 && c.obj == g_yawObj && c.off == g_yawOff) continue;
+
             bool hit = false;
             for (int form = 0; form < 2; form++)
                 if (fabsf(angle_delta(apply_form(form, v), pitch)) < 1.5f) {
                     if (c.hitsPitch == 0) c.formPitch = (int8_t)form;
                     if (c.formPitch == form) { hit = true; break; }
                 }
-            c.hitsPitch = hit ? (int8_t)(c.hitsPitch + 1) : 0;
-            if (c.hitsPitch >= AIM_LOCK_HITS) {
+            if (hit) { c.hitsPitch++; c.accPitch += fabsf(dPitch); }
+            else     { c.hitsPitch = 0; c.accPitch = 0; }
+
+            if (c.hitsPitch >= AIM_LOCK_HITS && c.accPitch >= 15.0f) {
                 g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchForm = c.formPitch;
-                bplog("aim: pitch field locked at %p+0x%zx form=%d", c.obj, c.off, c.formPitch);
+                bplog("aim: pitch field locked at %p+0x%zx form=%d after %.0f deg",
+                      c.obj, c.off, c.formPitch, c.accPitch);
             }
         }
     }
 }
 
-static bool aim_ready() { return g_yawForm >= 0 && g_pitchForm >= 0; }
+static void aim_forget(const char *why) {
+    bplog("aim: dropping locked fields (%s), resuming search", why);
+    for (int i = 0; i < g_aimCandN; i++) {
+        AimCand &c = g_aimCand[i];
+        if ((c.obj == g_yawObj && c.off == g_yawOff) ||
+            (c.obj == g_pitchObj && c.off == g_pitchOff)) c.dead = true;
+        c.hitsYaw = c.hitsPitch = 0;
+        c.accYaw = c.accPitch = 0;
+    }
+    g_yawForm = g_pitchForm = -1;
+    g_yawObj = g_pitchObj = nullptr;
+    g_aimVerified = false;
+}
+
+static bool aim_ready() { return g_yawForm >= 0 && g_pitchForm >= 0 && g_aimVerified; }
 
 static void aim_write(float yaw, float pitch) {
-    if (g_yawForm >= 0) {
+    if (g_yawForm >= 0 && yaw == yaw) {
         float v = unapply_form(g_yawForm, yaw);
         memcpy((uint8_t *)g_yawObj + g_yawOff, &v, sizeof(float));
     }
-    if (g_pitchForm >= 0) {
+    if (g_pitchForm >= 0 && pitch == pitch) {   // NaN means "leave this axis"
         float v = unapply_form(g_pitchForm, pitch);
         memcpy((uint8_t *)g_pitchObj + g_pitchOff, &v, sizeof(float));
+    }
+}
+
+/**
+ * Correlation only proves a field mirrors the camera; it cannot prove writing to
+ * it steers anything. So before the aimbot is allowed to drive, nudge the view a
+ * few degrees and confirm the camera actually followed. A field that reads right
+ * but ignores writes gets blacklisted and the search resumes, instead of the
+ * aimbot flailing against a value the game overwrites.
+ */
+static void aim_verify(float camYaw) {
+    static int    phase = 0;
+    static float  wanted = 0, before = 0;
+    static double at = 0;
+
+    if (phase == 0) {
+        before = camYaw;
+        wanted = camYaw + 6.0f;
+        aim_write(wanted, 0.0f / 0.0f);   // pitch left alone during the probe
+        at = now_s();
+        phase = 1;
+        return;
+    }
+
+    float moved = angle_delta(before, camYaw);
+    if (moved > 2.0f) {
+        g_aimVerified = true;
+        phase = 0;
+        bplog("aim: write confirmed, camera followed %.1f deg", moved);
+    } else if (now_s() - at > 0.6) {
+        phase = 0;
+        aim_forget("write had no effect on the camera");
     }
 }
 
@@ -1039,7 +1114,10 @@ static void *poll_thread(void *) {
         float camYaw = deg_yaw(fwd), camPitch = deg_pitch(fwd);
 
         Config C = cfg();
-        if (C.aimbot || C.rcs) aim_correlate(camYaw, camPitch);
+        bool wantAim = C.aimbot || C.rcs;
+        if (wantAim) aim_correlate(camYaw, camPitch);
+        bool probing = wantAim && g_yawForm >= 0 && g_pitchForm >= 0 && !g_aimVerified;
+        if (probing) aim_verify(camYaw);
 
         // Team: the roster is one container per side, and the entity with no
         // replicated position is us, so whichever container holds it is ours.
@@ -1183,7 +1261,7 @@ static void *poll_thread(void *) {
             }
         }
 
-        if (writeAim) aim_write(wantYaw, wantPitch);
+        if (writeAim && !probing) aim_write(wantYaw, wantPitch);
         prevPitch = camPitch;
         havePrevPitch = true;
 
