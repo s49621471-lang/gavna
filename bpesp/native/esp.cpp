@@ -363,6 +363,7 @@ static bool find_player_class() {
 // ---------------------------------------------------------------------------
 // container discovery
 // ---------------------------------------------------------------------------
+// 1 = T[]   2 = List<T>   3 = a bare T reference
 static int container_kind(void *type) {
     char *tn = g_il2.type_get_name(type);
     if (!tn) return 0;
@@ -371,10 +372,14 @@ static int container_kind(void *type) {
     size_t len = strlen(tn), pn = strlen(R.playerName);
     if (len > 2 && !strcmp(tn + len - 2, "[]")) {
         if (len - 2 >= pn && !strncmp(tn + len - 2 - pn, R.playerName, pn)) kind = 1;
-    } else if (strstr(tn, "List`1<")) {
+    } else if (strstr(tn, "List`1<") || strstr(tn, "Dictionary`2<")) {
         char want[80];
         snprintf(want, sizeof(want), "<%s>", R.playerName);
-        if (strstr(tn, want)) kind = 2;
+        char want2[80];
+        snprintf(want2, sizeof(want2), ",%s>", R.playerName);
+        if (strstr(tn, want) || strstr(tn, want2)) kind = 2;
+    } else if (!strcmp(tn, R.playerName)) {
+        kind = 3;
     }
     g_il2.free(tn);
     return kind;
@@ -390,8 +395,9 @@ struct Cand {
     void  *cls      = nullptr;   // scene-resident holder, instances looked up live
     size_t rootOff  = 0;
     size_t chainOff = NO_HOP;
-    int    kind     = 0;         // 1 = T[], 2 = List<T>
+    int    kind     = 0;         // 1 = T[], 2 = List<T>, 3 = bare T
     int    lastCount = 0;
+    bool   nullRoot = false;
     char   desc[112] = {0};
 };
 
@@ -430,7 +436,14 @@ static void *find_objects(void *cls) {
 static int eval_cand(Cand &c, void *base, void **out, int cap) {
     if (!base) return 0;
     void *root = rd<void *>(base, c.rootOff);
-    if (!root) return 0;
+    if (!root) { c.nullRoot = true; return 0; }
+    c.nullRoot = false;
+
+    if (c.kind == 3) {                      // a bare reference is one entity
+        if (cap < 1) return 0;
+        out[0] = root;
+        return 1;
+    }
     if (c.chainOff != NO_HOP) {
         root = rd<void *>(root, c.chainOff);
         if (!root) return 0;
@@ -457,7 +470,11 @@ static int eval_cand(Cand &c, void *base, void **out, int cap) {
     return got;
 }
 
-/** For a scene-resident holder, tries every live instance and keeps the best. */
+/**
+ * For a scene-resident holder. A bare reference means one component per player,
+ * so those accumulate across instances; a collection means one instance owns the
+ * whole roster, so the fullest instance wins.
+ */
 static int eval_scene_cand(Cand &c, void **out, int cap) {
     void *arr = find_objects(c.cls);
     if (!arr) return 0;
@@ -465,14 +482,23 @@ static int eval_scene_cand(Cand &c, void **out, int cap) {
     if (n > 256) n = 256;
     void **objs = (void **)IL2CPP_ARRAY_DATA(arr);
 
-    int best = 0;
+    int best = 0, total = 0;
     void *tmp[MAX_ENT];
     for (size_t i = 0; i < n; i++) {
         if (!objs[i]) continue;
         int got = eval_cand(c, objs[i], tmp, cap);
-        if (got > best) { best = got; memcpy(out, tmp, sizeof(void *) * got); }
+        if (c.kind == 3) {
+            for (int j = 0; j < got && total < cap; j++) {
+                bool dup = false;
+                for (int k = 0; k < total; k++) if (out[k] == tmp[j]) { dup = true; break; }
+                if (!dup) out[total++] = tmp[j];
+            }
+        } else if (got > best) {
+            best = got;
+            memcpy(out, tmp, sizeof(void *) * got);
+        }
     }
-    return best;
+    return c.kind == 3 ? total : best;
 }
 
 static int eval_any(Cand &c, void **out, int cap) {
@@ -589,8 +615,9 @@ static int read_entities(void **out, int cap, bool verbose) {
 
     if (verbose)
         for (int i = 0; i < g_candCount; i++)
-            if (g_cand[i].lastCount || g_candCount <= 8)
-                bplog("  cand[%d] n=%-3d %s", i, g_cand[i].lastCount, g_cand[i].desc);
+            if (g_cand[i].lastCount || g_candCount <= 12)
+                bplog("  cand[%d] n=%-3d%s %s", i, g_cand[i].lastCount,
+                      g_cand[i].nullRoot ? " (null)" : "", g_cand[i].desc);
 
     if (live != g_bestCand) {
         g_bestCand = live;
@@ -617,8 +644,13 @@ static bool resolve_camera() {
     return R.mGetMain && R.mView && R.mProj;
 }
 
+/**
+ * Re-fetched every poll rather than cached. A cached Camera whose native object
+ * has been swapped out — respawn, death cam, scene change — keeps a non-null
+ * m_CachedPtr and happily returns a view matrix frozen at the moment it died,
+ * which projects every entity from a viewpoint the player left long ago.
+ */
 static void *camera_object() {
-    if (R.camObj && rd<void *>(R.camObj, 0x10)) return R.camObj;
     R.camObj = invoke(R.mGetMain, nullptr, nullptr);
     return R.camObj;
 }
@@ -751,14 +783,19 @@ static void *poll_thread(void *) {
         for (int i = 0; i < n && out < MAX_ENT; i++) {
             void *e = ents[i];
 
-            if (diag && i < 6) {
+            if (diag && i < 8) {
                 char nm[40];
                 il2cpp_string_to_utf8(rd<void *>(e, R.oName), nm, sizeof(nm));
-                Vec3 p = rd<Vec3>(e, R.oPos);
-                bplog("  ent[%d] name='%s' hp=%d armor=%d pos=(%.2f,%.2f,%.2f) "
-                      "move=%p noTf=%d", i, nm,
-                      rd<int32_t>(e, R.oHp), rd<int32_t>(e, R.oArm),
-                      p.x, p.y, p.z, rd<void *>(e, R.oMove), rd<uint8_t>(e, R.oNoTf));
+                Vec3 p  = rd<Vec3>(e, R.oPos);
+                Vec3 nf = rd<Vec3>(e, OFF_NETPOS_FROM);
+                Vec3 nt = rd<Vec3>(e, OFF_NETPOS_TO);
+                float sx = 0, sy = 0;
+                world_to_screen(vp, p, &sx, &sy);
+                bplog("  ent[%d] '%s' hp=%d cur=(%.2f,%.2f,%.2f) from=(%.2f,%.2f,%.2f) "
+                      "to=(%.2f,%.2f,%.2f) go=%p screen=(%.3f,%.3f)",
+                      i, nm, rd<int32_t>(e, R.oHp), p.x, p.y, p.z,
+                      nf.x, nf.y, nf.z, nt.x, nt.y, nt.z,
+                      rd<void *>(e, OFF_GAMEOBJECT), sx, sy);
             }
 
             // Only one filter, and it is the one the data supports: an entity
@@ -803,8 +840,9 @@ static void *poll_thread(void *) {
         }
 
         if (diag)
-            bplog("entities=%d drawn=%d (skip zeroPos=%d behind=%d) eye=(%.1f,%.1f,%.1f)",
-                  n, out, skipZero, skipProj, eye.x, eye.y, eye.z);
+            bplog("entities=%d drawn=%d (skip zeroPos=%d behind=%d) eye=(%.2f,%.2f,%.2f) "
+                  "cam=%p view0=%.3f",
+                  n, out, skipZero, skipProj, eye.x, eye.y, eye.z, cam, view.m[0]);
 
         pthread_mutex_lock(&g_lock);
         memcpy(g_ent, tmp, sizeof(EntityView) * out);
