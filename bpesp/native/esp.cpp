@@ -89,10 +89,12 @@ static void set_status(int st, const char *fmt, ...) {
     va_end(ap);
 
     pthread_mutex_lock(&g_lock);
+    bool changed = (g_state != st) || strcmp(g_status, tmp) != 0;
     g_state = st;
     snprintf(g_status, sizeof(g_status), "%s", tmp);
     pthread_mutex_unlock(&g_lock);
-    bplog("state=%d %s", st, tmp);
+
+    if (changed) bplog("state=%d %s", st, tmp);   // this is polled, so log edges only
 }
 
 // ---------------------------------------------------------------------------
@@ -567,30 +569,34 @@ static void collect_scene_containers() {
     }
 }
 
-/** Picks the candidate holding the most entities right now. */
+/** Merges every candidate. The roster is split across containers — one array
+ *  per team — so taking only the fullest one silently drops the other side. */
 static int read_entities(void **out, int cap, bool verbose) {
-    int bestCount = 0, bestIdx = -1;
+    int total = 0, live = 0;
     void *tmp[MAX_ENT];
 
     for (int i = 0; i < g_candCount; i++) {
-        int got = eval_any(g_cand[i], tmp, cap);
+        int got = eval_any(g_cand[i], tmp, MAX_ENT);
         g_cand[i].lastCount = got;
-        if (got > bestCount) {
-            bestCount = got;
-            bestIdx = i;
-            memcpy(out, tmp, sizeof(void *) * got);
+        if (got) live++;
+
+        for (int j = 0; j < got && total < cap; j++) {
+            bool dup = false;
+            for (int k = 0; k < total; k++) if (out[k] == tmp[j]) { dup = true; break; }
+            if (!dup) out[total++] = tmp[j];
         }
     }
 
-    if (verbose) {
+    if (verbose)
         for (int i = 0; i < g_candCount; i++)
-            bplog("  cand[%d] n=%-3d %s", i, g_cand[i].lastCount, g_cand[i].desc);
+            if (g_cand[i].lastCount || g_candCount <= 8)
+                bplog("  cand[%d] n=%-3d %s", i, g_cand[i].lastCount, g_cand[i].desc);
+
+    if (live != g_bestCand) {
+        g_bestCand = live;
+        bplog("merging %d populated container(s) -> %d entities", live, total);
     }
-    if (bestIdx >= 0 && bestIdx != g_bestCand) {
-        g_bestCand = bestIdx;
-        bplog("using container: %s (%d entities)", g_cand[bestIdx].desc, bestCount);
-    }
-    return bestCount;
+    return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,15 +634,28 @@ static Mat4 mat_mul(const Mat4 &a, const Mat4 &b) {
     return r;
 }
 
-static bool world_to_screen(const Mat4 &vp, Vec3 w, float sw, float sh,
-                            float *sx, float *sy) {
+/** Emits normalised viewport coordinates in [0,1], not pixels. The game can
+ *  render at a different resolution from the window it is presented in — this
+ *  run reported a 1800x810 camera inside a much larger view — so the overlay
+ *  scales by its own size and the two can never drift apart. */
+static bool world_to_screen(const Mat4 &vp, Vec3 w, float *nx, float *ny) {
     float cx = vp.m[0] * w.x + vp.m[4] * w.y + vp.m[8]  * w.z + vp.m[12];
     float cy = vp.m[1] * w.x + vp.m[5] * w.y + vp.m[9]  * w.z + vp.m[13];
     float cw = vp.m[3] * w.x + vp.m[7] * w.y + vp.m[11] * w.z + vp.m[15];
     if (cw < 0.01f) return false;
-    *sx = (cx / cw * 0.5f + 0.5f) * sw;
-    *sy = (1.0f - (cy / cw * 0.5f + 0.5f)) * sh;
+    *nx = cx / cw * 0.5f + 0.5f;
+    *ny = 1.0f - (cy / cw * 0.5f + 0.5f);
     return true;
+}
+
+/** Camera world position, recovered from the rigid view transform: -R^T * t. */
+static Vec3 camera_pos(const Mat4 &v) {
+    float t0 = v.m[12], t1 = v.m[13], t2 = v.m[14];
+    Vec3 c;
+    c.x = -(v.m[0] * t0 + v.m[1] * t1 + v.m[2]  * t2);
+    c.y = -(v.m[4] * t0 + v.m[5] * t1 + v.m[6]  * t2);
+    c.z = -(v.m[8] * t0 + v.m[9] * t1 + v.m[10] * t2);
+    return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -697,7 +716,7 @@ static void *poll_thread(void *) {
         if (n == 0) {
             // Holders spawn with the match, so keep re-sweeping the scene: a
             // list that does not exist at menu time will appear later.
-            if (now_s() - lastSweep > 8.0) {
+            if (now_s() - lastSweep > 3.0) {
                 lastSweep = now_s();
                 collect_scene_containers();
                 collect_static_containers();
@@ -721,38 +740,18 @@ static void *poll_thread(void *) {
         Mat4 proj = rd<Mat4>(unbox(pBox), 0);
         Mat4 vp   = mat_mul(proj, view);
 
-        float sw = g_screenW, sh = g_screenH;
-        if (R.mPixW && R.mPixH) {
-            void *bw = invoke(R.mPixW, cam, nullptr), *bh = invoke(R.mPixH, cam, nullptr);
-            if (bw && bh) {
-                float w = (float)rd<int32_t>(unbox(bw), 0);
-                float hgt = (float)rd<int32_t>(unbox(bh), 0);
-                if (w > 1 && hgt > 1) { sw = w; sh = hgt; }
-            }
-        }
-        if (sw < 1 || sh < 1) {
-            if (diag) bplog("no viewport size (camera and java both silent)");
-            usleep(200 * 1000);
-            continue;
-        }
-
-        Vec3 eye{0, 0, 0};
-        bool haveEye = false;
-        for (int i = 0; i < n; i++)
-            if (rd<void *>(ents[i], R.oMove)) {
-                eye = rd<Vec3>(ents[i], R.oPos);
-                haveEye = true;
-                break;
-            }
+        // The eye comes from the view matrix, not from an entity: the local
+        // player's replicated position is never filled in (it stays 0,0,0).
+        Vec3 eye = camera_pos(view);
 
         EntityView tmp[MAX_ENT];
         int out = 0;
-        int skipLocal = 0, skipNoTf = 0, skipZero = 0, skipProj = 0;
+        int skipZero = 0, skipProj = 0;
 
         for (int i = 0; i < n && out < MAX_ENT; i++) {
             void *e = ents[i];
 
-            if (diag && i < 4) {
+            if (diag && i < 6) {
                 char nm[40];
                 il2cpp_string_to_utf8(rd<void *>(e, R.oName), nm, sizeof(nm));
                 Vec3 p = rd<Vec3>(e, R.oPos);
@@ -762,9 +761,10 @@ static void *poll_thread(void *) {
                       p.x, p.y, p.z, rd<void *>(e, R.oMove), rd<uint8_t>(e, R.oNoTf));
             }
 
-            if (rd<void *>(e, R.oMove)) { skipLocal++; continue; }
-            if (rd<uint8_t>(e, R.oNoTf)) { skipNoTf++; continue; }
-
+            // Only one filter, and it is the one the data supports: an entity
+            // with no replicated position cannot be drawn. That covers the local
+            // player and anyone not yet spawned. NMAMove marks bots, not self,
+            // so keying off it deleted every bot from the overlay.
             Vec3 p = rd<Vec3>(e, R.oPos);
             if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) { skipZero++; continue; }
 
@@ -772,26 +772,23 @@ static void *poll_thread(void *) {
             Vec3 head{p.x, p.y + PLAYER_HEIGHT, p.z};
 
             float fx, fy, hx, hy;
-            if (!world_to_screen(vp, p, sw, sh, &fx, &fy) ||
-                !world_to_screen(vp, head, sw, sh, &hx, &hy)) { skipProj++; continue; }
+            if (!world_to_screen(vp, p, &fx, &fy) ||
+                !world_to_screen(vp, head, &hx, &hy)) { skipProj++; continue; }
 
             Vec3 d = rd<Vec3>(e, R.oDir);
             Vec3 tip{p.x + d.x * 2.0f, p.y + PLAYER_HEIGHT * 0.6f + d.y * 2.0f, p.z + d.z * 2.0f};
             float tx = fx, ty = fy;
-            world_to_screen(vp, tip, sw, sh, &tx, &ty);
+            world_to_screen(vp, tip, &tx, &ty);
 
-            float dist = 0;
-            if (haveEye) {
-                float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
-                dist = sqrtf(dx * dx + dy * dy + dz * dz);
-            }
+            float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
 
             EntityView &v = tmp[out];
             v.data[0]  = fx;
             v.data[1]  = fy;
             v.data[2]  = hx;
             v.data[3]  = hy;
-            v.data[4]  = fabsf(fy - hy) * PLAYER_WIDTH_RATIO;
+            v.data[4]  = PLAYER_WIDTH_RATIO;
             v.data[5]  = (float)hp;
             v.data[6]  = (float)rd<int32_t>(e, R.oArm);
             v.data[7]  = dist;
@@ -806,9 +803,8 @@ static void *poll_thread(void *) {
         }
 
         if (diag)
-            bplog("entities=%d drawn=%d (skip local=%d noTf=%d zeroPos=%d behind=%d) "
-                  "viewport=%.0fx%.0f eye=%d",
-                  n, out, skipLocal, skipNoTf, skipZero, skipProj, sw, sh, (int)haveEye);
+            bplog("entities=%d drawn=%d (skip zeroPos=%d behind=%d) eye=(%.1f,%.1f,%.1f)",
+                  n, out, skipZero, skipProj, eye.x, eye.y, eye.z);
 
         pthread_mutex_lock(&g_lock);
         memcpy(g_ent, tmp, sizeof(EntityView) * out);

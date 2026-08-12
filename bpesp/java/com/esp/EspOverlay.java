@@ -201,10 +201,14 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             boolean alive = buf[b + Native.F_ALIVE] > 0.5f;
             if (!alive && !showDead) continue;
 
-            float fx = buf[b + Native.F_FEET_X];
-            float fy = buf[b + Native.F_FEET_Y];
-            float hy = buf[b + Native.F_HEAD_Y];
-            float bw = buf[b + Native.F_BOX_W];
+            // Native emits normalised viewport coordinates; the game may render
+            // at a different resolution from this window, so scale by our own
+            // size rather than by anything the camera reported.
+            float vw = getWidth(), vh = getHeight();
+            float fx = buf[b + Native.F_FEET_X] * vw;
+            float fy = buf[b + Native.F_FEET_Y] * vh;
+            float hy = buf[b + Native.F_HEAD_Y] * vh;
+            float bw = Math.abs(fy - hy) * buf[b + Native.F_BOX_W];
             if (bw < 2 * d) bw = 2 * d;
 
             float left = fx - bw * 0.5f, right = fx + bw * 0.5f;
@@ -224,7 +228,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                 stroke.setColor(0xAA44CCFF);
                 stroke.setStrokeWidth(1.4f * d);
                 c.drawLine(fx, (top + bottom) * 0.5f,
-                           buf[b + Native.F_DIR_X], buf[b + Native.F_DIR_Y], stroke);
+                           buf[b + Native.F_DIR_X] * vw, buf[b + Native.F_DIR_Y] * vh, stroke);
             }
 
             rect.set(left, top, right, bottom);

@@ -9,7 +9,7 @@ public final class Native {
     public static final int F_FEET_Y = 1;
     public static final int F_HEAD_X = 2;
     public static final int F_HEAD_Y = 3;
-    public static final int F_BOX_W  = 4;
+    public static final int F_BOX_W  = 4;   // width as a fraction of box height
     public static final int F_HP     = 5;
     public static final int F_ARMOR  = 6;
     public static final int F_DIST   = 7;
