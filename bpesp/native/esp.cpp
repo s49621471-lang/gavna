@@ -728,11 +728,148 @@ static bool world_to_screen(const Mat4 &vp, Vec3 w, float *nx, float *ny) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// real bones
+// ---------------------------------------------------------------------------
+// The entity has no GameObject and no SkinnedMeshRenderer of its own — both read
+// null — so the animated model cannot be reached from it. It can be reached from
+// the other end: sweep the scene's skinned renderers, take each one's bone
+// hierarchy, and match a rig to an entity by proximity. Bone world positions are
+// then read through Transform's injected icall, which is a direct native call
+// rather than a managed invoke, so it is cheap enough to do every frame.
+
+typedef void (*TransformGetPos)(void *transform, Vec3 *out);
+static TransformGetPos g_getPos;
+
+static void *g_smrCls, *g_mGetBones, *g_mGetName;
+static bool  g_boneApiTried;
+
+struct Rig {
+    void  *ent;
+    void  *bone[JOINTS];
+    int    mapped;
+};
+static Rig    g_rig[MAX_ENT];
+static int    g_rigN;
+static double g_lastRigScan;
+static bool   g_loggedBoneNames;
+
+static void bone_api_init() {
+    if (g_boneApiTried) return;
+    g_boneApiTried = true;
+
+    g_getPos = (TransformGetPos)dlsym(g_il2.handle, "il2cpp_resolve_icall");
+    if (g_getPos) {
+        void *(*resolve)(const char *) = (void *(*)(const char *))g_getPos;
+        g_getPos = (TransformGetPos)resolve("UnityEngine.Transform::get_position_Injected");
+    }
+
+    void *ue = unity_image();
+    if (ue) {
+        g_smrCls = g_il2.class_from_name(ue, "UnityEngine", "SkinnedMeshRenderer");
+        if (g_smrCls) g_mGetBones = g_il2.class_get_method_from_name(g_smrCls, "get_bones", 0);
+        void *objCls = g_il2.class_from_name(ue, "UnityEngine", "Object");
+        if (objCls) g_mGetName = g_il2.class_get_method_from_name(objCls, "get_name", 0);
+    }
+    bplog("bones: getPos=%p smr=%p getBones=%p getName=%p",
+          (void *)g_getPos, g_smrCls, g_mGetBones, g_mGetName);
+}
+
+static bool bone_api_ok() { return g_getPos && g_smrCls && g_mGetBones && g_mGetName; }
+
+static Vec3 bone_pos(void *transform) {
+    Vec3 v{0, 0, 0};
+    if (transform && g_getPos) g_getPos(transform, &v);
+    return v;
+}
+
+static void lower(char *s) {
+    for (; *s; s++) if (*s >= 'A' && *s <= 'Z') *s += 32;
+}
+
+/** Maps a bone name onto a joint slot; -1 when it is not one we draw. */
+static int joint_for(const char *raw) {
+    char n[64];
+    snprintf(n, sizeof(n), "%s", raw ? raw : "");
+    lower(n);
+
+    bool left  = strstr(n, "left") || strstr(n, "_l") || strstr(n, ".l") || strstr(n, " l");
+    bool right = strstr(n, "right") || strstr(n, "_r") || strstr(n, ".r") || strstr(n, " r");
+
+    if (strstr(n, "head"))                          return 0;
+    if (strstr(n, "neck"))                          return 1;
+    if (strstr(n, "chest") || strstr(n, "spine") ||
+        strstr(n, "body")  || strstr(n, "torso"))   return 2;
+    if (strstr(n, "hips") || strstr(n, "pelvis"))   return 3;
+    if (strstr(n, "shoulder") || strstr(n, "upperarm") || strstr(n, "arm"))
+        return left ? 4 : (right ? 5 : -1);
+    if (strstr(n, "hand") || strstr(n, "wrist"))
+        return left ? 6 : (right ? 7 : -1);
+    if (strstr(n, "upleg") || strstr(n, "thigh") || strstr(n, "hip"))
+        return left ? 8 : (right ? 9 : -1);
+    if (strstr(n, "foot") || strstr(n, "ankle") || strstr(n, "toe"))
+        return left ? 10 : (right ? 11 : -1);
+    return -1;
+}
+
+/** Rebuilds the entity-to-rig mapping. Cheap enough at a couple of seconds. */
+static void rescan_rigs(void **ents, int n) {
+    bone_api_init();
+    if (!bone_api_ok()) return;
+
+    void *arr = find_objects(g_smrCls);
+    if (!arr) return;
+    size_t count = rd<uint64_t>(arr, 0x18);
+    if (count > 128) count = 128;
+    void **smrs = (void **)IL2CPP_ARRAY_DATA(arr);
+
+    g_rigN = 0;
+    for (size_t i = 0; i < count && g_rigN < MAX_ENT; i++) {
+        if (!smrs[i]) continue;
+        void *bonesArr = invoke(g_mGetBones, smrs[i], nullptr);
+        if (!bonesArr) continue;
+        size_t bn = rd<uint64_t>(bonesArr, 0x18);
+        if (bn < 4 || bn > 128) continue;
+        void **bones = (void **)IL2CPP_ARRAY_DATA(bonesArr);
+
+        Rig rig{};
+        rig.mapped = 0;
+        for (size_t b = 0; b < bn; b++) {
+            if (!bones[b]) continue;
+            void *nameObj = invoke(g_mGetName, bones[b], nullptr);
+            char nm[64];
+            il2cpp_string_to_utf8(nameObj, nm, sizeof(nm));
+            if (!g_loggedBoneNames) bplog("bones: '%s'", nm);
+            int j = joint_for(nm);
+            if (j >= 0 && !rig.bone[j]) { rig.bone[j] = bones[b]; rig.mapped++; }
+        }
+        g_loggedBoneNames = true;
+        if (rig.mapped < 6) continue;
+
+        // Attach to the nearest entity; the hips bone is the model's anchor.
+        Vec3 anchor = bone_pos(rig.bone[3] ? rig.bone[3] : rig.bone[2]);
+        float best = 2.5f;
+        for (int e = 0; e < n; e++) {
+            Vec3 p = rd<Vec3>(ents[e], R.oPos);
+            if (p.x == 0 && p.y == 0 && p.z == 0) continue;
+            float dx = p.x - anchor.x, dz = p.z - anchor.z;
+            float dy = p.y - anchor.y;
+            float dist = sqrtf(dx * dx + dy * dy * 0.25f + dz * dz);
+            if (dist < best) { best = dist; rig.ent = ents[e]; }
+        }
+        if (rig.ent) g_rig[g_rigN++] = rig;
+    }
+    bplog("bones: %d rig(s) matched to entities", g_rigN);
+}
+
+static Rig *rig_for(void *ent) {
+    for (int i = 0; i < g_rigN; i++) if (g_rig[i].ent == ent) return &g_rig[i];
+    return nullptr;
+}
+
 /**
  * Joint positions for the skeleton, synthesised from the capsule and the look
- * direction. The remote entities carry no GameObject and no SkinnedMeshRenderer
- * — both read null — so there are no real bone transforms to walk; this is a
- * rig posed from position and facing, not the animated pose.
+ * direction. Used only when no animated rig could be matched to the entity.
  */
 static void build_joints(Vec3 p, Vec3 dir, Vec3 *j) {
     float len = sqrtf(dir.x * dir.x + dir.z * dir.z);
@@ -758,6 +895,79 @@ static void build_joints(Vec3 p, Vec3 dir, Vec3 *j) {
     j[9]  = Vec3{hip.x + r.x * hw, hip.y, hip.z + r.z * hw};                 // R hip
     j[10] = Vec3{p.x - r.x * hw, p.y, p.z - r.z * hw};                       // L foot
     j[11] = Vec3{p.x + r.x * hw, p.y, p.z + r.z * hw};                       // R foot
+}
+
+// ---------------------------------------------------------------------------
+// team discovery
+// ---------------------------------------------------------------------------
+// There is no per-team container — one array holds the whole roster — so the
+// side has to come from a field. The original dump covered a single team, so
+// whatever encodes the side had to be constant throughout it; that leaves only
+// two Int32 candidates, and both are tried first. Failing those, any Int32 that
+// splits the roster into exactly two stable groups is accepted.
+
+#define TEAM_UNKNOWN ((size_t)-1)
+static size_t g_teamOff = TEAM_UNKNOWN;
+static bool   g_teamSearched = false;
+
+static const size_t TEAM_HINTS[] = { 0x100, 0x118 };
+
+/** Offsets of every Int32 field on the entity class, gathered once. */
+static size_t g_intOff[64];
+static int    g_intOffN = 0;
+
+static void collect_int_fields() {
+    if (g_intOffN || !R.playerCls) return;
+    void *iter = nullptr, *f;
+    while ((f = g_il2.class_get_fields(R.playerCls, &iter)) != nullptr && g_intOffN < 64) {
+        if (g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC) continue;
+        char *tn = g_il2.type_get_name(g_il2.field_get_type(f));
+        if (!tn) continue;
+        if (!strcmp(tn, "System.Int32")) g_intOff[g_intOffN++] = g_il2.field_get_offset(f);
+        g_il2.free(tn);
+    }
+}
+
+/** True when this offset splits the roster into exactly two values. */
+static bool splits_roster(void **ents, int n, size_t off) {
+    int32_t a = 0, b = 0;
+    bool haveA = false, haveB = false;
+    for (int i = 0; i < n; i++) {
+        int32_t v = rd<int32_t>(ents[i], off);
+        if (!haveA)          { a = v; haveA = true; }
+        else if (v == a)     continue;
+        else if (!haveB)     { b = v; haveB = true; }
+        else if (v != b)     return false;      // a third value rules it out
+    }
+    return haveA && haveB;
+}
+
+static void find_team_field(void **ents, int n) {
+    if (g_teamOff != TEAM_UNKNOWN || n < 3) return;
+    collect_int_fields();
+
+    for (size_t h = 0; h < sizeof(TEAM_HINTS) / sizeof(TEAM_HINTS[0]); h++)
+        if (splits_roster(ents, n, TEAM_HINTS[h])) {
+            g_teamOff = TEAM_HINTS[h];
+            bplog("team: using field @0x%zx (from the single-team dump's constants)", g_teamOff);
+            return;
+        }
+
+    for (int i = 0; i < g_intOffN; i++) {
+        size_t off = g_intOff[i];
+        if (off == R.oHp || off == R.oArm || off == R.oKill || off == R.oDeath ||
+            off == R.oScore || off == R.oSlot) continue;
+        if (splits_roster(ents, n, off)) {
+            g_teamOff = off;
+            bplog("team: using field @0x%zx (splits the roster in two)", g_teamOff);
+            return;
+        }
+    }
+
+    if (!g_teamSearched) {
+        g_teamSearched = true;
+        bplog("team: no field splits the roster yet, %d ints examined", g_intOffN);
+    }
 }
 
 /** Camera forward in world space. Unity's view matrix looks down -Z. */
@@ -800,7 +1010,7 @@ static Vec3 camera_pos(const Mat4 &v) {
 // rotations. A field may store the angle negated or offset by half a turn, so
 // each of those forms is tested and the matching one is inverted on write.
 
-#define AIM_MAX_CAND 3000
+#define AIM_MAX_CAND 12000
 #define AIM_LOCK_HITS 6
 
 struct AimCand {
@@ -868,10 +1078,22 @@ static void aim_collect() {
             if (g_il2.field_get_flags(f) & FIELD_ATTRIBUTE_STATIC) continue;
             char *tn = g_il2.type_get_name(g_il2.field_get_type(f));
             if (!tn) continue;
-            if (!strcmp(tn, "System.Single")) {
+
+            // A view angle is rarely a lone float. Euler triplets and
+            // quaternions are just as common, so each component of those is
+            // watched as a candidate in its own right.
+            int slots = 0;
+            if (!strcmp(tn, "System.Single"))            slots = 1;
+            else if (!strcmp(tn, "UnityEngine.Vector2")) slots = 2;
+            else if (!strcmp(tn, "UnityEngine.Vector3")) slots = 3;
+            else if (!strcmp(tn, "UnityEngine.Vector4") ||
+                     !strcmp(tn, "UnityEngine.Quaternion")) slots = 4;
+
+            size_t base = g_il2.field_get_offset(f);
+            for (int s = 0; s < slots && g_aimCandN < AIM_MAX_CAND; s++) {
                 AimCand &c = g_aimCand[g_aimCandN++];
                 c.obj = objs[i];
-                c.off = g_il2.field_get_offset(f);
+                c.off = base + s * sizeof(float);
                 c.formYaw = c.formPitch = 0;
                 c.hitsYaw = c.hitsPitch = 0;
                 c.accYaw = c.accPitch = 0;
@@ -881,7 +1103,7 @@ static void aim_collect() {
         }
     }
     g_aimCollected = true;
-    bplog("aim: %d float fields under observation across %zu components", g_aimCandN, n);
+    bplog("aim: %d angle candidates under observation across %zu components", g_aimCandN, n);
 }
 
 /** Call once per tick with the camera's true angles. Locks on when a field has
@@ -957,6 +1179,19 @@ static void aim_correlate(float yaw, float pitch) {
             }
         }
     }
+}
+
+/** Periodic note on how close the search is, so a silent failure is legible. */
+static void aim_progress() {
+    int yawAlive = 0, pitchAlive = 0;
+    float bestYaw = 0, bestPitch = 0;
+    for (int i = 0; i < g_aimCandN; i++) {
+        if (g_aimCand[i].hitsYaw > 0)   { yawAlive++;   if (g_aimCand[i].accYaw > bestYaw) bestYaw = g_aimCand[i].accYaw; }
+        if (g_aimCand[i].hitsPitch > 0) { pitchAlive++; if (g_aimCand[i].accPitch > bestPitch) bestPitch = g_aimCand[i].accPitch; }
+    }
+    bplog("aim: %d cand, yaw %d still matching (best %.0f/45 deg), "
+          "pitch %d still matching (best %.0f/15 deg)",
+          g_aimCandN, yawAlive, bestYaw, pitchAlive, bestPitch);
 }
 
 static void aim_forget(const char *why) {
@@ -1116,18 +1351,27 @@ static void *poll_thread(void *) {
         Config C = cfg();
         bool wantAim = C.aimbot || C.rcs;
         if (wantAim) aim_correlate(camYaw, camPitch);
+        if (wantAim && diag) aim_progress();
+        if (now_s() - g_lastRigScan > 2.0) { g_lastRigScan = now_s(); rescan_rigs(ents, n); }
         bool probing = wantAim && g_yawForm >= 0 && g_pitchForm >= 0 && !g_aimVerified;
         if (probing) aim_verify(camYaw);
 
-        // Team: the roster is one container per side, and the entity with no
-        // replicated position is us, so whichever container holds it is ours.
-        int ownCand = -1;
-        if (C.teamCheck)
-            for (int i = 0; i < n; i++) {
-                Vec3 p = rd<Vec3>(ents[i], R.oPos);
-                if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f &&
-                    g_cand[entCand[i]].kind != 3) { ownCand = entCand[i]; break; }
+        // Team. The local player is the entity whose position is never
+        // replicated; friendlies are whoever shares its team value.
+        int     localIdx = -1;
+        int32_t ownTeam = 0;
+        bool    haveTeam = false;
+        for (int i = 0; i < n; i++) {
+            Vec3 p = rd<Vec3>(ents[i], R.oPos);
+            if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) { localIdx = i; break; }
+        }
+        if (C.teamCheck) {
+            find_team_field(ents, n);
+            if (g_teamOff != TEAM_UNKNOWN && localIdx >= 0) {
+                ownTeam = rd<int32_t>(ents[localIdx], g_teamOff);
+                haveTeam = true;
             }
+        }
 
         EntityView tmp[MAX_ENT];
         int out = 0;
@@ -1150,10 +1394,21 @@ static void *poll_thread(void *) {
                 float sx = 0, sy = 0;
                 world_to_screen(vp, p, &sx, &sy);
                 bplog("  ent[%d] '%s' hp=%d cur=(%.2f,%.2f,%.2f) from=(%.2f,%.2f,%.2f) "
-                      "to=(%.2f,%.2f,%.2f) go=%p screen=(%.3f,%.3f)",
+                      "to=(%.2f,%.2f,%.2f) go=%p screen=(%.3f,%.3f)%s",
                       i, nm, rd<int32_t>(e, R.oHp), p.x, p.y, p.z,
                       nf.x, nf.y, nf.z, nt.x, nt.y, nt.z,
-                      rd<void *>(e, OFF_GAMEOBJECT), sx, sy);
+                      rd<void *>(e, OFF_GAMEOBJECT), sx, sy,
+                      i == localIdx ? "  <- local" : "");
+
+                // Every Int32 on the entity, so the team field can be picked out
+                // of a log by eye if the automatic split does not find it.
+                collect_int_fields();
+                char ints[512];
+                int w = 0;
+                for (int k = 0; k < g_intOffN && w < (int)sizeof(ints) - 16; k++)
+                    w += snprintf(ints + w, sizeof(ints) - w, "%zx=%d ",
+                                  g_intOff[k], rd<int32_t>(e, g_intOff[k]));
+                bplog("        ints %s", ints);
             }
 
             // Only one filter, and it is the one the data supports: an entity
@@ -1162,7 +1417,7 @@ static void *poll_thread(void *) {
             // so keying off it deleted every bot from the overlay.
             Vec3 p = rd<Vec3>(e, R.oPos);
             if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) { skipZero++; continue; }
-            if (ownCand >= 0 && entCand[i] == ownCand) { skipTeam++; continue; }
+            if (haveTeam && rd<int32_t>(e, g_teamOff) == ownTeam) { skipTeam++; continue; }
 
             int hp = rd<int32_t>(e, R.oHp);
             Vec3 head{p.x, p.y + PLAYER_HEIGHT, p.z};
@@ -1195,8 +1450,16 @@ static void *poll_thread(void *) {
             v.data[12] = tx;
             v.data[13] = ty;
 
+            // Real bones when the model was matched, posed rig otherwise.
             Vec3 joints[JOINTS];
-            build_joints(p, d, joints);
+            Rig *rig = rig_for(e);
+            if (rig) {
+                build_joints(p, d, joints);          // fills any unmapped slot
+                for (int k = 0; k < JOINTS; k++)
+                    if (rig->bone[k]) joints[k] = bone_pos(rig->bone[k]);
+            } else {
+                build_joints(p, d, joints);
+            }
 
             // Aimbot target selection. Head/chest/hip map onto the same rig the
             // skeleton uses; "nearest" takes whichever joint is closest to where

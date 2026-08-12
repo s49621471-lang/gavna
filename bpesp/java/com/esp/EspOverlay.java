@@ -72,7 +72,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Opt(TAB_VISUALS, "dist",     "Distance",       true),
             new Opt(TAB_VISUALS, "kd",       "Kills / deaths", false),
             new Opt(TAB_VISUALS, "snap",     "Snap line",      false),
-            new Opt(TAB_VISUALS, "look",     "Look direction", false),
             new Opt(TAB_VISUALS, "team",     "Enemies only",   true),
             new Opt(TAB_VISUALS, "dead",     "Show dead",      false),
             new Opt(TAB_VISUALS, "status",   "Debug status",   true),
@@ -309,12 +308,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                 stroke.setColor(0x66FFFFFF);
                 stroke.setStrokeWidth(lw);
                 c.drawLine(cx, cy, fx, bottom, stroke);
-            }
-            if (on("look")) {
-                stroke.setColor(0xAA44CCFF);
-                stroke.setStrokeWidth(lw);
-                c.drawLine(fx, (top + bottom) * 0.5f,
-                           buf[b + Native.F_DIR_X] * vw, buf[b + Native.F_DIR_Y] * vh, stroke);
             }
             if (on("skeleton")) drawSkeleton(c, b, vw, vh, col, lw);
 
