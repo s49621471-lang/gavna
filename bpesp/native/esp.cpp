@@ -788,9 +788,20 @@ static void bone_api_init() {
 
 static bool bone_api_ok() { return g_getPos && g_smrCls && g_mGetBones && g_mGetName; }
 
+/**
+ * A UnityEngine.Object whose native half has been destroyed keeps its managed
+ * shell but zeroes m_CachedPtr. Reading a position off one of those raises a
+ * managed exception, and with -fno-exceptions that unwinds straight out of this
+ * thread and aborts the process — which is exactly how a respawn killed the
+ * game. Every cached Transform is checked here before it is touched.
+ */
+static bool unity_alive(void *obj) {
+    return obj && rd<void *>(obj, 0x10) != nullptr;
+}
+
 static Vec3 bone_pos(void *transform) {
     Vec3 v{0, 0, 0};
-    if (transform && g_getPos) g_getPos(transform, &v);
+    if (unity_alive(transform) && g_getPos) g_getPos(transform, &v);
     return v;
 }
 
@@ -840,7 +851,7 @@ static void scan_renderers() {
 
     int added = 0;
     for (size_t i = 0; i < count && g_cacheN < (int)(sizeof(g_cache) / sizeof(g_cache[0])); i++) {
-        if (!smrs[i]) continue;
+        if (!unity_alive(smrs[i])) continue;
 
         bool known = false;
         for (int k = 0; k < g_cacheN; k++) if (g_cache[k].smr == smrs[i]) { known = true; break; }
@@ -855,7 +866,7 @@ static void scan_renderers() {
         RigCache rc{};
         rc.smr = smrs[i];
         for (size_t b = 0; b < bn; b++) {
-            if (!bones[b]) continue;
+            if (!unity_alive(bones[b])) continue;
             void *nameObj = invoke(g_mGetName, bones[b], nullptr);
             char nm[64];
             il2cpp_string_to_utf8(nameObj, nm, sizeof(nm));
@@ -874,6 +885,15 @@ static void scan_renderers() {
  * allocation, nothing that can take a Unity lock — so this is safe to run often.
  */
 static void match_rigs(void **ents, int n) {
+    // Evict rigs whose renderer has been destroyed; their bones are dead too.
+    int keep = 0;
+    for (int c = 0; c < g_cacheN; c++)
+        if (unity_alive(g_cache[c].smr)) g_cache[keep++] = g_cache[c];
+    if (keep != g_cacheN) {
+        bplog("bones: dropped %d destroyed rig(s), %d left", g_cacheN - keep, keep);
+        g_cacheN = keep;
+    }
+
     g_rigN = 0;
     for (int c = 0; c < g_cacheN && g_rigN < MAX_ENT; c++) {
         Vec3 anchor = bone_pos(g_cache[c].bone[3] ? g_cache[c].bone[3] : g_cache[c].bone[2]);
@@ -1045,7 +1065,12 @@ static Vec3 camera_pos(const Mat4 &v) {
 // each of those forms is tested and the matching one is inverted on write.
 
 #define AIM_MAX_CAND 12000
-#define AIM_LOCK_HITS 6
+// A live run reached 57 degrees of tracked yaw and still missed the lock because
+// the sample count had not caught up — the travel gate is the strong evidence,
+// the count only guards against a single lucky agreement.
+#define AIM_LOCK_HITS 4
+#define AIM_LOCK_YAW  40.0f
+#define AIM_LOCK_PITCH 8.0f
 
 struct AimCand {
     void  *obj;
@@ -1193,7 +1218,7 @@ static void aim_correlate(float yaw, float pitch) {
 
             // Enough samples *and* enough travel: a field has to follow the
             // camera through a real sweep, not agree with it once.
-            if (c.hitsYaw >= AIM_LOCK_HITS && c.accYaw >= 45.0f) {
+            if (c.hitsYaw >= AIM_LOCK_HITS && c.accYaw >= AIM_LOCK_YAW) {
                 g_yawObj = c.obj; g_yawOff = c.off; g_yawForm = c.formYaw;
                 bplog("aim: yaw field locked at %p+0x%zx form=%d after %.0f deg",
                       c.obj, c.off, c.formYaw, c.accYaw);
@@ -1213,7 +1238,7 @@ static void aim_correlate(float yaw, float pitch) {
             if (hit) { c.hitsPitch++; c.accPitch += fabsf(dPitch); }
             else     { c.hitsPitch = 0; c.accPitch = 0; }
 
-            if (c.hitsPitch >= AIM_LOCK_HITS && c.accPitch >= 15.0f) {
+            if (c.hitsPitch >= AIM_LOCK_HITS && c.accPitch >= AIM_LOCK_PITCH) {
                 g_pitchObj = c.obj; g_pitchOff = c.off; g_pitchForm = c.formPitch;
                 bplog("aim: pitch field locked at %p+0x%zx form=%d after %.0f deg",
                       c.obj, c.off, c.formPitch, c.accPitch);
@@ -1230,9 +1255,10 @@ static void aim_progress() {
         if (g_aimCand[i].hitsYaw > 0)   { yawAlive++;   if (g_aimCand[i].accYaw > bestYaw) bestYaw = g_aimCand[i].accYaw; }
         if (g_aimCand[i].hitsPitch > 0) { pitchAlive++; if (g_aimCand[i].accPitch > bestPitch) bestPitch = g_aimCand[i].accPitch; }
     }
-    bplog("aim: %d cand, yaw %d still matching (best %.0f/45 deg), "
-          "pitch %d still matching (best %.0f/15 deg)",
-          g_aimCandN, yawAlive, bestYaw, pitchAlive, bestPitch);
+    bplog("aim: %d cand, yaw %d still matching (best %.0f/%.0f deg), "
+          "pitch %d still matching (best %.0f/%.0f deg)",
+          g_aimCandN, yawAlive, bestYaw, AIM_LOCK_YAW,
+          pitchAlive, bestPitch, AIM_LOCK_PITCH);
 }
 
 static void aim_forget(const char *why) {
@@ -1512,13 +1538,10 @@ static void *poll_thread(void *) {
             // Real bones when the model was matched, posed rig otherwise.
             Vec3 joints[JOINTS];
             Rig *rig = rig_for(e);
-            if (rig) {
-                build_joints(p, d, joints);          // fills any unmapped slot
+            build_joints(p, d, joints);              // fills any unmapped slot
+            if (rig)
                 for (int k = 0; k < JOINTS; k++)
-                    if (rig->bone[k]) joints[k] = bone_pos(rig->bone[k]);
-            } else {
-                build_joints(p, d, joints);
-            }
+                    if (unity_alive(rig->bone[k])) joints[k] = bone_pos(rig->bone[k]);
 
             // Aimbot target selection. Head/chest/hip map onto the same rig the
             // skeleton uses; "nearest" takes whichever joint is closest to where
