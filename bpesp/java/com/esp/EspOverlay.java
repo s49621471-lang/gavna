@@ -65,7 +65,11 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Opt(TAB_VISUALS, "box",      "Box",            true),
             new Opt(TAB_VISUALS, "corners",  "Corner box",     false),
             new Opt(TAB_VISUALS, "skeleton", "Skeleton",       true),
-            new Opt(TAB_VISUALS, "bones",    "Animated bones", true),
+            // Off by default. Reading the model's bone transforms means calling
+            // into Unity from our own thread, and Unity can destroy a bone
+            // between the check and the call — that race has produced a freeze
+            // and two crashes. The posed rig below is animated and cannot crash.
+            new Opt(TAB_VISUALS, "bones",    "Real bones (risky)", false),
             new Opt(TAB_VISUALS, "hpbar",    "Health bar",     true),
             new Opt(TAB_VISUALS, "armorbar", "Armor bar",      true),
             new Opt(TAB_VISUALS, "name",     "Name",           true),
@@ -99,11 +103,13 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
     private final float[] aim = new float[6];
 
-    /** Bone pairs, indices into the 12 joints the native side projects. */
+    /** Bone pairs, indices into the 16 joints the native side projects. */
     private static final int[] BONES = {
-            0, 1,   1, 2,   2, 3,
-            1, 4,   4, 6,   1, 5,   5, 7,
-            3, 8,   8, 10,  3, 9,   9, 11,
+            0, 1,   1, 2,   2, 3,                      // head, neck, spine
+            1, 4,   4, 6,   6, 8,                      // left arm
+            1, 5,   5, 7,   7, 9,                      // right arm
+            3, 10,  10, 12, 12, 14,                    // left leg
+            3, 11,  11, 13, 13, 15,                    // right leg
     };
 
     private Opt opt(String key) {
@@ -280,8 +286,9 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
      * consider, the point it has chosen, and whether it is actually steering.
      */
     private void drawAim(Canvas c) {
-        boolean wantAim = on("aimbot") || on("rcs") || on("trigger");
-        if (!wantAim) return;
+        // Not gated on the aimbot being enabled: the circle is how you see what
+        // the FOV slider actually means before switching anything on.
+        if (!on("fovring") && !on("aimdebug") && !on("trigger")) return;
 
         try { Native.aimInfo(aim); } catch (Throwable t) { return; }
 
@@ -291,9 +298,15 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
         if (on("fovring")) {
             float r = aim[Native.A_FOV_RADIUS] * vh;
-            if (r > 4 * d && r < vh * 4) {
-                stroke.setColor(state == 2 ? 0x8834C759 : 0x66FFCC44);
-                stroke.setStrokeWidth(1.2f * d);
+            float max = Math.min(vw, vh) * 0.47f;
+            // A 90 degree cone is genuinely wider than the screen, so the true
+            // radius often falls outside it. Clamp and change colour rather than
+            // drawing nothing, which just looks like the setting is broken.
+            boolean clamped = r > max;
+            if (clamped) r = max;
+            if (r > 3 * d) {
+                stroke.setColor(clamped ? 0x55FFFFFF : (state == 2 ? 0x9934C759 : 0x88FFCC44));
+                stroke.setStrokeWidth(1.4f * d);
                 c.drawCircle(cx, cy, r, stroke);
             }
         }

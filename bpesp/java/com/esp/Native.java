@@ -2,7 +2,7 @@ package com.esp;
 
 public final class Native {
     /** floats per entity in the snapshot buffer */
-    public static final int JOINTS = 12;
+    public static final int JOINTS = 16;
     public static final int STRIDE = 14 + JOINTS * 2;
     public static final int MAX_ENT = 64;
 

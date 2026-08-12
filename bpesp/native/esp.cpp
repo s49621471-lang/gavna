@@ -23,7 +23,7 @@
 #include <cmath>
 
 #define MAX_ENT 64
-#define JOINTS  12
+#define JOINTS  16
 #define STRIDE  (14 + JOINTS * 2)
 #define NO_HOP  ((size_t)-1)
 
@@ -836,14 +836,15 @@ static int joint_for(const char *raw) {
     if (strstr(n, "chest") || strstr(n, "spine") ||
         strstr(n, "body")  || strstr(n, "torso"))   return 2;
     if (strstr(n, "hips") || strstr(n, "pelvis"))   return 3;
-    if (strstr(n, "shoulder") || strstr(n, "upperarm") || strstr(n, "arm"))
-        return left ? 4 : (right ? 5 : -1);
-    if (strstr(n, "hand") || strstr(n, "wrist"))
-        return left ? 6 : (right ? 7 : -1);
-    if (strstr(n, "upleg") || strstr(n, "thigh") || strstr(n, "hip"))
-        return left ? 8 : (right ? 9 : -1);
-    if (strstr(n, "foot") || strstr(n, "ankle") || strstr(n, "toe"))
-        return left ? 10 : (right ? 11 : -1);
+    if (strstr(n, "shoulder"))                      return left ? 4 : (right ? 5 : -1);
+    if (strstr(n, "elbow") || strstr(n, "forearm") ||
+        strstr(n, "arm"))                           return left ? 6 : (right ? 7 : -1);
+    if (strstr(n, "hand") || strstr(n, "wrist"))    return left ? 8 : (right ? 9 : -1);
+    if (strstr(n, "upleg") || strstr(n, "thigh") ||
+        strstr(n, "hip"))                           return left ? 10 : (right ? 11 : -1);
+    if (strstr(n, "knee") || strstr(n, "leg"))      return left ? 12 : (right ? 13 : -1);
+    if (strstr(n, "foot") || strstr(n, "ankle") ||
+        strstr(n, "toe"))                           return left ? 14 : (right ? 15 : -1);
     return -1;
 }
 
@@ -916,7 +917,8 @@ static void match_rigs(void **ents, int n) {
         // animating even though the cache was healthy.
         Vec3 anchor{0, 0, 0};
         for (int k = 0; k < JOINTS && anchor.x == 0 && anchor.y == 0 && anchor.z == 0; k++) {
-            static const int ORDER[JOINTS] = { 3, 2, 1, 0, 8, 9, 4, 5, 10, 11, 6, 7 };
+            static const int ORDER[JOINTS] = { 3, 2, 1, 0, 10, 11, 4, 5,
+                                               12, 13, 6, 7, 14, 15, 8, 9 };
             anchor = bone_pos(g_cache[c].bone[ORDER[k]]);
         }
         if (anchor.x == 0 && anchor.y == 0 && anchor.z == 0) { noAnchor++; continue; }
@@ -954,30 +956,47 @@ static Rig *rig_for(void *ent) {
  * Joint positions for the skeleton, synthesised from the capsule and the look
  * direction. Used only when no animated rig could be matched to the entity.
  */
-static void build_joints(Vec3 p, Vec3 dir, Vec3 *j) {
+static void build_joints(Vec3 p, Vec3 dir, float walked, float speed, Vec3 *j) {
     float len = sqrtf(dir.x * dir.x + dir.z * dir.z);
     Vec3 f = (len > 0.001f) ? Vec3{dir.x / len, 0, dir.z / len} : Vec3{0, 0, 1};
     Vec3 r{f.z, 0, -f.x};
 
-    const float H = PLAYER_HEIGHT;
-    Vec3 head {p.x,               p.y + H,          p.z};
-    Vec3 neck {p.x,               p.y + H * 0.86f,  p.z};
-    Vec3 chest{p.x,               p.y + H * 0.70f,  p.z};
-    Vec3 hip  {p.x,               p.y + H * 0.52f,  p.z};
+    // The gait is driven by metres walked, which the entity already reports, so
+    // the stride advances with actual movement and needs no per-entity state and
+    // no clock. Amplitude follows current speed, so a standing player is still.
+    float amp = speed * 2.5f;
+    if (amp > 1.0f) amp = 1.0f;
+    float sw = sinf(walked * 2.2f) * amp;      // leg swing, forward is positive
+    float bob = (1.0f - cosf(walked * 4.4f)) * 0.5f * amp * 0.06f;
 
-    float sh = H * 0.13f, hw = H * 0.08f, arm = H * 0.34f;
-    j[0]  = head;
-    j[1]  = neck;
-    j[2]  = chest;
-    j[3]  = hip;
-    j[4]  = Vec3{neck.x - r.x * sh, neck.y, neck.z - r.z * sh};              // L shoulder
-    j[5]  = Vec3{neck.x + r.x * sh, neck.y, neck.z + r.z * sh};              // R shoulder
-    j[6]  = Vec3{j[4].x + f.x * arm * 0.4f, j[4].y - arm, j[4].z + f.z * arm * 0.4f};
-    j[7]  = Vec3{j[5].x + f.x * arm * 0.4f, j[5].y - arm, j[5].z + f.z * arm * 0.4f};
-    j[8]  = Vec3{hip.x - r.x * hw, hip.y, hip.z - r.z * hw};                 // L hip
-    j[9]  = Vec3{hip.x + r.x * hw, hip.y, hip.z + r.z * hw};                 // R hip
-    j[10] = Vec3{p.x - r.x * hw, p.y, p.z - r.z * hw};                       // L foot
-    j[11] = Vec3{p.x + r.x * hw, p.y, p.z + r.z * hw};                       // R foot
+    const float H = PLAYER_HEIGHT;
+    float sh = H * 0.14f, hw = H * 0.09f;
+    float legF = H * 0.30f * sw, armF = H * 0.22f * sw;
+
+    Vec3 hip  {p.x, p.y + H * 0.50f - bob, p.z};
+    Vec3 chest{p.x, p.y + H * 0.70f - bob, p.z};
+    Vec3 neck {p.x, p.y + H * 0.84f - bob, p.z};
+    Vec3 head {p.x, p.y + H * 0.94f - bob, p.z};
+
+    j[0] = head;
+    j[1] = neck;
+    j[2] = chest;
+    j[3] = hip;
+
+    j[4] = Vec3{neck.x - r.x * sh, neck.y - H * 0.02f, neck.z - r.z * sh};   // L shoulder
+    j[5] = Vec3{neck.x + r.x * sh, neck.y - H * 0.02f, neck.z + r.z * sh};   // R shoulder
+    // Arms counter-swing against the legs.
+    j[6] = Vec3{j[4].x - f.x * armF, j[4].y - H * 0.20f, j[4].z - f.z * armF};  // L elbow
+    j[7] = Vec3{j[5].x + f.x * armF, j[5].y - H * 0.20f, j[5].z + f.z * armF};  // R elbow
+    j[8] = Vec3{j[6].x + f.x * H * 0.10f, j[6].y - H * 0.18f, j[6].z + f.z * H * 0.10f};
+    j[9] = Vec3{j[7].x + f.x * H * 0.10f, j[7].y - H * 0.18f, j[7].z + f.z * H * 0.10f};
+
+    j[10] = Vec3{hip.x - r.x * hw, hip.y, hip.z - r.z * hw};                 // L hip
+    j[11] = Vec3{hip.x + r.x * hw, hip.y, hip.z + r.z * hw};                 // R hip
+    j[12] = Vec3{j[10].x + f.x * legF * 0.5f, p.y + H * 0.26f, j[10].z + f.z * legF * 0.5f};
+    j[13] = Vec3{j[11].x - f.x * legF * 0.5f, p.y + H * 0.26f, j[11].z - f.z * legF * 0.5f};
+    j[14] = Vec3{j[10].x + f.x * legF, p.y, j[10].z + f.z * legF};           // L foot
+    j[15] = Vec3{j[11].x - f.x * legF, p.y, j[11].z - f.z * legF};           // R foot
 }
 
 // ---------------------------------------------------------------------------
@@ -1592,7 +1611,10 @@ static void *poll_thread(void *) {
             // Real bones when the model was matched, posed rig otherwise.
             Vec3 joints[JOINTS];
             Rig *rig = rig_for(e);
-            build_joints(p, d, joints);              // fills any unmapped slot
+            Vec3 nf2 = rd<Vec3>(e, OFF_NETPOS_FROM), nt2 = rd<Vec3>(e, OFF_NETPOS_TO);
+            float step = sqrtf((nt2.x - nf2.x) * (nt2.x - nf2.x) +
+                               (nt2.z - nf2.z) * (nt2.z - nf2.z));
+            build_joints(p, d, rd<float>(e, R.oDist), step * 12.0f, joints);
             if (rig)
                 for (int k = 0; k < JOINTS; k++)
                     if (unity_alive(rig->bone[k])) joints[k] = bone_pos(rig->bone[k]);
