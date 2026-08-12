@@ -115,7 +115,20 @@ struct Config {
     bool  rcs       = false;
     float rcsPower  = 60.0f;    // 0..100
     bool  bones     = true;     // animated rigs; costs Unity calls to discover
+    bool  trigger   = false;
+    float triggerFov = 4.0f;    // degrees, cone counted as "on an enemy"
 };
+
+// Published for the overlay: what the aim is doing, so it can be seen rather
+// than inferred from the game's behaviour.
+struct AimInfo {
+    float hasTarget;   // 0 or 1
+    float targetX, targetY;   // normalised viewport
+    float fovRadius;   // normalised half-height of the aim cone on screen
+    float state;       // 0 searching, 1 locked but unproven, 2 steering
+    float triggerHit;  // 0 or 1
+};
+static AimInfo g_aimInfo;
 static Config          g_cfg;
 static pthread_mutex_t g_cfgLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1315,31 +1328,43 @@ static void aim_nudge(float dYaw, float dPitch) {
  * aimbot flailing against a value the game overwrites.
  */
 static void aim_verify(float camYaw) {
-    static int    phase = 0;
+    static int    leg = 0;            // 0 idle, 1 pushing +, 2 pushing -
     static float  target = 0, before = 0;
     static double at = 0;
 
-    if (phase == 0) {
+    // Two legs in opposite directions. A single leg accepted on absolute
+    // movement is not a test at all — the player turning by hand passes it, and
+    // did: a probe asking for +8 was confirmed by the camera drifting -3.1.
+    // Ordinary input will not follow a push one way and then the other on cue.
+    if (leg == 0) {
+        leg = 1;
         before = camYaw;
-        target = camYaw + 8.0f;
+        target = camYaw + 12.0f;
         at = now_s();
-        phase = 1;
     }
 
-    // Closed loop rather than a single write: the game reasserts its own view
-    // every frame, so one nudge can be overwritten before the camera ever
-    // reflects it. Steer towards the target each tick until it is reached.
     float remaining = angle_delta(camYaw, target);
-    aim_nudge(remaining, 0.0f);
+    aim_nudge(remaining, 0.0f);       // steer every tick; one write gets overwritten
 
     float moved = angle_delta(before, camYaw);
-    if (fabsf(moved) > 3.0f) {
-        g_aimVerified = true;
-        phase = 0;
-        bplog("aim: write confirmed, camera followed %.1f deg", moved);
-    } else if (now_s() - at > 1.0) {
-        phase = 0;
-        aim_forget("write had no effect on the camera");
+    float want  = (leg == 1) ? 12.0f : -12.0f;
+    bool  arrived = (want > 0) ? (moved > 7.0f) : (moved < -7.0f);
+
+    if (arrived) {
+        if (leg == 1) {
+            leg = 2;                  // now prove it comes back
+            before = camYaw;
+            target = camYaw - 12.0f;
+            at = now_s();
+            bplog("aim: probe leg 1 followed %.1f deg, reversing", moved);
+        } else {
+            leg = 0;
+            g_aimVerified = true;
+            bplog("aim: write confirmed, camera followed both directions");
+        }
+    } else if (now_s() - at > 1.2) {
+        leg = 0;
+        aim_forget("camera did not follow the probe");
     }
 }
 
@@ -1483,12 +1508,13 @@ static void *poll_thread(void *) {
 
         EntityView tmp[MAX_ENT];
         int out = 0;
-        int skipZero = 0, skipProj = 0, skipTeam = 0;
+        int skipZero = 0, skipProj = 0, skipTeam = 0, skipDead = 0;
 
         // best aimbot target this tick
         float bestAngle = 1e9f;
         Vec3  bestPoint{0, 0, 0};
         bool  haveTarget = false;
+        float nearestAngle = 1e9f;      // ignores the FOV limit, for the trigger
 
         for (int i = 0; i < n && out < MAX_ENT; i++) {
             void *e = ents[i];
@@ -1527,7 +1553,12 @@ static void *poll_thread(void *) {
             if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) { skipZero++; continue; }
             if (haveTeam && rd<int32_t>(e, g_teamOff) == ownTeam) { skipTeam++; continue; }
 
+            // A corpse keeps its last replicated position, so drawing it leaves
+            // a marker sitting where someone no longer is. Dead entities never
+            // enter the snapshot.
             int hp = rd<int32_t>(e, R.oHp);
+            if (hp <= 0) { skipDead++; continue; }
+
             Vec3 head{p.x, p.y + PLAYER_HEIGHT, p.z};
 
             float fx, fy, hx, hy;
@@ -1569,7 +1600,7 @@ static void *poll_thread(void *) {
             // Aimbot target selection. Head/chest/hip map onto the same rig the
             // skeleton uses; "nearest" takes whichever joint is closest to where
             // the view already points, which needs the least correction.
-            if (C.aimbot && hp > 0) {
+            if (hp > 0) {
                 static const int BONE_JOINT[3] = { 0, 2, 3 };
                 int lo = (C.bone == 3) ? 0 : BONE_JOINT[C.bone < 3 ? C.bone : 0];
                 int hi = (C.bone == 3) ? JOINTS : lo + 1;
@@ -1583,6 +1614,8 @@ static void *poll_thread(void *) {
                     if (cosA > 1) cosA = 1;
                     if (cosA < -1) cosA = -1;
                     float ang = acosf(cosA) * 57.29578f;
+
+                    if (ang < nearestAngle) nearestAngle = ang;
                     if (ang > C.fov * 0.5f) continue;
                     if (ang < bestAngle) { bestAngle = ang; bestPoint = t; haveTarget = true; }
                 }
@@ -1625,14 +1658,38 @@ static void *poll_thread(void *) {
 
         if (!probing && (dYawWanted != 0 || dPitchWanted != 0))
             aim_nudge(dYawWanted, dPitchWanted);
+
+        // ---- what the overlay shows -----------------------------------------
+        AimInfo info{};
+        info.state = aim_ready() ? 2.0f : ((g_yawK && g_pitchK) ? 1.0f : 0.0f);
+        info.triggerHit = (C.trigger && nearestAngle <= C.triggerFov * 0.5f) ? 1.0f : 0.0f;
+        if (haveTarget) {
+            float tx, ty;
+            if (world_to_screen(vp, bestPoint, &tx, &ty)) {
+                info.hasTarget = 1.0f;
+                info.targetX = tx;
+                info.targetY = ty;
+            }
+        }
+        // Screen radius of the aim cone: a point at half-angle a off the axis
+        // lands at tan(a) * m11 in clip space, half of that in viewport terms.
+        {
+            float half = C.fov * 0.5f;
+            if (half >= 89.0f) info.fovRadius = 10.0f;      // effectively the whole screen
+            else info.fovRadius = tanf(half / 57.29578f) * proj.m[5] * 0.5f;
+        }
+        pthread_mutex_lock(&g_lock);
+        g_aimInfo = info;
+        pthread_mutex_unlock(&g_lock);
         prevPitch = camPitch;
         havePrevPitch = true;
 
         if (diag)
-            bplog("entities=%d drawn=%d (skip zeroPos=%d team=%d behind=%d) "
-                  "eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f aimFields=%s target=%s",
-                  n, out, skipZero, skipTeam, skipProj, eye.x, eye.y, eye.z,
-                  camYaw, camPitch, aim_ready() ? "locked" : "searching",
+            bplog("entities=%d drawn=%d (skip zeroPos=%d team=%d dead=%d behind=%d) "
+                  "eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f aim=%s target=%s",
+                  n, out, skipZero, skipTeam, skipDead, skipProj, eye.x, eye.y, eye.z,
+                  camYaw, camPitch,
+                  aim_ready() ? "steering" : ((g_yawK && g_pitchK) ? "probing" : "searching"),
                   haveTarget ? "yes" : "no");
 
         publish(tmp, out);
@@ -1669,10 +1726,22 @@ Java_com_esp_Native_setLog(JNIEnv *env, jclass, jstring path) {
 }
 
 JNIEXPORT void JNICALL
+Java_com_esp_Native_aimInfo(JNIEnv *env, jclass, jfloatArray out) {
+    pthread_mutex_lock(&g_lock);
+    AimInfo i = g_aimInfo;
+    pthread_mutex_unlock(&g_lock);
+    float v[6] = { i.hasTarget, i.targetX, i.targetY, i.fovRadius, i.state, i.triggerHit };
+    env->SetFloatArrayRegion(out, 0, 6, v);
+}
+
+JNIEXPORT void JNICALL
 Java_com_esp_Native_config(JNIEnv *, jclass, jboolean teamCheck, jboolean aimbot,
                            jfloat fov, jfloat speed, jint bone,
-                           jboolean rcs, jfloat rcsPower, jboolean bones) {
+                           jboolean rcs, jfloat rcsPower, jboolean bones,
+                           jboolean trigger, jfloat triggerFov) {
     pthread_mutex_lock(&g_cfgLock);
+    g_cfg.trigger    = trigger;
+    g_cfg.triggerFov = triggerFov;
     g_cfg.teamCheck = teamCheck;
     g_cfg.aimbot    = aimbot;
     g_cfg.fov       = fov;

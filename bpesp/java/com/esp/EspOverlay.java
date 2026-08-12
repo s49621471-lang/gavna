@@ -74,13 +74,16 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Opt(TAB_VISUALS, "kd",       "Kills / deaths", false),
             new Opt(TAB_VISUALS, "snap",     "Snap line",      false),
             new Opt(TAB_VISUALS, "team",     "Enemies only",   true),
-            new Opt(TAB_VISUALS, "dead",     "Show dead",      false),
             new Opt(TAB_VISUALS, "status",   "Debug status",   true),
 
             new Opt(TAB_COMBAT,  "aimbot",   "Aimbot",         false),
             new Opt(TAB_COMBAT,  "bone",     "Target",         true,
                     new String[] { "Head", "Chest", "Hip", "Nearest" }),
             new Opt(TAB_COMBAT,  "rcs",      "Recoil control", false),
+            new Opt(TAB_COMBAT,  "trigger",  "Triggerbot",     false),
+            new Opt(TAB_COMBAT,  "setfire",  "Set fire button",false),
+            new Opt(TAB_COMBAT,  "fovring",  "Show FOV circle",true),
+            new Opt(TAB_COMBAT,  "aimdebug", "Aim indicator",  true),
     };
 
     private final Slider[] sliders = {
@@ -91,7 +94,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Slider(TAB_COMBAT,  "fov",     "Aim FOV",      1f,  360f, 90f,  true),
             new Slider(TAB_COMBAT,  "speed",   "Aim speed",    1f,  100f, 25f,  true),
             new Slider(TAB_COMBAT,  "rcspow",  "RCS power",    0f,  100f, 60f,  true),
+            new Slider(TAB_COMBAT,  "trigfov", "Trigger FOV",  1f,  30f,  4f,   true),
     };
+
+    private final float[] aim = new float[6];
 
     /** Bone pairs, indices into the 12 joints the native side projects. */
     private static final int[] BONES = {
@@ -132,6 +138,10 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private boolean nativeDead;
     private int lastCount;
 
+    /** Learned position of the game's fire button, and whether we're holding it. */
+    private float fireX = -1, fireY = -1;
+    private boolean firing;
+
     // ---- handle / menu state -----------------------------------------------
     private final float barW, barH, barTouchH;
     private boolean menuOpen;
@@ -157,6 +167,8 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             o.choice = prefs.getInt("c_" + o.key, 0);
         }
         for (Slider s : sliders) s.value = prefs.getFloat("s_" + s.key, s.value);
+        fireX = prefs.getFloat("fireX", -1);
+        fireY = prefs.getFloat("fireY", -1);
         tab = prefs.getInt("tab", 0);
         if (tab >= TAB_NAMES.length) tab = 0;
 
@@ -181,7 +193,8 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
                           slider("fov"), slider("speed"),
                           bone == null ? 0 : bone.choice,
                           on("rcs"), slider("rcspow"),
-                          on("skeleton") && on("bones"));
+                          on("skeleton") && on("bones"),
+                          on("trigger") && fireX > 0, slider("trigfov"));
         } catch (Throwable t) {
             Log.e("bpesp", "config push failed", t);
         }
@@ -256,9 +269,76 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             }
         }
 
+        if (!nativeDead && state == 2) drawAim(c);
         if (on("status")) drawStatus(c, state);
         drawHandle(c);
         if (menuOpen) drawMenu(c);
+    }
+
+    /**
+     * Everything the aim is doing, drawn rather than described: the cone it will
+     * consider, the point it has chosen, and whether it is actually steering.
+     */
+    private void drawAim(Canvas c) {
+        boolean wantAim = on("aimbot") || on("rcs") || on("trigger");
+        if (!wantAim) return;
+
+        try { Native.aimInfo(aim); } catch (Throwable t) { return; }
+
+        float vw = getWidth(), vh = getHeight();
+        float cx = vw * 0.5f, cy = vh * 0.5f;
+        int state = (int) aim[Native.A_STATE];
+
+        if (on("fovring")) {
+            float r = aim[Native.A_FOV_RADIUS] * vh;
+            if (r > 4 * d && r < vh * 4) {
+                stroke.setColor(state == 2 ? 0x8834C759 : 0x66FFCC44);
+                stroke.setStrokeWidth(1.2f * d);
+                c.drawCircle(cx, cy, r, stroke);
+            }
+        }
+
+        if (on("trigger") && aim[Native.A_TRIGGER] > 0.5f) {
+            fill.setColor(0x66FF3B30);
+            c.drawCircle(cx, cy, 9 * d, fill);
+        }
+
+        if (on("aimdebug")) {
+            if (aim[Native.A_HAS_TARGET] > 0.5f) {
+                float tx = aim[Native.A_TARGET_X] * vw, ty = aim[Native.A_TARGET_Y] * vh;
+                stroke.setColor(state == 2 ? 0xFF34C759 : 0xFFFFCC44);
+                stroke.setStrokeWidth(1.6f * d);
+                c.drawCircle(tx, ty, 7 * d, stroke);
+                c.drawLine(cx, cy, tx, ty, stroke);
+            }
+            String s = state == 2 ? "aim: steering"
+                     : state == 1 ? "aim: probing"
+                                  : "aim: searching";
+            if (on("trigger") && fireX < 0) s += "  (fire button not set)";
+            label(c, s, 10 * d, 34 * d,
+                  state == 2 ? 0xFF66FF99 : (state == 1 ? 0xFFFFCC44 : 0xFFFF9E9E));
+        }
+
+        // Triggerbot drives the game's own fire control by dispatching touches
+        // into the view below us — no need to find the shooting code.
+        boolean shouldFire = on("trigger") && fireX > 0 && aim[Native.A_TRIGGER] > 0.5f;
+        if (shouldFire != firing) {
+            firing = shouldFire;
+            sendTouch(shouldFire ? MotionEvent.ACTION_DOWN : MotionEvent.ACTION_UP, fireX, fireY);
+        }
+    }
+
+    private void sendTouch(int action, float x, float y) {
+        try {
+            long t = android.os.SystemClock.uptimeMillis();
+            MotionEvent e = MotionEvent.obtain(t, t, action, x, y, 0);
+            // Our own view declines touches outside the handle and menu, so the
+            // event falls through to the game exactly like a real finger.
+            getRootView().dispatchTouchEvent(e);
+            e.recycle();
+        } catch (Throwable t) {
+            Log.e("bpesp", "touch dispatch failed", t);
+        }
     }
 
     private void drawStatus(Canvas c, int state) {
@@ -281,7 +361,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private void drawEntities(Canvas c) {
         int n = Native.fetch(buf, names);
         lastCount = n;
-        boolean showDead = on("dead");
         float maxDist = slider("maxdist");
         float lw = slider("thick") * d;
         float vw = getWidth(), vh = getHeight();
@@ -290,7 +369,6 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         for (int i = 0; i < n; i++) {
             int b = i * Native.STRIDE;
             boolean alive = buf[b + Native.F_ALIVE] > 0.5f;
-            if (!alive && !showDead) continue;
             if (buf[b + Native.F_DIST] > maxDist) continue;
 
             float fx = buf[b + Native.F_FEET_X] * vw;
@@ -606,6 +684,20 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
                 if (hitHandle(x, y)) { menuOpen = !menuOpen; return true; }
+
+                // Learning the fire button: the next tap anywhere outside the
+                // menu records where the game's trigger sits.
+                Opt setFire = opt("setfire");
+                if (setFire != null && setFire.on && !menuOpen) {
+                    fireX = x; fireY = y;
+                    setFire.on = false;
+                    prefs.edit().putFloat("fireX", x).putFloat("fireY", y)
+                                .putBoolean("o_setfire", false).apply();
+                    Log.i("bpesp", "fire button set to " + x + "," + y);
+                    pushConfig();
+                    return true;
+                }
+
                 if (!menuOpen) return false;
 
                 boolean inWindow = x >= winL && x <= winL + winW

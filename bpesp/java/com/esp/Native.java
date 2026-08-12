@@ -43,7 +43,18 @@ public final class Native {
     /** Pushes menu state to the poller. bone: 0 head, 1 chest, 2 hip, 3 nearest. */
     public static native void config(boolean teamCheck, boolean aimbot,
                                      float fov, float speed, int bone,
-                                     boolean rcs, float rcsPower, boolean bones);
+                                     boolean rcs, float rcsPower, boolean bones,
+                                     boolean trigger, float triggerFov);
+
+    /** Fills 6 floats: hasTarget, targetX, targetY, fovRadius, state, triggerHit. */
+    public static native void aimInfo(float[] out);
+
+    public static final int A_HAS_TARGET = 0;
+    public static final int A_TARGET_X   = 1;
+    public static final int A_TARGET_Y   = 2;
+    public static final int A_FOV_RADIUS = 3;
+    public static final int A_STATE      = 4;   // 0 searching, 1 probing, 2 steering
+    public static final int A_TRIGGER    = 5;
 
     /** True once the local yaw/pitch fields have been identified by correlation. */
     public static native boolean aimReady();
