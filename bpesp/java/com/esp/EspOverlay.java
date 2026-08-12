@@ -65,6 +65,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Opt(TAB_VISUALS, "box",      "Box",            true),
             new Opt(TAB_VISUALS, "corners",  "Corner box",     false),
             new Opt(TAB_VISUALS, "skeleton", "Skeleton",       true),
+            new Opt(TAB_VISUALS, "bones",    "Animated bones", true),
             new Opt(TAB_VISUALS, "hpbar",    "Health bar",     true),
             new Opt(TAB_VISUALS, "armorbar", "Armor bar",      true),
             new Opt(TAB_VISUALS, "name",     "Name",           true),
@@ -179,7 +180,8 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             Native.config(on("team"), on("aimbot"),
                           slider("fov"), slider("speed"),
                           bone == null ? 0 : bone.choice,
-                          on("rcs"), slider("rcspow"));
+                          on("rcs"), slider("rcspow"),
+                          on("skeleton") && on("bones"));
         } catch (Throwable t) {
             Log.e("bpesp", "config push failed", t);
         }

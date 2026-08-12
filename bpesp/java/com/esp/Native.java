@@ -43,7 +43,7 @@ public final class Native {
     /** Pushes menu state to the poller. bone: 0 head, 1 chest, 2 hip, 3 nearest. */
     public static native void config(boolean teamCheck, boolean aimbot,
                                      float fov, float speed, int bone,
-                                     boolean rcs, float rcsPower);
+                                     boolean rcs, float rcsPower, boolean bones);
 
     /** True once the local yaw/pitch fields have been identified by correlation. */
     public static native boolean aimReady();

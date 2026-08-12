@@ -114,6 +114,7 @@ struct Config {
     int   bone      = 0;        // 0 head, 1 chest, 2 hip, 3 nearest
     bool  rcs       = false;
     float rcsPower  = 60.0f;    // 0..100
+    bool  bones     = true;     // animated rigs; costs Unity calls to discover
 };
 static Config          g_cfg;
 static pthread_mutex_t g_cfgLock = PTHREAD_MUTEX_INITIALIZER;
@@ -744,14 +745,24 @@ static TransformGetPos g_getPos;
 static void *g_smrCls, *g_mGetBones, *g_mGetName;
 static bool  g_boneApiTried;
 
+// A renderer's bone mapping never changes, so it is resolved once and kept.
+// Rebuilding it every couple of seconds meant hundreds of managed invokes per
+// scan from a thread Unity does not own, which is what deadlocked the game.
+struct RigCache {
+    void *smr;
+    void *bone[JOINTS];
+    int   mapped;
+};
+static RigCache g_cache[MAX_ENT * 2];
+static int      g_cacheN;
+
 struct Rig {
-    void  *ent;
-    void  *bone[JOINTS];
-    int    mapped;
+    void *ent;
+    void *bone[JOINTS];
 };
 static Rig    g_rig[MAX_ENT];
 static int    g_rigN;
-static double g_lastRigScan;
+static double g_lastRendererScan;
 static bool   g_loggedBoneNames;
 
 static void bone_api_init() {
@@ -812,28 +823,37 @@ static int joint_for(const char *raw) {
     return -1;
 }
 
-/** Rebuilds the entity-to-rig mapping. Cheap enough at a couple of seconds. */
-static void rescan_rigs(void **ents, int n) {
+/**
+ * Resolves renderers to bone sets. This is the expensive, Unity-touching half —
+ * FindObjectsOfType plus a name lookup per bone — so it runs only when some
+ * entity still lacks a rig, and never more than once every few seconds.
+ */
+static void scan_renderers() {
     bone_api_init();
     if (!bone_api_ok()) return;
 
     void *arr = find_objects(g_smrCls);
     if (!arr) return;
     size_t count = rd<uint64_t>(arr, 0x18);
-    if (count > 128) count = 128;
+    if (count > 64) count = 64;
     void **smrs = (void **)IL2CPP_ARRAY_DATA(arr);
 
-    g_rigN = 0;
-    for (size_t i = 0; i < count && g_rigN < MAX_ENT; i++) {
+    int added = 0;
+    for (size_t i = 0; i < count && g_cacheN < (int)(sizeof(g_cache) / sizeof(g_cache[0])); i++) {
         if (!smrs[i]) continue;
+
+        bool known = false;
+        for (int k = 0; k < g_cacheN; k++) if (g_cache[k].smr == smrs[i]) { known = true; break; }
+        if (known) continue;
+
         void *bonesArr = invoke(g_mGetBones, smrs[i], nullptr);
         if (!bonesArr) continue;
         size_t bn = rd<uint64_t>(bonesArr, 0x18);
         if (bn < 4 || bn > 128) continue;
         void **bones = (void **)IL2CPP_ARRAY_DATA(bonesArr);
 
-        Rig rig{};
-        rig.mapped = 0;
+        RigCache rc{};
+        rc.smr = smrs[i];
         for (size_t b = 0; b < bn; b++) {
             if (!bones[b]) continue;
             void *nameObj = invoke(g_mGetName, bones[b], nullptr);
@@ -841,25 +861,39 @@ static void rescan_rigs(void **ents, int n) {
             il2cpp_string_to_utf8(nameObj, nm, sizeof(nm));
             if (!g_loggedBoneNames) bplog("bones: '%s'", nm);
             int j = joint_for(nm);
-            if (j >= 0 && !rig.bone[j]) { rig.bone[j] = bones[b]; rig.mapped++; }
+            if (j >= 0 && !rc.bone[j]) { rc.bone[j] = bones[b]; rc.mapped++; }
         }
         g_loggedBoneNames = true;
-        if (rig.mapped < 6) continue;
+        if (rc.mapped >= 6) { g_cache[g_cacheN++] = rc; added++; }
+    }
+    if (added) bplog("bones: cached %d new rig(s), %d total", added, g_cacheN);
+}
 
-        // Attach to the nearest entity; the hips bone is the model's anchor.
-        Vec3 anchor = bone_pos(rig.bone[3] ? rig.bone[3] : rig.bone[2]);
-        float best = 2.5f;
+/**
+ * Associates cached rigs with entities. Pure icall reads — no managed calls, no
+ * allocation, nothing that can take a Unity lock — so this is safe to run often.
+ */
+static void match_rigs(void **ents, int n) {
+    g_rigN = 0;
+    for (int c = 0; c < g_cacheN && g_rigN < MAX_ENT; c++) {
+        Vec3 anchor = bone_pos(g_cache[c].bone[3] ? g_cache[c].bone[3] : g_cache[c].bone[2]);
+        if (anchor.x == 0 && anchor.y == 0 && anchor.z == 0) continue;
+
+        void *best = nullptr;
+        float bestD = 2.5f;
         for (int e = 0; e < n; e++) {
             Vec3 p = rd<Vec3>(ents[e], R.oPos);
             if (p.x == 0 && p.y == 0 && p.z == 0) continue;
-            float dx = p.x - anchor.x, dz = p.z - anchor.z;
-            float dy = p.y - anchor.y;
+            float dx = p.x - anchor.x, dy = p.y - anchor.y, dz = p.z - anchor.z;
             float dist = sqrtf(dx * dx + dy * dy * 0.25f + dz * dz);
-            if (dist < best) { best = dist; rig.ent = ents[e]; }
+            if (dist < bestD) { bestD = dist; best = ents[e]; }
         }
-        if (rig.ent) g_rig[g_rigN++] = rig;
+        if (!best) continue;
+
+        Rig &rig = g_rig[g_rigN++];
+        rig.ent = best;
+        memcpy(rig.bone, g_cache[c].bone, sizeof(rig.bone));
     }
-    bplog("bones: %d rig(s) matched to entities", g_rigN);
 }
 
 static Rig *rig_for(void *ent) {
@@ -1057,6 +1091,13 @@ static float unapply_form(int form, float want) {
 
 static void aim_collect() {
     if (g_aimCollected) return;
+
+    // Rate-limited on purpose: FindObjectsOfType is a Unity-locking call, and
+    // retrying it from this thread at poll rate is a good way to wedge the game.
+    static double lastTry = 0;
+    if (now_s() - lastTry < 3.0) return;
+    lastTry = now_s();
+
     void *ue = unity_image();
     void *mb = ue ? g_il2.class_from_name(ue, "UnityEngine", "MonoBehaviour") : nullptr;
     if (!mb) return;
@@ -1352,7 +1393,25 @@ static void *poll_thread(void *) {
         bool wantAim = C.aimbot || C.rcs;
         if (wantAim) aim_correlate(camYaw, camPitch);
         if (wantAim && diag) aim_progress();
-        if (now_s() - g_lastRigScan > 2.0) { g_lastRigScan = now_s(); rescan_rigs(ents, n); }
+
+        if (C.bones) {
+            match_rigs(ents, n);
+            // Only pay for the Unity-touching scan when something is unrigged,
+            // and never more than once every few seconds.
+            bool unrigged = false;
+            for (int i = 0; i < n && !unrigged; i++) {
+                Vec3 p = rd<Vec3>(ents[i], R.oPos);
+                if (p.x == 0 && p.y == 0 && p.z == 0) continue;
+                if (!rig_for(ents[i])) unrigged = true;
+            }
+            if (unrigged && now_s() - g_lastRendererScan > 6.0) {
+                g_lastRendererScan = now_s();
+                scan_renderers();
+                match_rigs(ents, n);
+            }
+        } else {
+            g_rigN = 0;
+        }
         bool probing = wantAim && g_yawForm >= 0 && g_pitchForm >= 0 && !g_aimVerified;
         if (probing) aim_verify(camYaw);
 
@@ -1571,7 +1630,7 @@ Java_com_esp_Native_setLog(JNIEnv *env, jclass, jstring path) {
 JNIEXPORT void JNICALL
 Java_com_esp_Native_config(JNIEnv *, jclass, jboolean teamCheck, jboolean aimbot,
                            jfloat fov, jfloat speed, jint bone,
-                           jboolean rcs, jfloat rcsPower) {
+                           jboolean rcs, jfloat rcsPower, jboolean bones) {
     pthread_mutex_lock(&g_cfgLock);
     g_cfg.teamCheck = teamCheck;
     g_cfg.aimbot    = aimbot;
@@ -1580,6 +1639,7 @@ Java_com_esp_Native_config(JNIEnv *, jclass, jboolean teamCheck, jboolean aimbot
     g_cfg.bone      = bone;
     g_cfg.rcs       = rcs;
     g_cfg.rcsPower  = rcsPower;
+    g_cfg.bones     = bones;
     pthread_mutex_unlock(&g_cfgLock);
 }
 
