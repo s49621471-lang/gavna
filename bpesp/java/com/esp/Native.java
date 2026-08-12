@@ -2,7 +2,8 @@ package com.esp;
 
 public final class Native {
     /** floats per entity in the snapshot buffer */
-    public static final int STRIDE = 14;
+    public static final int JOINTS = 12;
+    public static final int STRIDE = 14 + JOINTS * 2;
     public static final int MAX_ENT = 64;
 
     public static final int F_FEET_X = 0;
@@ -19,6 +20,8 @@ public final class Native {
     public static final int F_ALIVE  = 11;
     public static final int F_DIR_X  = 12;
     public static final int F_DIR_Y  = 13;
+    /** first of JOINTS pairs of normalised skeleton joint coordinates */
+    public static final int F_JOINTS = 14;
 
     private static boolean loaded;
 

@@ -23,7 +23,8 @@
 #include <cmath>
 
 #define MAX_ENT 64
-#define STRIDE  14
+#define JOINTS  12
+#define STRIDE  (14 + JOINTS * 2)
 #define NO_HOP  ((size_t)-1)
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,11 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int   g_state = 0;      // 0 wait il2cpp, 1 scanning, 2 live, 3 no container
 static char  g_status[192] = "starting";
 static float g_screenW = 0, g_screenH = 0;
+
+/** Replaces the snapshot. Publishing zero is how boxes vanish: every path that
+ *  cannot produce a frame must call this, or the overlay keeps painting the
+ *  last good frame forever — which is what kept dead players on screen. */
+static void publish(const struct EntityView *src, int n);
 
 static void set_status(int st, const char *fmt, ...) {
     char tmp[192];
@@ -432,6 +438,26 @@ static void *find_objects(void *cls) {
     return arr;
 }
 
+/**
+ * Every managed object carries its class pointer at offset 0, so this is an
+ * exact identity check rather than a guess. Container discovery follows fields
+ * that merely have the right *declared* type — several of them turned out to
+ * hold something else entirely, and reading those produced entities with
+ * nine-digit health and a blank name.
+ */
+static bool valid_entity(void *e) {
+    if (!e) return false;
+    void *k = rd<void *>(e, 0);
+    for (int depth = 0; k && depth < 8; depth++) {
+        if (k == R.playerCls) break;
+        k = g_il2.class_get_parent(k);
+    }
+    if (k != R.playerCls) return false;
+
+    int hp = rd<int32_t>(e, R.oHp);
+    return hp >= 0 && hp <= 1000;
+}
+
 /** Resolves one candidate to its element array and copies out non-null entries. */
 static int eval_cand(Cand &c, void *base, void **out, int cap) {
     if (!base) return 0;
@@ -440,7 +466,7 @@ static int eval_cand(Cand &c, void *base, void **out, int cap) {
     c.nullRoot = false;
 
     if (c.kind == 3) {                      // a bare reference is one entity
-        if (cap < 1) return 0;
+        if (cap < 1 || !valid_entity(root)) return 0;
         out[0] = root;
         return 1;
     }
@@ -466,7 +492,7 @@ static int eval_cand(Cand &c, void *base, void **out, int cap) {
 
     void **data = (void **)IL2CPP_ARRAY_DATA(arr);
     int got = 0;
-    for (int i = 0; i < count; i++) if (data[i]) out[got++] = data[i];
+    for (int i = 0; i < count; i++) if (valid_entity(data[i])) out[got++] = data[i];
     return got;
 }
 
@@ -680,6 +706,38 @@ static bool world_to_screen(const Mat4 &vp, Vec3 w, float *nx, float *ny) {
     return true;
 }
 
+/**
+ * Joint positions for the skeleton, synthesised from the capsule and the look
+ * direction. The remote entities carry no GameObject and no SkinnedMeshRenderer
+ * — both read null — so there are no real bone transforms to walk; this is a
+ * rig posed from position and facing, not the animated pose.
+ */
+static void build_joints(Vec3 p, Vec3 dir, Vec3 *j) {
+    float len = sqrtf(dir.x * dir.x + dir.z * dir.z);
+    Vec3 f = (len > 0.001f) ? Vec3{dir.x / len, 0, dir.z / len} : Vec3{0, 0, 1};
+    Vec3 r{f.z, 0, -f.x};
+
+    const float H = PLAYER_HEIGHT;
+    Vec3 head {p.x,               p.y + H,          p.z};
+    Vec3 neck {p.x,               p.y + H * 0.86f,  p.z};
+    Vec3 chest{p.x,               p.y + H * 0.70f,  p.z};
+    Vec3 hip  {p.x,               p.y + H * 0.52f,  p.z};
+
+    float sh = H * 0.13f, hw = H * 0.08f, arm = H * 0.34f;
+    j[0]  = head;
+    j[1]  = neck;
+    j[2]  = chest;
+    j[3]  = hip;
+    j[4]  = Vec3{neck.x - r.x * sh, neck.y, neck.z - r.z * sh};              // L shoulder
+    j[5]  = Vec3{neck.x + r.x * sh, neck.y, neck.z + r.z * sh};              // R shoulder
+    j[6]  = Vec3{j[4].x + f.x * arm * 0.4f, j[4].y - arm, j[4].z + f.z * arm * 0.4f};
+    j[7]  = Vec3{j[5].x + f.x * arm * 0.4f, j[5].y - arm, j[5].z + f.z * arm * 0.4f};
+    j[8]  = Vec3{hip.x - r.x * hw, hip.y, hip.z - r.z * hw};                 // L hip
+    j[9]  = Vec3{hip.x + r.x * hw, hip.y, hip.z + r.z * hw};                 // R hip
+    j[10] = Vec3{p.x - r.x * hw, p.y, p.z - r.z * hw};                       // L foot
+    j[11] = Vec3{p.x + r.x * hw, p.y, p.z + r.z * hw};                       // R foot
+}
+
 /** Camera world position, recovered from the rigid view transform: -R^T * t. */
 static Vec3 camera_pos(const Mat4 &v) {
     float t0 = v.m[12], t1 = v.m[13], t2 = v.m[14];
@@ -746,6 +804,7 @@ static void *poll_thread(void *) {
 
         int n = read_entities(ents, MAX_ENT, diag);
         if (n == 0) {
+            publish(nullptr, 0);
             // Holders spawn with the match, so keep re-sweeping the scene: a
             // list that does not exist at menu time will appear later.
             if (now_s() - lastSweep > 3.0) {
@@ -763,6 +822,9 @@ static void *poll_thread(void *) {
         void *vBox = cam ? invoke(R.mView, cam, nullptr) : nullptr;
         void *pBox = cam ? invoke(R.mProj, cam, nullptr) : nullptr;
         if (!vBox || !pBox) {
+            // Camera.main goes null on death and between rounds. Keeping the
+            // stale frame here is what made boxes linger after a kill.
+            publish(nullptr, 0);
             if (diag) bplog("entities=%d but camera unavailable (cam=%p)", n, cam);
             usleep(200 * 1000);
             continue;
@@ -835,6 +897,16 @@ static void *poll_thread(void *) {
             v.data[11] = hp > 0 ? 1.0f : 0.0f;
             v.data[12] = tx;
             v.data[13] = ty;
+
+            Vec3 joints[JOINTS];
+            build_joints(p, d, joints);
+            for (int k = 0; k < JOINTS; k++) {
+                float jx = fx, jy = fy;
+                world_to_screen(vp, joints[k], &jx, &jy);
+                v.data[14 + k * 2]     = jx;
+                v.data[14 + k * 2 + 1] = jy;
+            }
+
             il2cpp_string_to_utf8(rd<void *>(e, R.oName), v.name, sizeof(v.name));
             out++;
         }
@@ -844,15 +916,21 @@ static void *poll_thread(void *) {
                   "cam=%p view0=%.3f",
                   n, out, skipZero, skipProj, eye.x, eye.y, eye.z, cam, view.m[0]);
 
-        pthread_mutex_lock(&g_lock);
-        memcpy(g_ent, tmp, sizeof(EntityView) * out);
-        g_count = out;
-        if (g_state != 2) { g_state = 2; snprintf(g_status, sizeof(g_status), "live"); }
-        pthread_mutex_unlock(&g_lock);
+        publish(tmp, out);
 
         usleep(8 * 1000);
     }
     return nullptr;
+}
+
+static void publish(const struct EntityView *src, int n) {
+    if (n < 0) n = 0;
+    if (n > MAX_ENT) n = MAX_ENT;
+    pthread_mutex_lock(&g_lock);
+    if (src && n) memcpy(g_ent, src, sizeof(EntityView) * n);
+    g_count = n;
+    if (n && g_state != 2) { g_state = 2; snprintf(g_status, sizeof(g_status), "live"); }
+    pthread_mutex_unlock(&g_lock);
 }
 
 // ---------------------------------------------------------------------------
