@@ -691,6 +691,61 @@ static int read_entities(void **out, int *outCand, int cap, bool verbose) {
 // ---------------------------------------------------------------------------
 // camera
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// view steering
+// ---------------------------------------------------------------------------
+// The view is driven by writing the camera Transform's euler angles, not by
+// finding a float that mirrors them. Correlating fields located several that
+// tracked the camera faithfully, but writing to any of them moved nothing —
+// they are outputs the game recomputes from input every frame. The transform is
+// the thing the game itself renders from, so setting it steers by construction
+// and needs no discovery, no probe and no verification.
+/** A destroyed UnityEngine.Object keeps its managed shell but zeroes m_CachedPtr. */
+static bool unity_alive(void *obj) {
+    return obj && rd<void *>(obj, 0x10) != nullptr;
+}
+
+typedef void (*TransformEuler)(void *transform, Vec3 *v);
+static TransformEuler g_getEuler, g_setEuler;
+static void *g_mGetTransform;
+static bool  g_viewReady;
+
+static void resolve_view() {
+    void *ue = unity_image();
+    if (!ue) return;
+
+    void *(*resolve)(const char *) =
+        (void *(*)(const char *))dlsym(g_il2.handle, "il2cpp_resolve_icall");
+    if (resolve) {
+        g_getEuler = (TransformEuler)resolve("UnityEngine.Transform::get_eulerAngles_Injected");
+        g_setEuler = (TransformEuler)resolve("UnityEngine.Transform::set_eulerAngles_Injected");
+    }
+
+    void *comp = g_il2.class_from_name(ue, "UnityEngine", "Component");
+    if (comp) g_mGetTransform = g_il2.class_get_method_from_name(comp, "get_transform", 0);
+
+    g_viewReady = g_getEuler && g_setEuler && g_mGetTransform;
+    bplog("view: getEuler=%p setEuler=%p get_transform=%p -> %s",
+          (void *)g_getEuler, (void *)g_setEuler, g_mGetTransform,
+          g_viewReady ? "ready" : "UNAVAILABLE");
+}
+
+/** Applies a change to the camera's yaw and pitch, in degrees. */
+static bool steer_view(void *cam, float dYaw, float dPitch) {
+    if (!g_viewReady || !cam) return false;
+    void *tr = invoke(g_mGetTransform, cam, nullptr);
+    if (!unity_alive(tr)) return false;
+
+    Vec3 e{0, 0, 0};
+    g_getEuler(tr, &e);
+    e.x += dPitch;      // Unity: x is pitch, positive looking down
+    e.y += dYaw;
+    e.z = 0;            // never leave the horizon tilted
+    if (e.x > 89.0f && e.x < 271.0f) e.x = (dPitch > 0) ? 89.0f : 271.0f;
+    g_setEuler(tr, &e);
+    return true;
+}
+
 static bool resolve_camera() {
     void *ue = unity_image();
     if (!ue) return false;
@@ -801,17 +856,10 @@ static void bone_api_init() {
 
 static bool bone_api_ok() { return g_getPos && g_smrCls && g_mGetBones && g_mGetName; }
 
-/**
- * A UnityEngine.Object whose native half has been destroyed keeps its managed
- * shell but zeroes m_CachedPtr. Reading a position off one of those raises a
- * managed exception, and with -fno-exceptions that unwinds straight out of this
- * thread and aborts the process — which is exactly how a respawn killed the
- * game. Every cached Transform is checked here before it is touched.
- */
-static bool unity_alive(void *obj) {
-    return obj && rd<void *>(obj, 0x10) != nullptr;
-}
-
+// Reading a position off a destroyed Transform raises a managed exception, and
+// with -fno-exceptions that unwinds out of this thread and aborts the process —
+// which is exactly how a respawn killed the game. Every cached Transform is
+// checked with unity_alive before it is touched.
 static Vec3 bone_pos(void *transform) {
     Vec3 v{0, 0, 0};
     if (unity_alive(transform) && g_getPos) g_getPos(transform, &v);
@@ -1422,6 +1470,7 @@ static void *poll_thread(void *) {
     set_status(1, "entity class %s", R.playerName);
 
     if (!resolve_camera()) bplog("camera api unresolved — nothing can be projected");
+    resolve_view();
 
     {
         void *ue = unity_image();
@@ -1483,9 +1532,6 @@ static void *poll_thread(void *) {
         float camYaw = deg_yaw(fwd), camPitch = deg_pitch(fwd);
 
         Config C = cfg();
-        bool wantAim = C.aimbot || C.rcs;
-        if (wantAim) aim_correlate(camYaw, camPitch);
-        if (wantAim && diag) aim_progress();
 
         if (C.bones) {
             match_rigs(ents, n);
@@ -1505,8 +1551,6 @@ static void *poll_thread(void *) {
         } else {
             g_rigN = 0;
         }
-        bool probing = wantAim && g_yawK && g_pitchK && !g_aimVerified;
-        if (probing) aim_verify(camYaw);
 
         // Team. The local player is the entity whose position is never
         // replicated; friendlies are whoever shares its team value.
@@ -1657,7 +1701,7 @@ static void *poll_thread(void *) {
         // ---- aim actuation -------------------------------------------------
         float dYawWanted = 0, dPitchWanted = 0;
 
-        if (C.rcs && havePrevPitch && aim_ready()) {
+        if (C.rcs && havePrevPitch && g_viewReady) {
             // Recoil pushes the view up, which drives pitch negative. Only a
             // kick sharper than deliberate look-up input is fought, and only
             // downward, so ordinary aiming is left alone.
@@ -1665,7 +1709,7 @@ static void *poll_thread(void *) {
             if (dp < -0.15f) dPitchWanted -= dp * (C.rcsPower / 100.0f);
         }
 
-        if (C.aimbot && haveTarget && aim_ready()) {
+        if (C.aimbot && haveTarget && g_viewReady) {
             float dx = bestPoint.x - eye.x, dy = bestPoint.y - eye.y, dz = bestPoint.z - eye.z;
             float m = sqrtf(dx * dx + dy * dy + dz * dz);
             if (m > 0.01f) {
@@ -1678,12 +1722,15 @@ static void *poll_thread(void *) {
             }
         }
 
-        if (!probing && (dYawWanted != 0 || dPitchWanted != 0))
-            aim_nudge(dYawWanted, dPitchWanted);
+        if (dYawWanted != 0 || dPitchWanted != 0) {
+            static bool announced = false;
+            bool ok = steer_view(cam, dYawWanted, dPitchWanted);
+            if (!announced) { announced = true; bplog("view: first steer %s", ok ? "applied" : "FAILED"); }
+        }
 
         // ---- what the overlay shows -----------------------------------------
         AimInfo info{};
-        info.state = aim_ready() ? 2.0f : ((g_yawK && g_pitchK) ? 1.0f : 0.0f);
+        info.state = g_viewReady ? 2.0f : 0.0f;
         info.triggerHit = (C.trigger && nearestAngle <= C.triggerFov * 0.5f) ? 1.0f : 0.0f;
         if (haveTarget) {
             float tx, ty;
@@ -1711,7 +1758,7 @@ static void *poll_thread(void *) {
                   "eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f aim=%s target=%s",
                   n, out, skipZero, skipTeam, skipDead, skipProj, eye.x, eye.y, eye.z,
                   camYaw, camPitch,
-                  aim_ready() ? "steering" : ((g_yawK && g_pitchK) ? "probing" : "searching"),
+                  g_viewReady ? "steering" : "view api unavailable",
                   haveTarget ? "yes" : "no");
 
         publish(tmp, out);
@@ -1776,7 +1823,7 @@ Java_com_esp_Native_config(JNIEnv *, jclass, jboolean teamCheck, jboolean aimbot
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_esp_Native_aimReady(JNIEnv *, jclass) { return aim_ready(); }
+Java_com_esp_Native_aimReady(JNIEnv *, jclass) { return g_viewReady; }
 
 JNIEXPORT void JNICALL
 Java_com_esp_Native_viewport(JNIEnv *, jclass, jint w, jint h) {
