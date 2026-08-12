@@ -95,7 +95,7 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
             new Slider(TAB_VISUALS, "textsz",  "Text size",    8f,  16f,  11f,  false),
             new Slider(TAB_VISUALS, "maxdist", "Max distance", 10f, 300f, 300f, true),
 
-            new Slider(TAB_COMBAT,  "fov",     "Aim FOV",      1f,  360f, 90f,  true),
+            new Slider(TAB_COMBAT,  "fov",     "Aim FOV",      1f,  360f, 360f, true),
             new Slider(TAB_COMBAT,  "speed",   "Aim speed",    1f,  100f, 25f,  true),
             new Slider(TAB_COMBAT,  "rcspow",  "RCS power",    0f,  100f, 60f,  true),
             new Slider(TAB_COMBAT,  "trigfov", "Trigger FOV",  1f,  30f,  4f,   true),
@@ -164,14 +164,12 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private int tab;
     private int dragSlider = -1;
 
-    private float winW, winH, winL, winT;
-    private float titleH, tabH, navW, rowH, pad;
-    private int rowsPerCol = 1, cols = 1;
-    private float colW;
+    private final Menu m;
 
     public EspOverlay(Context ctx) {
         super(ctx);
         d = ctx.getResources().getDisplayMetrics().density;
+        m = new Menu(d);
         prefs = ctx.getSharedPreferences("bpesp", Context.MODE_PRIVATE);
 
         barW      = 132 * d;
@@ -240,33 +238,8 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     private float handleY() { return getHeight() - 14 * d; }
 
     private void layoutMenu() {
-        float vw = getWidth(), vh = getHeight();
-        if (vw <= 0 || vh <= 0) return;
-
-        winW = Math.min(440 * d, vw - 24 * d);
-        winH = Math.min(280 * d, vh - barTouchH - 20 * d);
-        winL = (vw - winW) * 0.5f;
-        winT = Math.max(10 * d, handleY() - barTouchH * 0.6f - winH);
-
-        titleH = Math.max(20 * d, winH * 0.10f);
-        tabH   = 0;                       // navigation lives in the sidebar only
-        navW   = winW * 0.24f;
-        pad    = 6 * d;
-        rowH   = 22 * d;
-
-        float contentH = winH - titleH - sliderAreaH() - pad * 2;
-        rowsPerCol = Math.max(1, (int) (contentH / rowH));
-
-        int maxOpts = 0;
-        for (int t = 0; t < TAB_NAMES.length; t++) {
-            int c = 0;
-            for (Opt o : opts) if (o.tab == t) c++;
-            maxOpts = Math.max(maxOpts, c);
-        }
-        cols = Math.max(1, (maxOpts + rowsPerCol - 1) / rowsPerCol);
-        colW = (winW - navW) / cols;
-
-        mtext.setTextSize(Math.min(10 * d, rowH * 0.44f));
+        if (getWidth() <= 0 || getHeight() <= 0) return;
+        m.layout(getWidth(), getHeight(), barTouchH + 10 * d);
     }
 
     // ---- drawing -----------------------------------------------------------
@@ -596,159 +569,201 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
     }
 
     // ---- menu --------------------------------------------------------------
-    private float contentTop()  { return winT + titleH + tabH + pad; }
-    private float contentLeft() { return winL + navW; }
-    private float sliderAreaH() { return countSliders() * 20 * d + pad * 2; }
 
-    private int countSliders() {
-        int max = 0;
-        for (int t = 0; t < TAB_NAMES.length; t++) {
-            int c = 0;
-            for (Slider s : sliders) if (s.tab == t) c++;
-            max = Math.max(max, c);
-        }
-        return max;
+    /** Options belonging to the active tab, in declaration order. */
+    private int tabOpts(Opt[] out) {
+        int n = 0;
+        for (Opt o : opts) if (o.tab == tab) out[n++] = o;
+        return n;
     }
 
+    private int mainRows() { return Math.max(1, (int) ((m.mainH - 10 * d) / m.rowH)); }
+    private int sideRows() {
+        float sideH = m.y + m.h - m.bodyY() - m.gap;
+        return Math.max(1, (int) ((sideH - 10 * d) / m.rowH));
+    }
+
+    /** Where option i of the active tab sits: fills r, returns false if off-panel. */
+    private boolean optRect(int idx, RectF r) {
+        int mr = mainRows();
+        if (idx < mr) {
+            float ry = m.bodyY() + 6 * d + idx * m.rowH;
+            r.set(m.mainX, ry, m.mainX + m.mainW, ry + m.rowH);
+            return true;
+        }
+        int k = idx - mr;
+        if (k >= sideRows()) return false;
+        float ry = m.bodyY() + 6 * d + k * m.rowH;
+        r.set(m.sideX, ry, m.sideX + m.sideW, ry + m.rowH);
+        return true;
+    }
+
+    private int tabSliders(Slider[] out) {
+        int n = 0;
+        for (Slider s : sliders) if (s.tab == tab) out[n++] = s;
+        return n;
+    }
+
+    private float sliderY(int i, int count) {
+        float step = m.trayH / (count + 0.6f);
+        return m.trayY + step * (i + 0.8f);
+    }
+
+    private float sliderLeft()  { return m.mainX + 10 * d; }
+    private float sliderRight() { return m.mainX + m.mainW - 34 * d; }
+
     private void drawMenu(Canvas c) {
-        if (winW <= 0) layoutMenu();
-        if (winW <= 0) return;
+        if (m.w <= 0) layoutMenu();
+        if (m.w <= 0) return;
 
-        rect.set(winL, winT, winL + winW, winT + winH);
-        fill.setColor(0xF2101012);
-        c.drawRoundRect(rect, 6 * d, 6 * d, fill);
-        stroke.setColor(0xFF2A2A2E);
+        mtext.setTextSize(Math.min(10.5f * d, m.rowH * 0.42f));
+        float base = mtext.getTextSize() * 0.35f;
+
+        // window
+        rect.set(m.x, m.y, m.x + m.w, m.y + m.h);
+        fill.setColor(Menu.BG);
+        c.drawRoundRect(rect, 5 * d, 5 * d, fill);
+        stroke.setColor(Menu.LINE);
         stroke.setStrokeWidth(1 * d);
-        c.drawRoundRect(rect, 6 * d, 6 * d, stroke);
+        c.drawRoundRect(rect, 5 * d, 5 * d, stroke);
 
-        // title bar + close
-        rect.set(winL, winT, winL + winW, winT + titleH);
-        fill.setColor(0xFF17171A);
-        c.drawRoundRect(rect, 6 * d, 6 * d, fill);
-        c.drawRect(winL, winT + titleH - 6 * d, winL + winW, winT + titleH, fill);
-        menuText(c, "BPESP", winL + 10 * d, winT + titleH * 0.66f, 0xFF6E6E76);
+        // title bar with the close cross
+        rect.set(m.x, m.y, m.x + m.w, m.y + m.titleH);
+        fill.setColor(Menu.BG_BAR);
+        c.drawRoundRect(rect, 5 * d, 5 * d, fill);
+        c.drawRect(m.x, m.y + m.titleH - 6 * d, m.x + m.w, m.y + m.titleH, fill);
 
-        float cxx = winL + winW - 14 * d, cyy = winT + titleH * 0.5f, cs = 4.5f * d;
-        stroke.setColor(0xFFB9B9C0);
-        stroke.setStrokeWidth(1.6f * d);
-        c.drawLine(cxx - cs, cyy - cs, cxx + cs, cyy + cs, stroke);
-        c.drawLine(cxx + cs, cyy - cs, cxx - cs, cyy + cs, stroke);
+        float cx0 = m.x + m.w - 16 * d, cy0 = m.y + m.titleH * 0.5f, cs = 4.5f * d;
+        stroke.setColor(Menu.TEXT);
+        stroke.setStrokeWidth(1.7f * d);
+        c.drawLine(cx0 - cs, cy0 - cs, cx0 + cs, cy0 + cs, stroke);
+        c.drawLine(cx0 + cs, cy0 - cs, cx0 - cs, cy0 + cs, stroke);
 
-        // divider between the sidebar and the content area
-        stroke.setColor(0xFF232329);
-        stroke.setStrokeWidth(1 * d);
-        c.drawLine(winL + navW - 2 * d, winT + titleH + 2 * d,
-                   winL + navW - 2 * d, winT + winH - sliderAreaH(), stroke);
-
-        // sidebar — the only navigation
+        // tab strip: the active one is a wide pill, the rest are squares
+        float ty = m.y + m.titleH + m.tabH * 0.18f;
+        float th = m.tabH * 0.64f;
+        float tx = m.x + 10 * d;
         for (int i = 0; i < TAB_NAMES.length; i++) {
-            float ry = contentTop() + i * rowH;
+            float tw = (i == tab) ? 74 * d : th;
+            rect.set(tx, ty, tx + tw, ty + th);
+            fill.setColor(i == tab ? Menu.PANEL_HI : Menu.PANEL);
+            c.drawRoundRect(rect, 3 * d, 3 * d, fill);
             if (i == tab) {
-                rect.set(winL + 5 * d, ry, winL + navW - 4 * d, ry + rowH - 2 * d);
-                fill.setColor(0xFF232329);
-                c.drawRoundRect(rect, 3 * d, 3 * d, fill);
+                fill.setColor(Menu.ACCENT);
+                c.drawCircle(tx + 11 * d, ty + th * 0.5f, 2.6f * d, fill);
+                menuText(c, TAB_NAMES[i], tx + 19 * d, ty + th * 0.5f + base, Menu.TEXT);
+            } else {
+                fill.setColor(Menu.TEXT_DIM);
+                c.drawCircle(tx + tw * 0.5f, ty + th * 0.5f, 2.6f * d, fill);
             }
-            fill.setColor(i == tab ? 0xFF34C759 : 0xFF3A3A42);
-            c.drawCircle(winL + 14 * d, ry + rowH * 0.45f, 3f * d, fill);
-            menuText(c, TAB_NAMES[i], winL + 22 * d,
-                     ry + rowH * 0.45f + mtext.getTextSize() * 0.36f,
-                     i == tab ? 0xFFE8E8EE : 0xFF6E6E76);
+            tx += tw + 6 * d;
         }
 
-        // option rows, flowed into columns
-        int shown = 0;
-        for (Opt o : opts) {
-            if (o.tab != tab) continue;
-            int col = shown / rowsPerCol, row = shown % rowsPerCol;
-            if (col >= cols) break;
-            float ox = contentLeft() + col * colW;
-            float ry = contentTop() + row * rowH;
-            float mid = ry + rowH * 0.5f;
+        // navigation column
+        for (int i = 0; i < TAB_NAMES.length; i++) {
+            float ry = m.bodyY() + 6 * d + i * m.rowH;
+            if (i == tab) {
+                rect.set(m.x + 6 * d, ry, m.x + m.navW - 2 * d, ry + m.rowH - 3 * d);
+                fill.setColor(Menu.PANEL_HI);
+                c.drawRoundRect(rect, 3 * d, 3 * d, fill);
+            }
+            fill.setColor(i == tab ? Menu.ACCENT : Menu.TEXT_DIM);
+            c.drawCircle(m.x + 15 * d, ry + m.rowH * 0.45f, 3 * d, fill);
+            menuText(c, TAB_NAMES[i], m.x + 24 * d, ry + m.rowH * 0.45f + base,
+                     i == tab ? Menu.TEXT : Menu.TEXT_DIM);
+        }
+
+        // panels
+        float bodyBottom = m.y + m.h - m.gap;
+        rect.set(m.mainX, m.bodyY(), m.mainX + m.mainW, m.bodyY() + m.mainH);
+        m.panel(c, fill, stroke, rect, 4 * d, Menu.PANEL);
+        rect.set(m.sideX, m.bodyY(), m.sideX + m.sideW, bodyBottom);
+        m.panel(c, fill, stroke, rect, 4 * d, Menu.PANEL);
+        rect.set(m.mainX, m.trayY, m.mainX + m.mainW, m.trayY + m.trayH);
+        m.panel(c, fill, stroke, rect, 4 * d, Menu.PANEL);
+
+        // options
+        Opt[] list = new Opt[opts.length];
+        int n = tabOpts(list);
+        for (int i = 0; i < n; i++) {
+            if (!optRect(i, rect)) break;
+            Opt o = list[i];
+            float mid = rect.centerY();
 
             if (o.choices != null) {
                 String v = o.choices[o.choice % o.choices.length];
-                float bw2 = 46 * d;
-                rect.set(ox + colW - bw2 - 8 * d, mid - 7 * d, ox + colW - 8 * d, mid + 7 * d);
-                fill.setColor(0xFF2C2C32);
-                c.drawRoundRect(rect, 3 * d, 3 * d, fill);
-                menuText(c, v, rect.left + 5 * d, mid + mtext.getTextSize() * 0.36f, 0xFFE8E8EE);
+                float bw = 52 * d;
+                RectF b = new RectF(rect.right - bw - 8 * d, mid - 8 * d,
+                                    rect.right - 8 * d, mid + 8 * d);
+                fill.setColor(Menu.PANEL_HI);
+                c.drawRoundRect(b, 3 * d, 3 * d, fill);
+                menuText(c, v, b.left + 6 * d, mid + base, Menu.TEXT);
             } else {
-                float knob = 5f * d, sw = 24 * d;
-                float sx = ox + colW - sw - 8 * d;
-                rect.set(sx, mid - knob * 1.3f, sx + sw, mid + knob * 1.3f);
-                fill.setColor(o.on ? 0xFF34C759 : 0xFF3A3A42);
-                c.drawRoundRect(rect, knob * 1.3f, knob * 1.3f, fill);
-                fill.setColor(0xFFF0F0F4);
-                c.drawCircle(o.on ? rect.right - knob * 1.15f : rect.left + knob * 1.15f,
-                             mid, knob, fill);
+                m.toggle(c, fill, rect.right - 20 * d, mid, o.on);
             }
-
-            menuText(c, o.label, ox + 5 * d, mid + mtext.getTextSize() * 0.36f,
-                     (o.choices != null || o.on) ? 0xFFE8E8EE : 0xFF8A8A92);
-            shown++;
+            menuText(c, o.label, rect.left + 10 * d, mid + base,
+                     o.on || o.choices != null ? Menu.TEXT : Menu.TEXT_DIM);
         }
 
-        // sliders for this tab along the bottom
-        int si = 0;
-        for (Slider s : sliders) {
-            if (s.tab != tab) continue;
-            float sy = winT + winH - sliderAreaH() + pad + si * 20 * d + 8 * d;
-            float sl = contentLeft() + 5 * d, sr = winL + winW - 34 * d;
-
-            menuText(c, s.label, winL + 10 * d, sy + mtext.getTextSize() * 0.36f, 0xFF6E6E76);
-            stroke.setColor(0xFF33333A);
-            stroke.setStrokeWidth(2.5f * d);
-            c.drawLine(sl, sy, sr, sy, stroke);
-            float px = sl + (sr - sl) * s.frac();
-            stroke.setColor(0xFF34C759);
-            c.drawLine(sl, sy, px, sy, stroke);
-            fill.setColor(0xFFF0F0F4);
-            c.drawCircle(px, sy, 4.5f * d, fill);
-            menuText(c, s.text(), sr + 6 * d, sy + mtext.getTextSize() * 0.36f, 0xFFB9B9C0);
-            si++;
+        // slider tray
+        Slider[] sl = new Slider[sliders.length];
+        int sn = tabSliders(sl);
+        for (int i = 0; i < sn; i++) {
+            float sy = sliderY(i, sn);
+            menuText(c, sl[i].label, m.mainX + 10 * d, sy - 8 * d, Menu.TEXT_DIM);
+            m.slider(c, fill, stroke, sliderLeft(), sliderRight(), sy, sl[i].frac());
+            menuText(c, sl[i].text(), sliderRight() + 8 * d, sy + base, Menu.TEXT);
         }
     }
 
     private int optionAt(float x, float y) {
-        int shown = 0;
-        for (int i = 0; i < opts.length; i++) {
-            if (opts[i].tab != tab) continue;
-            int col = shown / rowsPerCol, row = shown % rowsPerCol;
-            if (col < cols) {
-                float ox = contentLeft() + col * colW;
-                float ry = contentTop() + row * rowH;
-                if (x >= ox && x < ox + colW && y >= ry && y < ry + rowH) return i;
+        Opt[] list = new Opt[opts.length];
+        int n = tabOpts(list);
+        for (int i = 0; i < n; i++) {
+            if (!optRect(i, rect)) break;
+            if (rect.contains(x, y)) {
+                for (int k = 0; k < opts.length; k++) if (opts[k] == list[i]) return k;
             }
-            shown++;
         }
         return -1;
     }
 
     private int navAt(float x, float y) {
-        if (x < winL || x > winL + navW) return -1;
+        if (x < m.x || x > m.x + m.navW) return -1;
         for (int i = 0; i < TAB_NAMES.length; i++) {
-            float ry = contentTop() + i * rowH;
-            if (y >= ry && y < ry + rowH) return i;
+            float ry = m.bodyY() + 6 * d + i * m.rowH;
+            if (y >= ry && y < ry + m.rowH) return i;
+        }
+        return -1;
+    }
+
+    private int tabStripAt(float x, float y) {
+        float ty = m.y + m.titleH, th = m.tabH;
+        if (y < ty || y > ty + th) return -1;
+        float tx = m.x + 10 * d;
+        for (int i = 0; i < TAB_NAMES.length; i++) {
+            float tw = (i == tab) ? 74 * d : m.tabH * 0.64f;
+            if (x >= tx && x <= tx + tw) return i;
+            tx += tw + 6 * d;
         }
         return -1;
     }
 
     private int sliderAt(float x, float y) {
-        if (x < winL || x > winL + winW) return -1;
-        int si = 0;
-        for (int i = 0; i < sliders.length; i++) {
-            if (sliders[i].tab != tab) continue;
-            float sy = winT + winH - sliderAreaH() + pad + si * 20 * d + 8 * d;
-            if (Math.abs(y - sy) <= 10 * d) return i;
-            si++;
+        Slider[] sl = new Slider[sliders.length];
+        int sn = tabSliders(sl);
+        if (x < m.mainX || x > m.mainX + m.mainW) return -1;
+        for (int i = 0; i < sn; i++) {
+            if (Math.abs(y - sliderY(i, sn)) <= 11 * d) {
+                for (int k = 0; k < sliders.length; k++) if (sliders[k] == sl[i]) return k;
+            }
         }
         return -1;
     }
 
     private void applySlider(int i, float x) {
         Slider s = sliders[i];
-        float sl = contentLeft() + 5 * d, sr = winL + winW - 34 * d;
-        s.setFrac((x - sl) / (sr - sl));
+        s.setFrac((x - sliderLeft()) / (sliderRight() - sliderLeft()));
         prefs.edit().putFloat("s_" + s.key, s.value).apply();
         pushConfig();
     }
@@ -763,16 +778,17 @@ public class EspOverlay extends View implements Choreographer.FrameCallback {
 
                 if (!menuOpen) { observeTap(x, y); return false; }
 
-                boolean inWindow = x >= winL && x <= winL + winW
-                                && y >= winT && y <= winT + winH;
+                boolean inWindow = x >= m.x && x <= m.x + m.w
+                                && y >= m.y && y <= m.y + m.h;
                 if (!inWindow) { menuOpen = false; return true; }
 
-                if (y <= winT + titleH) {
-                    if (x >= winL + winW - 28 * d) menuOpen = false;
+                if (y <= m.y + m.titleH) {
+                    if (x >= m.x + m.w - 30 * d) menuOpen = false;
                     return true;
                 }
 
-                int t = navAt(x, y);
+                int t = tabStripAt(x, y);
+                if (t < 0) t = navAt(x, y);
                 if (t >= 0) {
                     tab = t;
                     prefs.edit().putInt("tab", tab).apply();
