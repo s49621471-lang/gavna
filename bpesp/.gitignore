@@ -3,3 +3,7 @@ tools
 .build
 out/esp.keystore
 *.apk
+termux/esp.key.pem
+termux/esp.cert.der
+termux/libesp.so
+termux/payload.dex
