@@ -115,6 +115,54 @@ class VirtualActivityManagerHookTest {
         }
     }
 
+    // ---------------------------------------------------------------------------------
+    // Foreground services. Three ints, none of which says what it is.
+    // ---------------------------------------------------------------------------------
+
+    @Suppress("unused")
+    interface FakeForegroundSurface {
+        fun setServiceForeground(
+            className: android.content.ComponentName, token: Any?, id: Int,
+            notification: android.app.Notification, flags: Int, foregroundServiceType: Int,
+        )
+        // A hypothetical release that drops the type argument: the shape no longer says
+        // which int is which, so the shim must decline rather than guess.
+        fun setServiceForeground(
+            className: android.content.ComponentName, token: Any?, id: Int,
+            notification: android.app.Notification,
+        )
+        fun setServiceForegroundWithoutNotification(className: android.content.ComponentName, id: Int, flags: Int, type: Int)
+        fun stopServiceToken(className: android.content.ComponentName, token: Any?, startId: Int): Boolean
+    }
+
+    private fun foregroundMethod(paramCount: Int) =
+        FakeForegroundSurface::class.java.methods.first {
+            it.name == "setServiceForeground" && it.parameterTypes.size == paramCount
+        }
+
+    @Test fun `the full setServiceForeground shape is matched`() {
+        assertThat(VirtualActivityManagerHook.startsForegroundService(foregroundMethod(6)))
+            .isTrue()
+    }
+
+    @Test fun `a shape that cannot be read is declined, not guessed`() {
+        // Fewer than three ints means first-is-id and last-is-type no longer holds. The
+        // platform's own behaviour is a visible failure; a mangled type is not.
+        assertThat(VirtualActivityManagerHook.startsForegroundService(foregroundMethod(4)))
+            .isFalse()
+        assertThat(
+            VirtualActivityManagerHook.startsForegroundService(
+                FakeForegroundSurface::class.java.methods
+                    .first { it.name == "setServiceForegroundWithoutNotification" }
+            )
+        ).isFalse()
+        assertThat(
+            VirtualActivityManagerHook.startsForegroundService(
+                FakeForegroundSurface::class.java.methods.first { it.name == "stopServiceToken" }
+            )
+        ).isFalse()
+    }
+
     @Test fun `non-service intent dispatch is left to its own shim`() {
         // startActivity carries an Intent but is not a service call: routing it onto a
         // service stub would launch the wrong component.

@@ -45,7 +45,8 @@ never tried" is the difference between a fact and a guess.
 | Crash isolation | `SUPPORTED` | `NOT_TESTED` | A deliberate uncaught exception in one instance kills neither UNIQUE nor the sibling (`t06`) |
 | Services — started | `SUPPORTED` | `NOT_TESTED` | `onCreate` + `onStartCommand` in the guest's own process and storage (`t07`) |
 | Services — bound | `PARTIAL` | `NOT_TESTED` | `onBind` runs and the client connects with the guest's own binder; `onServiceConnected` receives the **stub's** `ComponentName`, which is the name AMS holds (`t07`) |
-| Services — foreground | `NOT_TESTED` | `NOT_TESTED` | Android 14 type intersection designed (§6.2), not implemented |
+| Services — foreground | `SUPPORTED` | `NOT_TESTED` | `startForeground` with a type: the component is rewritten to the stub AMS knows, and the type is the guest's declaration intersected with the stub's superset. `FGS_TYPE_RESOLVED requested=0x1 declared=0x1 granted=0x1` (`t16`) |
+| Foreground service type the host does not declare | `PARTIAL` | `NOT_TESTED` | Refused with `FGS_REFUSED` and an exception the app can see, never silently downgraded — a downgraded FGS dies later with a `ForegroundServiceDidNotStartInTimeException`. The refusal path itself is unit-tested, not device-tested |
 | Broadcast receivers — manifest, guest running | `PARTIAL` | `NOT_TESTED` | Delivered to the guest's own receiver class (`t08`). Limited to a *live* process, and — under `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` — to senders that scope the intent when the receiver is not exported |
 | Broadcast receivers — waking a dead guest | `BROKEN` | `NOT_TESTED` | A dynamic registration dies with the process. Needs `:server` to hold the registration |
 | Content providers — same virtual process | `SUPPORTED` | `NOT_TESTED` | Acquired through `ContentResolver`, answered by UNIQUE; `onCreate` before any other component; correct package, storage and pid (`t09`) |

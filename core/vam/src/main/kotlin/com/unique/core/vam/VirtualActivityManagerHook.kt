@@ -1,6 +1,8 @@
 package com.unique.core.vam
 
 import android.content.AttributionSource
+import android.app.Notification
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import com.unique.core.common.apk.ComponentKind
@@ -104,6 +106,24 @@ object VirtualActivityManagerHook {
         method.name.startsWith("getIntentSender") &&
             method.parameterTypes.any { it == Array<Intent>::class.java }
 
+    /**
+     * `setServiceForeground` and any renaming of it.
+     *
+     * The shape is pinned rather than assumed: a `ComponentName`, a `Notification` and at
+     * least three ints, which on every release so far are `(id, flags,
+     * foregroundServiceType)`. Ints carry no evidence about themselves (§6.7.1), so if a
+     * release changes that shape the shim declines to bind and the platform's own
+     * behaviour is what the guest sees — a visible failure rather than a service started
+     * with a mangled type.
+     */
+    internal fun startsForegroundService(method: Method): Boolean {
+        if (!method.name.contains("ServiceForeground")) return false
+        val types = method.parameterTypes
+        if (types.none { it == ComponentName::class.java }) return false
+        if (types.none { it == Notification::class.java }) return false
+        return types.count { it == Int::class.javaPrimitiveType } >= 3
+    }
+
     @Volatile private var installedFor: String? = null
 
     val boundPackage: String? get() = installedFor
@@ -178,6 +198,21 @@ object VirtualActivityManagerHook {
             }
         },
 
+        // A foreground service start. Registered before callerIdentity, which would
+        // otherwise claim setServiceForeground for the package rewrite alone.
+        shim("foregroundService") {
+            matchMethods { method -> startsForegroundService(method) }
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteAll<ComponentName>(matching = { it.packageName == virtualPackage }) { name ->
+                stubComponentFor(hostPackage, name)
+            }
+            // Three ints, and none of them says what it is: `(id, flags, type)`. The
+            // matcher pins that shape so first and last mean what they are read to mean.
+            rewriteFirst<Int> { id -> foregroundNotificationId(id) }
+            rewriteLast<Int> { type -> resolveForegroundType(type) }
+            rewriteAll<Notification> { n -> VirtualNotificationHook.adaptForeground(n) }
+        },
+
         // A PendingIntent is built by system_server from the Intent it is handed and
         // then fired *later*, by whoever holds it - a notification tap, an alarm, a
         // widget. So the Intent inside has to be a stub Intent at creation time, or the
@@ -248,6 +283,73 @@ object VirtualActivityManagerHook {
             ),
         )
         return routed
+    }
+
+    /**
+     * The stub standing in for a guest service, or the name unchanged.
+     *
+     * `ActivityManagerService` finds the `ServiceRecord` by token and then checks the
+     * `ComponentName` against it. The record's name is the stub's — that is what the
+     * system started — so a guest name here is rejected with "Service not registered",
+     * from inside `startForeground`, several seconds before the platform kills the app for
+     * not having called it.
+     */
+    private fun stubComponentFor(hostPackage: String, guest: ComponentName): ComponentName? {
+        val ready = AppBootstrap.current ?: return null
+        val entry = ready.manifest.components.firstOrNull {
+            it.kind == ComponentKind.SERVICE && it.className == guest.className
+        } ?: return null
+        val stub = VirtualServiceRouter.reserve(entry, ready.params.vuid) ?: return null
+        return ComponentName(hostPackage, stub)
+    }
+
+    private fun foregroundNotificationId(id: Int): Int {
+        val ready = AppBootstrap.current ?: return id
+        return StubRouter.hostNotificationId(ready.params.vuid, id)
+    }
+
+    /**
+     * Intersects the guest service's declared foreground type with the host's superset.
+     *
+     * The type the *guest* passes is not the whole story: Android 14 checks it against the
+     * manifest of the service that calls `startForeground`, which is the stub. So the
+     * effective request is what the guest asked for, narrowed to what the guest declared,
+     * narrowed again to what the stub declares — and an empty result is refused, never
+     * silently downgraded. A downgraded foreground service dies later with a
+     * `ForegroundServiceDidNotStartInTimeException` that a user cannot interpret and a
+     * developer cannot reproduce.
+     */
+    private fun resolveForegroundType(requested: Int): Int {
+        val ready = AppBootstrap.current ?: return requested
+        val declared = ready.manifest.components
+            .firstOrNull { it.kind == ComponentKind.SERVICE && it.foregroundServiceType != 0 }
+            ?.foregroundServiceType ?: 0
+        val asked = if (requested != 0) requested else declared
+        return when (val decision = ForegroundServiceTypes.decide(asked)) {
+            is ForegroundServiceTypes.Decision.Allow -> {
+                Diagnostics.info(
+                    DiagChannel.PROCESS, "FGS_TYPE_RESOLVED",
+                    mapOf(
+                        "requested" to "0x${Integer.toHexString(requested)}",
+                        "declared" to "0x${Integer.toHexString(declared)}",
+                        "granted" to "0x${Integer.toHexString(decision.type)}",
+                    ),
+                )
+                decision.type
+            }
+            is ForegroundServiceTypes.Decision.NotRequired -> requested
+            is ForegroundServiceTypes.Decision.Refuse -> {
+                Diagnostics.error(
+                    DiagChannel.PROCESS, "FGS_REFUSED",
+                    mapOf(
+                        "package" to ready.params.packageName,
+                        "requested" to "0x${Integer.toHexString(decision.requested)}",
+                        "reason" to decision.reason,
+                    ),
+                )
+                throw IllegalArgumentException("UNIQUE refused the foreground service: ${decision.reason}")
+            }
+        }
     }
 
     /**

@@ -9,7 +9,7 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="19"
+    android:versionCode="20"
     android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
@@ -19,6 +19,8 @@
          is distinguishable from "never mentioned". -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name="com.unique.probe.ProbeApplication"
@@ -38,7 +40,7 @@
              acceptance path is unaffected until the tests exercise them. -->
         <service
             android:name="com.unique.probe.ProbeService"
-            android:exported="false" />
+            android:exported="false" android:foregroundServiceType="dataSync" />
 
         <activity
             android:name="com.unique.probe.ProbeSecondActivity"

@@ -336,7 +336,7 @@ class VirtualLaunchTest {
         )
 
         val activity = awaitResult(instance)
-        val service = awaitFile(serviceResult)
+        val service = awaitFileWhere(serviceResult) { it["stage"] == "bound" }
 
         // The guest's own Service class ran, believing it is itself.
         assertThat(service["className"]).isEqualTo("$probePackage.ProbeService")
@@ -808,6 +808,88 @@ class VirtualLaunchTest {
                 notifications.activeNotifications.joinToString(",") { it.id.toString() }
         )
     }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: a foreground service, which Android 14 checks against the *stub's*
+    // manifest rather than the guest's.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t16_theGuestsForegroundServiceStarts() = runBlocking {
+        val instance = requireInstance()
+        val serviceResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-service.properties")
+        serviceResult.delete()
+        clearResult(instance)
+
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(context.packageName, "android.permission.POST_NOTIFICATIONS")
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.startService", true)
+                .putExtra("probe.foreground", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val service = awaitFileWhere(serviceResult) { it["stage"] == "started" }
+
+        // startForeground reaches AMS naming the component it thinks it is. AMS finds the
+        // ServiceRecord by token and then checks the name against it, and that record's
+        // name is the *stub's* - so an unrewritten name is rejected with "Service not
+        // registered", from inside startForeground, seconds before the platform kills the
+        // app for not having called it.
+        assertThat(service["foreground"]).isEqualTo("true")
+
+        // And the platform agrees it is foreground.
+        val running = context.getSystemService(ActivityManager::class.java)
+            .getRunningServices(200)
+            .filter { it.service.packageName == context.packageName }
+        assertThat(running.any { it.foreground }).isTrue()
+    }
+
+    /**
+     * Waits for a file whose contents satisfy [until].
+     *
+     * The plain [awaitFile] returns the first non-empty version it sees, which is a race
+     * whenever the probe writes more than once per launch: `ProbeService` writes on
+     * `onCreate`, again on `onStartCommand` and again on `onBind`, so a test asserting on
+     * the later state can read the earlier one and fail with values that are simply not
+     * finished yet. Naming the state to wait for removes the race instead of widening a
+     * sleep.
+     */
+    private fun awaitFileWhere(
+        file: File,
+        timeoutMillis: Long = 180_000,
+        until: (Map<String, String>) -> Boolean,
+    ): Map<String, String> {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var last: Map<String, String> = emptyMap()
+        while (System.currentTimeMillis() < deadline) {
+            if (file.isFile && file.length() > 0) {
+                last = runCatching { readProperties(file) }.getOrDefault(emptyMap())
+                if (until(last)) return last
+            }
+            Thread.sleep(250)
+        }
+        throw AssertionError(
+            "$file never reached the expected state within ${timeoutMillis}ms; last saw $last"
+        )
+    }
+
+    private fun readProperties(file: File): Map<String, String> =
+        file.readLines()
+            .filter { it.contains('=') }
+            .associate { it.substringBefore('=') to it.substringAfter('=') }
 
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis

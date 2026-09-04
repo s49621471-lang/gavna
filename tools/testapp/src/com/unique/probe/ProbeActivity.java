@@ -57,7 +57,9 @@ public class ProbeActivity extends Activity {
         Intent request = getIntent();
         if (request != null && request.getBooleanExtra("probe.startService", false)) {
             Log.i(TAG, "starting own service");
-            startService(new Intent(this, ProbeService.class));
+            startService(new Intent(this, ProbeService.class)
+                    .putExtra("probe.foreground",
+                            request.getBooleanExtra("probe.foreground", false)));
         }
         if (request != null && request.getBooleanExtra("probe.bindService", false)) {
             Log.i(TAG, "binding own service");

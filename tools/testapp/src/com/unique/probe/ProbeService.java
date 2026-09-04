@@ -30,6 +30,7 @@ public class ProbeService extends Service {
     private final IBinder mBinder = new LocalBinder();
     private int mStartCount = 0;
     private int mBindCount = 0;
+    private String mForeground = "not-requested";
     /** The component the bind Intent named, as the service itself saw it. */
     private String mBindComponent = "-";
 
@@ -45,8 +46,44 @@ public class ProbeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         mStartCount++;
         Log.i(TAG, "Service.onStartCommand startId=" + startId + " count=" + mStartCount);
+        if (intent != null && intent.getBooleanExtra("probe.foreground", false)) {
+            goForeground();
+        }
         write("started");
         return START_NOT_STICKY;
+    }
+
+    /**
+     * Promotes this service to the foreground, the way an ordinary app does.
+     *
+     * From Android 14 the platform kills an app that calls startForegroundService and
+     * does not reach startForeground within five seconds, and it checks the type against
+     * the manifest entry of the service that calls it.
+     */
+    private void goForeground() {
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            nm.createNotificationChannel(new android.app.NotificationChannel(
+                    "probe-fgs", "Probe service",
+                    android.app.NotificationManager.IMPORTANCE_LOW));
+            android.app.Notification n =
+                    new android.app.Notification.Builder(this, "probe-fgs")
+                            .setContentTitle("probe-foreground")
+                            .setSmallIcon(android.R.drawable.ic_dialog_info)
+                            .build();
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                startForeground(7001, n,
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(7001, n);
+            }
+            mForeground = "true";
+            Log.i(TAG, "Service.startForeground ok");
+        } catch (Throwable t) {
+            mForeground = t.getClass().getSimpleName() + ": " + t.getMessage();
+            Log.e(TAG, "startForeground failed", t);
+        }
     }
 
     @Override
@@ -76,7 +113,8 @@ public class ProbeService extends Service {
                     + "pid=" + android.os.Process.myPid() + "\n"
                     + "startCount=" + mStartCount + "\n"
                     + "bindCount=" + mBindCount + "\n"
-                    + "bindComponent=" + mBindComponent + "\n";
+                    + "bindComponent=" + mBindComponent + "\n"
+                    + "foreground=" + mForeground + "\n";
             out.write(body.getBytes(StandardCharsets.UTF_8));
             out.close();
         } catch (Throwable t) {

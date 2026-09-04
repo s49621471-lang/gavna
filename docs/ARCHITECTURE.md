@@ -441,6 +441,21 @@ the host hold `FOREGROUND_SERVICE_<TYPE>`. So:
 `uses-permission` list; a type present in one and absent from the other is a bug that
 surfaces as an unexplainable crash inside the guest, so the two are reviewed together.
 
+**Implemented; `t16` covers it.** One more thing had to be rewritten than the design
+anticipated: `Service.startForeground` reaches `setServiceForeground` naming the component
+the service thinks it is — which, because UNIQUE replaced the `ServiceInfo`, is the
+*guest's*. `ActivityManagerService` finds the `ServiceRecord` by token and then checks the
+name against it, and that record's name is the stub's. An unrewritten name is rejected with
+"Service not registered", from inside `startForeground`, seconds before the platform kills
+the app for not having called it. The notification travels here too, so it needs the same
+channel namespacing and icon flattening as §6.7.
+
+The three ints on that call — `(id, flags, foregroundServiceType)` — are the §6.7.1 hazard
+again, so the shim pins the *shape* (a `ComponentName`, a `Notification`, at least three
+ints) and declines to bind when it does not hold. A release that changes the shape gets the
+platform's own behaviour, which is a visible failure, rather than a service started with a
+mangled type.
+
 ### 6.3 Broadcast receivers
 
 **Implemented for a running guest; `t08` covers it.** A manifest receiver cannot work the
@@ -598,7 +613,38 @@ type, like everything else — and records the outcome against the instance. It 
 **observed, never rewritten**: the result still reaches the guest exactly as the platform
 sent it, so `onRequestPermissionsResult` sees the truth.
 
-#### 6.6.4 Where the decision is kept
+#### 6.6.4 A shim only sees calls that cross the process boundary
+
+The permission layer worked once and then quietly stopped, and the reason generalises to
+every interception in this project.
+
+Since Android 12 both permission routes answer from a `PropertyInvalidatedCache` living in
+the **app's own process**. The first `checkSelfPermission` for a given permission goes
+through Binder — through UNIQUE's shim — and every later one is answered from that cache
+with no Binder call at all. The cache is invalidated when the *platform's* permission state
+changes; UNIQUE's per-instance state is invisible to it. So a guest denied before it asked
+stayed denied afterwards, whatever the instance recorded:
+
+```
+cameraBefore=DENIED   result.CAMERA=GRANTED   cameraAfter=GRANTED
+cameraViaPm=DENIED    …                       cameraViaPmAfter=DENIED
+```
+
+— and no `PERMISSION_CHECK` event for either "after", because the shim was never reached.
+That absence is what identified it.
+
+UNIQUE calls the platform's own per-process cache disables (`disablePermissionCache`,
+`disablePackageNamePermissionCache`) at bind, and reports which ones existed:
+
+```
+PERMISSION_CACHE_DISABLED disabled=disablePermissionCache,disablePackageNamePermissionCache
+```
+
+If none can be disabled, that is an error-level event rather than a silent regression to
+stale answers. The cost is one Binder call per check — what an unhooked app pays on a cache
+miss anyway.
+
+#### 6.6.5 Where the decision is kept
 
 Under `runtime/permissions/<vuid>/<package>.properties`, inside UNIQUE's app-private
 storage — **not** in the guest's data directory. A guest that can rewrite its own grants
@@ -611,7 +657,7 @@ It is restored at bootstrap, before the guest's `Application` exists. Without th
 is asked for every permission again on every cold start, which users read as the app being
 broken.
 
-#### 6.6.5 App ops
+#### 6.6.6 App ops
 
 `AppOpsManager.checkPackage(uid, packageName)` throws when the name does not belong to the
 uid, and the framework calls it on the way into a great many APIs — camera, microphone,

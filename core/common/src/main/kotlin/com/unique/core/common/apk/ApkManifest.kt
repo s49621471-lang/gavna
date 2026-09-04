@@ -44,6 +44,15 @@ data class ComponentEntry(
     val theme: Int = 0,
     val screenOrientation: Int = -1,
     val configChanges: Int = 0,
+    /**
+     * `android:foregroundServiceType`, a bit mask. Zero when unset.
+     *
+     * Needed at launch, not just for reporting: from Android 14 the type has to be
+     * declared on the manifest entry of the service that *calls* `startForeground`, and
+     * inside UNIQUE that is a stub. The guest's declaration is what the stub's superset is
+     * intersected with (§6.2).
+     */
+    val foregroundServiceType: Int = 0,
     val authorities: List<String> = emptyList(),
     val targetActivity: String? = null,
     val intentFilters: List<IntentFilterEntry> = emptyList(),

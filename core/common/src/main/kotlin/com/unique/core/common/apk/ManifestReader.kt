@@ -216,6 +216,8 @@ object ManifestReader {
         val theme = el.attr(AndroidAttrs.THEME, "theme")?.rawData ?: 0
         val orientation = el.attr(AndroidAttrs.SCREEN_ORIENTATION, "screenOrientation")?.asInt(-1) ?: -1
         val configChanges = el.attr(AndroidAttrs.CONFIG_CHANGES, "configChanges")?.asInt(0) ?: 0
+        val foregroundServiceType =
+            el.attr(AndroidAttrs.FOREGROUND_SERVICE_TYPE, "foregroundServiceType")?.asInt(0) ?: 0
         val authorities = el.attr(AndroidAttrs.AUTHORITIES, "authorities")?.asString()
             ?.split(';')?.filter { it.isNotBlank() } ?: emptyList()
         val targetActivity = el.attrByName("targetActivity")?.asString()
@@ -234,6 +236,7 @@ object ManifestReader {
             theme = theme,
             screenOrientation = orientation,
             configChanges = configChanges,
+            foregroundServiceType = foregroundServiceType,
             authorities = authorities,
             targetActivity = targetActivity?.let { qualify(it, pkg) },
             intentFilters = filters.toList(),

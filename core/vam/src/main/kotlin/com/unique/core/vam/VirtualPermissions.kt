@@ -7,6 +7,7 @@ import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.shim.shim
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.diagnostics.Diagnostics
+import com.unique.core.hook.Reflect
 import com.unique.core.hook.SystemServiceHook
 import com.unique.core.vpermission.PermissionState
 import com.unique.core.vpermission.PermissionStore
@@ -96,6 +97,7 @@ object VirtualPermissions {
             File(model.permissionsFile(vuid, packageName)),
         )
         binding = b
+        disableClientSideCaches()
         val restored = restore(b)
         Diagnostics.info(
             DiagChannel.PROCESS, "PERMISSIONS_BOUND",
@@ -107,6 +109,73 @@ object VirtualPermissions {
             ),
         )
     }
+
+    /**
+     * Turns off the framework's *client-side* permission caches in this process.
+     *
+     * Without this the permission layer works once and then quietly stops. Since Android
+     * 12 both routes answer from a `PropertyInvalidatedCache` living in the app's own
+     * process: the first `checkSelfPermission` for a given permission goes through Binder
+     * — through UNIQUE's shim — and every later one is answered from that cache without a
+     * Binder call at all. The cache is invalidated when the *platform's* permission state
+     * changes, and UNIQUE's per-instance state is invisible to it, so a guest that is
+     * denied before it asks stays denied afterwards no matter what the instance records:
+     *
+     * ```
+     * cameraBefore=DENIED   result.CAMERA=GRANTED   cameraAfter=GRANTED
+     * cameraViaPm=DENIED    …                       cameraViaPmAfter=DENIED
+     * ```
+     *
+     * — and no `PERMISSION_CHECK` event for either "after", because the shim was never
+     * reached. This is the general hazard of Binder interception and is worth stating
+     * plainly: **a shim only sees calls that actually cross the process boundary.**
+     *
+     * The per-process disable is what the platform's own tests use. It costs one Binder
+     * call per check, which is what an unhooked app pays anyway on a cache miss.
+     */
+    private fun disableClientSideCaches() {
+        val disabled = ArrayList<String>(2)
+        val failed = ArrayList<String>(2)
+        for (name in CACHE_DISABLERS) {
+            val (owner, method) = name.substringBeforeLast('.') to name.substringAfterLast('.')
+            val result = runCatching {
+                val clazz = Reflect.findClass(owner) ?: error("no $owner")
+                val m = Reflect.findMethodByName(clazz, method) ?: error("no $method")
+                m.isAccessible = true
+                m.invoke(null)
+            }
+            if (result.isSuccess) disabled += method else failed += "$method: ${result.exceptionOrNull()}"
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PERMISSION_CACHE_DISABLED",
+            mapOf(
+                "disabled" to disabled.joinToString(","),
+                "failed" to failed.joinToString(";").take(300),
+            ),
+        )
+        if (disabled.isEmpty()) {
+            // Not fatal, but the guest's permission answers will be stale after the first
+            // one, and that has to be visible rather than looking like a broken store.
+            Diagnostics.error(
+                DiagChannel.PROCESS, "PERMISSION_CACHE_STILL_ON",
+                mapOf("detail" to failed.joinToString(";").take(300)),
+            )
+        }
+    }
+
+    /**
+     * The platform's own per-process cache disables, tried in order.
+     *
+     * Named rather than discovered because these are `@TestApi` statics with no common
+     * shape; a name that disappears is reported, and the fallback is the platform's
+     * unvirtualized behaviour rather than a wrong answer.
+     */
+    private val CACHE_DISABLERS = listOf(
+        "android.permission.PermissionManager.disablePermissionCache",
+        "android.permission.PermissionManager.disablePackageNamePermissionCache",
+        "android.app.ActivityManager.disableAppOpCache",
+        "android.content.pm.PackageManager.disablePackageManagerCache",
+    )
 
     /**
      * Reads back what the user has already decided for this instance.

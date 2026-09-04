@@ -240,6 +240,20 @@ object VirtualNotificationHook {
      * built and may post it again, and a guest whose notification silently mutated under
      * it would re-post something it never assembled.
      */
+    /**
+     * The same adaptation, for a notification that does not travel through
+     * `enqueueNotificationWithTag`.
+     *
+     * A foreground service hands its notification to `setServiceForeground` on
+     * `IActivityManager`, and the platform posts it on the app's behalf — so it needs the
+     * namespaced channel and the flattened icon just as much, and gets neither if only
+     * the notification service is hooked.
+     */
+    internal fun adaptForeground(notification: Notification): Notification? {
+        val b = binding ?: return null
+        return adapt(notification, b.vuid)
+    }
+
     private fun adapt(notification: Notification, vuid: Int): Notification? {
         val b = binding ?: return null
         val copy = notification.clone()

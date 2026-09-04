@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-101006-9531`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-103331-15155`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -83,6 +83,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t13` a grant survives the virtual process being killed | **PASS** |
 | `t14` app ops accept the guest's identity | **PASS** |
 | `t15` the guest's notification is posted, and two instances do not collide | **PASS** |
+| `t16` the guest's foreground service starts | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -146,6 +147,8 @@ visible to unit tests:
 | `SecurityException: Writable dex file … is not allowed` (W^X on the APK) | fixed |
 | `SecurityException: Given calling package … does not match caller's uid` | fixed (outbound identity rewrite) |
 | `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed |
+| The permission layer answered once and then stopped: since Android 12 both routes answer from a `PropertyInvalidatedCache` **inside the app's own process**, so later checks never crossed Binder and never reached the shim | fixed (the platform's own per-process cache disables, called at bind) |
+| `awaitFile` returned the first non-empty version of a file the probe writes several times per launch, so a test could assert on state that was not finished yet | fixed (`awaitFileWhere`, which waits for a named stage) |
 | `t06` passed vacuously: `/proc` is `hidepid=invisible`, so the pid check saw nothing | fixed (`ActivityManager.getRunningAppProcesses`) |
 | `t06`: the crash extra never arrived — the task was recreated from its *stored* intent | fixed (`FLAG_ACTIVITY_CLEAR_TASK`) |
 | Every bind reached AMS unrewritten: `ContextImpl` calls `bindServiceInstance` from Android 12 on, and the shim was registered for `bindService`, which still exists and so bound cleanly | fixed (structural service matcher; the bind report now names the concrete methods) |
@@ -186,9 +189,9 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: foreground services and their Android 14 type intersection, implicit
-   activity starts (resolving against the guest's own intent filters), URI permissions,
-   `JobScheduler`, `AlarmManager`, the clipboard.
+1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
+   filters), URI permissions and `FileProvider` sharing, `JobScheduler`, `AlarmManager`,
+   the clipboard.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
    anything.

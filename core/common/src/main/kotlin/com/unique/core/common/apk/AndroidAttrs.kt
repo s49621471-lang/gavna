@@ -34,6 +34,9 @@ internal object AndroidAttrs {
     const val LAUNCH_MODE = 0x0101001d
     const val SCREEN_ORIENTATION = 0x0101001e
     const val CONFIG_CHANGES = 0x0101001f
+
+    /** `android:foregroundServiceType`, added in API 29. */
+    const val FOREGROUND_SERVICE_TYPE = 0x01010596
     const val VALUE = 0x01010024
     const val RESOURCE = 0x01010025
     const val MIME_TYPE = 0x01010026
