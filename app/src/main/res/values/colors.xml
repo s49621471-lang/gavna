@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrors UniqueColors.background in the Flutter theme. Both must move together. -->
+    <color name="unique_background">#0B0B0D</color>
+    <color name="unique_surface">#141417</color>
+    <color name="unique_accent">#6E8BFF</color>
+</resources>

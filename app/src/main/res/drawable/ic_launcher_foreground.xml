@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from docs/brand/unique-mark.svg. Keep the two in step. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Ghost layer, offset up-left: the duplicate that gives the mark its meaning. -->
+    <group android:translateX="-4" android:translateY="-4">
+        <path
+            android:fillColor="#6E8BFF"
+            android:fillAlpha="0.62"
+            android:pathData="M34,36 L34,54 C34,65.05 42.95,74 54,74 C65.05,74 74,65.05 74,54 L74,36 L65,36 L65,54 C65,60.08 60.08,65 54,65 C47.92,65 43,60.08 43,54 L43,36 Z" />
+    </group>
+
+    <group android:translateX="4" android:translateY="4">
+        <path
+            android:fillColor="#F2F3F7"
+            android:pathData="M34,36 L34,54 C34,65.05 42.95,74 54,74 C65.05,74 74,65.05 74,54 L74,36 L65,36 L65,54 C65,60.08 60.08,65 54,65 C47.92,65 43,60.08 43,54 L43,36 Z" />
+    </group>
+</vector>

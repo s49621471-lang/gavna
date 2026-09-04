@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  UNIQUE application mark - source of truth.
+
+  Concept: a container glyph (U) with an offset duplicate behind it. Two identical
+  shapes, one displaced, is the most direct reading of "the same app, in its own space".
+
+  Geometry notes:
+  - 108x108 canvas, matching Android's adaptive-icon viewport.
+  - Every painted pixel sits within a circle of radius 33 around (54,54), so no launcher
+    mask - circle, squircle, teardrop - clips any part of the mark. The extreme point is
+    the ghost's top-left corner at (30,32), 32.6 units from centre.
+  - Curves are cubic Beziers with the exact quarter-circle constant (0.5523 * r) rather
+    than arcs, so every renderer produces the same shape.
+  - Stroke weight 9/108 stays above one physical pixel down to 48x48.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <rect width="108" height="108" rx="24" fill="#0B0B0D"/>
+  <!-- ghost, offset up-left -->
+  <g transform="translate(-4,-4)" opacity="0.62">
+    <path fill="#6E8BFF" d="M34,36 L34,54 C34,65.05 42.95,74 54,74 C65.05,74 74,65.05 74,54
+             L74,36 L65,36 L65,54 C65,60.08 60.08,65 54,65 C47.92,65 43,60.08 43,54 L43,36 Z"/>
+  </g>
+  <!-- mark -->
+  <g transform="translate(4,4)">
+    <path fill="#F2F3F7" d="M34,36 L34,54 C34,65.05 42.95,74 54,74 C65.05,74 74,65.05 74,54
+             L74,36 L65,36 L65,54 C65,60.08 60.08,65 54,65 C47.92,65 43,60.08 43,54 L43,36 Z"/>
+  </g>
+</svg>

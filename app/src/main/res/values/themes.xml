@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Base host theme. Near-black ground with edge-to-edge windows, matching the Flutter
+      UI so there is no flash of a differently coloured system window during startup.
+    -->
+    <style name="Theme.Unique" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/unique_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+
+    <!--
+      Splash. Black ground plus the UNIQUE mark, shown only until Flutter's first frame.
+      Deliberately not animated: an animated splash is time the user waits for nothing.
+    -->
+    <style name="Theme.Unique.Splash" parent="Theme.Unique">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <!--
+      Stub activity theme.
+
+      A stub is replaced by the virtual activity's own theme before onCreate, so what
+      matters here is that the window is transparent and has no animation of its own -
+      otherwise the user sees a flash of UNIQUE's background before the app's first frame.
+    -->
+    <style name="Theme.Unique.StubTransparent" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+    </style>
+</resources>

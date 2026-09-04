@@ -1,0 +1,328 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "e3c57032fa07a03f252d98514035057d",
+    "entities": [
+      {
+        "tableName": "spaces",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `displayName` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "packages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`packageName` TEXT NOT NULL, `label` TEXT, `versionCode` INTEGER NOT NULL, `versionName` TEXT, `minSdk` INTEGER NOT NULL, `targetSdk` INTEGER NOT NULL, `apkDir` TEXT NOT NULL, `nativeLibraryDir` TEXT, `splits` TEXT NOT NULL, `importedAtMillis` INTEGER NOT NULL, `hostUpdateVersionCode` INTEGER, PRIMARY KEY(`packageName`))",
+        "fields": [
+          {
+            "fieldPath": "packageName",
+            "columnName": "packageName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "versionCode",
+            "columnName": "versionCode",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionName",
+            "columnName": "versionName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "minSdk",
+            "columnName": "minSdk",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetSdk",
+            "columnName": "targetSdk",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "apkDir",
+            "columnName": "apkDir",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nativeLibraryDir",
+            "columnName": "nativeLibraryDir",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "splits",
+            "columnName": "splits",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "importedAtMillis",
+            "columnName": "importedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hostUpdateVersionCode",
+            "columnName": "hostUpdateVersionCode",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "packageName"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_packages_packageName",
+            "unique": true,
+            "columnNames": [
+              "packageName"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_packages_packageName` ON `${TABLE_NAME}` (`packageName`)"
+          }
+        ]
+      },
+      {
+        "tableName": "instances",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`vuid` INTEGER NOT NULL, `packageName` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `lastLaunchedAtMillis` INTEGER, `profile_profileId` TEXT NOT NULL, `profile_displayName` TEXT NOT NULL, `profile_androidId` TEXT NOT NULL, `profile_instanceId` TEXT NOT NULL, `profile_installId` TEXT NOT NULL, `profile_gsfId` TEXT NOT NULL, `profile_mediaDrmId` TEXT NOT NULL, `profile_wifiMac` TEXT NOT NULL, `profile_bluetoothMac` TEXT NOT NULL, `profile_serial` TEXT NOT NULL, `profile_locale` TEXT, `profile_timeZone` TEXT, `profile_generation` INTEGER NOT NULL, PRIMARY KEY(`vuid`), FOREIGN KEY(`packageName`) REFERENCES `packages`(`packageName`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "vuid",
+            "columnName": "vuid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packageName",
+            "columnName": "packageName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "spaceId",
+            "columnName": "spaceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLaunchedAtMillis",
+            "columnName": "lastLaunchedAtMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "profile.profileId",
+            "columnName": "profile_profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.displayName",
+            "columnName": "profile_displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.androidId",
+            "columnName": "profile_androidId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.instanceId",
+            "columnName": "profile_instanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.installId",
+            "columnName": "profile_installId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.gsfId",
+            "columnName": "profile_gsfId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.mediaDrmId",
+            "columnName": "profile_mediaDrmId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.wifiMac",
+            "columnName": "profile_wifiMac",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.bluetoothMac",
+            "columnName": "profile_bluetoothMac",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.serial",
+            "columnName": "profile_serial",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile.locale",
+            "columnName": "profile_locale",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "profile.timeZone",
+            "columnName": "profile_timeZone",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "profile.generation",
+            "columnName": "profile_generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "vuid"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_instances_packageName",
+            "unique": false,
+            "columnNames": [
+              "packageName"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_instances_packageName` ON `${TABLE_NAME}` (`packageName`)"
+          },
+          {
+            "name": "index_instances_spaceId",
+            "unique": false,
+            "columnNames": [
+              "spaceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_instances_spaceId` ON `${TABLE_NAME}` (`spaceId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "packages",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "packageName"
+            ],
+            "referencedColumns": [
+              "packageName"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "permissions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`vuid` INTEGER NOT NULL, `permission` TEXT NOT NULL, `state` INTEGER NOT NULL, PRIMARY KEY(`vuid`, `permission`), FOREIGN KEY(`vuid`) REFERENCES `instances`(`vuid`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "vuid",
+            "columnName": "vuid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "permission",
+            "columnName": "permission",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "vuid",
+            "permission"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "instances",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "vuid"
+            ],
+            "referencedColumns": [
+              "vuid"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e3c57032fa07a03f252d98514035057d')"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon layer (Android 13+).
+
+  Only the primary glyph: a themed icon is tinted to a single colour, so the ghost layer
+  would merge into the mark and read as a smear. Dropping it keeps the silhouette clean.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,36 L34,54 C34,65.05 42.95,74 54,74 C65.05,74 74,65.05 74,54 L74,36 L65,36 L65,54 C65,60.08 60.08,65 54,65 C47.92,65 43,60.08 43,54 L43,36 Z" />
+</vector>

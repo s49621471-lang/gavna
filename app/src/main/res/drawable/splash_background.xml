@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Black ground plus the mark, shown only until Flutter's first frame. A <bitmap> item
+     cannot reference a vector, so the drawable is placed directly with a fixed size. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/unique_background" />
+    <item
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:gravity="center"
+        android:width="128dp"
+        android:height="128dp" />
+</layer-list>
