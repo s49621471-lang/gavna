@@ -47,10 +47,20 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeSetRedirectRules(
     for (jsize i = 0; i < n; ++i) {
         auto fs = reinterpret_cast<jstring>(env->GetObjectArrayElement(from, i));
         auto ts = reinterpret_cast<jstring>(env->GetObjectArrayElement(to, i));
-        ScopedUtf f(env, fs);
-        ScopedUtf t(env, ts);
-        from_storage.emplace_back(f.get() != nullptr ? f.get() : "");
-        to_storage.emplace_back(t.get() != nullptr ? t.get() : "");
+        // The inner scope is load-bearing. ScopedUtf releases in its destructor, which
+        // without it runs *after* DeleteLocalRef - releasing a string through a reference
+        // that no longer exists. ART's checked JNI aborts the process for that:
+        //
+        //   JNI ERROR (app bug): jstring is an invalid local reference
+        //       in call to ReleaseStringUTFChars
+        //
+        // It stayed latent for as long as nothing actually published a redirect table.
+        {
+            ScopedUtf f(env, fs);
+            ScopedUtf t(env, ts);
+            from_storage.emplace_back(f.get() != nullptr ? f.get() : "");
+            to_storage.emplace_back(t.get() != nullptr ? t.get() : "");
+        }
         env->DeleteLocalRef(fs);
         env->DeleteLocalRef(ts);
     }
@@ -86,6 +96,33 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeRedirect(
     const std::string out = unique::io_redirect::redirect(p.get());
     if (out.empty()) return nullptr;
     return env->NewStringUTF(out.c_str());
+}
+
+UNIQUE_EXPORT JNIEXPORT void JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeSetRedirectScope(
+        JNIEnv* env, jclass, jobjectArray paths) {
+    const jsize count = paths == nullptr ? 0 : env->GetArrayLength(paths);
+    std::vector<std::string> owned;
+    std::vector<const char*> raw;
+    owned.reserve(static_cast<size_t>(count));
+    raw.reserve(static_cast<size_t>(count));
+    for (jsize i = 0; i < count; ++i) {
+        auto item = reinterpret_cast<jstring>(env->GetObjectArrayElement(paths, i));
+        if (item == nullptr) continue;
+        const char* chars = env->GetStringUTFChars(item, nullptr);
+        if (chars != nullptr) {
+            owned.emplace_back(chars);
+            env->ReleaseStringUTFChars(item, chars);
+        }
+        env->DeleteLocalRef(item);
+    }
+    for (const auto& value : owned) raw.push_back(value.c_str());
+    unique::io_redirect::set_scope(raw.data(), static_cast<int>(raw.size()));
+}
+
+UNIQUE_EXPORT JNIEXPORT jint JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeRedirectSlotsPatched(JNIEnv*, jclass) {
+    return unique::io_redirect::slots_patched();
 }
 
 UNIQUE_EXPORT JNIEXPORT jint JNICALL

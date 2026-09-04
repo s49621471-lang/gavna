@@ -1,5 +1,6 @@
 #pragma once
 #include <jni.h>
+#include <string>
 #include <android/log.h>
 
 #define UNIQUE_LOG_TAG "UniqueNative"
@@ -28,9 +29,16 @@ void clear_rules();
 int rule_count();
 // Rewrites `path` per the current table. Returns an empty string when no rule matched.
 std::string redirect(const char* path);
-// Installs the libc interception. See the implementation for what is and is not done.
+// Limits the interception to libraries whose path contains one of these substrings.
+// Must be set before install(), which refuses an empty scope: patching every library in
+// the process would redirect UNIQUE's own file operations too.
+void set_scope(const char** paths, int count);
+// Installs the libc interception into the scoped libraries. Idempotent, and meant to be
+// repeated after the guest loads more libraries.
 InstallStatus install();
 bool installed();
+// GOT entries actually patched by the last install().
+int slots_patched();
 }  // namespace io_redirect
 
 namespace prop_virtual {

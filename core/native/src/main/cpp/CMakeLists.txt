@@ -16,6 +16,7 @@ set(UNIQUE_LINK_FLAGS "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
 add_library(unique_native SHARED
         unique_native.cpp
         io_redirect.cpp
+        plt_hook.cpp
         prop_virtual.cpp
 )
 

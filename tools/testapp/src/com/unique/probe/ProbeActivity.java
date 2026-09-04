@@ -477,9 +477,20 @@ public class ProbeActivity extends Activity {
             out.put("javaPid", String.valueOf(android.os.Process.myPid()));
             out.put("echo", ProbeNative.echo("hello"));
             out.put("nativeLibraryDir", getApplicationInfo().nativeLibraryDir);
+            // Through the *redirected* path the Context gives us. This works with or
+            // without native interception, and is the common case.
             java.io.File target = new java.io.File(getFilesDir(), "probe-libc.txt");
             out.put("libcWrite", ProbeNative.writeThroughLibc(target.getAbsolutePath()));
             out.put("libcFileExists", String.valueOf(target.isFile()));
+
+            // Through the path an app *hard-codes* in native code: the canonical location
+            // the platform would give an installed app. Nothing in Java rewrites this, so
+            // it lands outside the instance unless libc itself is intercepted.
+            String canonical = "/data/data/" + getPackageName() + "/files/probe-libc-raw.txt";
+            out.put("libcRawWrite", ProbeNative.writeThroughLibc(canonical));
+            out.put("libcRawPath", canonical);
+            out.put("libcRawLandedInInstance",
+                    String.valueOf(new java.io.File(getFilesDir(), "probe-libc-raw.txt").isFile()));
         } catch (Throwable t) {
             out.put("loaded", "false");
             out.put("error", t.toString());

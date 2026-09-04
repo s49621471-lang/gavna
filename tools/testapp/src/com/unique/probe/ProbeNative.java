@@ -7,6 +7,16 @@ package com.unique.probe;
  * whose package the system has never heard of.
  */
 public final class ProbeNative {
+
+    /**
+     * Loaded in a static initializer, which is where real apps load native code — and
+     * therefore before UNIQUE installs its IO interception, which walks what is loaded at
+     * that moment.
+     */
+    static {
+        System.loadLibrary("probenative");
+    }
+
     private ProbeNative() {}
 
     public static native String arch();

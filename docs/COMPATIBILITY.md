@@ -67,7 +67,8 @@ never tried" is the difference between a fact and a guess.
 | Native ABI selection | `SUPPORTED` | `NOT_TESTED` | The device's own `SUPPORTED_ABIS` order, as the platform does; an APK with no executable ABI is refused rather than started (`PACKAGE_IMPORTED … abi=x86_64`) |
 | Native ARM64 specifically | `NOT_TESTED` | `NOT_TESTED` | This emulator is x86_64. `docs/PHYSICAL_DEVICE_TEST.md` exists for exactly this |
 | 16 KB page size | `NOT_TESTED` | `NOT_TESTED` | Checked at import and at build time (`tools/check-abi.sh`), but this emulator reports 4096 so the large-page path is unexercised |
-| Native IO redirection | `BROKEN` | `NOT_TESTED` | Table implemented and unit-tested; the libc interception is not. `t17` writes through libc successfully only because the guest passed an already-redirected absolute path — native code that builds `/data/data/<pkg>/…` itself would land outside the instance |
+| Native IO redirection | `PARTIAL` | `NOT_TESTED` | PLT/GOT hooking of the guest's own libraries. A path hard-coded as `/data/data/<pkg>/files/…` in native code lands inside the instance (`t17`). Limited to libraries loaded by the time the guest's `Application.onCreate` finishes, and to calls that cross a PLT — libc calling itself is invisible, correctly so |
+| Native IO redirection — late-loaded libraries | `BROKEN` | `NOT_TESTED` | A library the guest loads after bootstrap has its own GOT and is not hooked until the next `install()`, which nothing currently triggers |
 | Surface / OpenGL / Vulkan | `NOT_TESTED` | `NOT_TESTED` | Phase 5 |
 | Google flows | `NOT_TESTED` | `NOT_TESTED` | Interfaces only, no implementations |
 | Notifications — post | `SUPPORTED` | `NOT_TESTED` | Posted as UNIQUE with the guest's title and text; the icon is rendered from the guest's resources and travels as a bitmap (`t15`) |

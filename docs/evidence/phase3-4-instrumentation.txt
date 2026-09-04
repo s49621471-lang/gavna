@@ -267,7 +267,7 @@ INSTRUMENTATION_STATUS: test=t19_theGuestSetsAlarmsAndUsesTheClipboard
 INSTRUMENTATION_STATUS_CODE: 0
 INSTRUMENTATION_RESULT: stream=
 
-Time: 443.755
+Time: 466.159
 
 OK (19 tests)
 

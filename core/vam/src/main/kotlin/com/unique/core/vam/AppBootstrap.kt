@@ -17,6 +17,8 @@ import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.hook.Reflect
+import com.unique.core.nativebridge.UniqueNative
+import com.unique.core.vstorage.VirtualStorage
 import java.io.File
 import java.lang.ref.WeakReference
 
@@ -187,6 +189,16 @@ object AppBootstrap {
 
         val ready = Result.Ready(params, manifest, application, appInfo)
 
+        // Native IO redirection, installed once the guest's Application exists.
+        //
+        // The timing is the whole design. Libraries are hooked by walking what is loaded
+        // *now*, so this must run after the guest's static initialisers and
+        // Application.onCreate - where apps overwhelmingly call System.loadLibrary - and
+        // it is idempotent so a later re-run costs nothing. A library the guest loads
+        // after this point is not covered until the next install; that limit is recorded
+        // rather than papered over.
+        installIoRedirection(hostContext, params, appInfo)
+
         // Providers first: the platform creates a process's providers before any other
         // component and apps rely on that ordering.
         runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
@@ -273,6 +285,71 @@ object AppBootstrap {
      * because the host's own storage is already credential-protected and splitting them
      * would create a directory that survives differently from the rest of an instance.
      */
+    /**
+     * Publishes this instance's redirect table and hooks the guest's own libraries.
+     *
+     * Scoped to the guest's native library directory and its APK directory, never the
+     * whole process: patching every library would redirect UNIQUE's own file operations
+     * as well as the guest's, and the native side refuses an empty scope for that reason.
+     */
+    private fun installIoRedirection(
+        hostContext: Context,
+        params: VirtualLaunchParams,
+        appInfo: ApplicationInfo,
+    ) {
+        runCatching {
+            val storage = VirtualStorage(hostContext)
+            val rules = storage.publishRedirection(
+                params.vuid, params.packageName, params.versionCode,
+            )
+            val scope = listOfNotNull(
+                appInfo.nativeLibraryDir,
+                appInfo.sourceDir?.substringBeforeLast('/'),
+            ).filter { it.isNotBlank() }.flatMap(::pathAliases).distinct()
+            UniqueNative.setRedirectScope(scope)
+            val status = UniqueNative.installIoRedirect()
+            Diagnostics.info(
+                DiagChannel.NATIVE, "IO_REDIRECT_INSTALLED",
+                mapOf(
+                    "status" to status.name,
+                    "rules" to rules.size.toString(),
+                    "slots" to UniqueNative.redirectSlotsPatched().toString(),
+                    "scope" to scope.joinToString(",").take(200),
+                ),
+            )
+        }.onFailure {
+            Diagnostics.error(
+                DiagChannel.NATIVE, "IO_REDIRECT_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+    }
+
+    /**
+     * The same directory under every name the platform might report it as.
+     *
+     * `/data/data/<host>` and `/data/user/0/<host>` are the same directory: the first is
+     * a symlink kept for compatibility, and which one appears depends on who resolved the
+     * path. `Context.getFilesDir()` hands back the `/data/user/0` form, while the dynamic
+     * linker recorded the library it opened as:
+     *
+     * ```
+     * /data/data/com.unique/files/virtual/apk/com.unique.probe/28/lib/x86_64/libprobenative.so
+     * ```
+     *
+     * so a scope built from the first never matched the second and nothing was hooked -
+     * with the library plainly loaded and the filter plainly correct-looking. Matching
+     * both is the fix; the diagnostic that prints the filter next to the library names it
+     * did not match is what made it a two-minute problem instead of a long one.
+     */
+    private fun pathAliases(path: String): List<String> = when {
+        path.startsWith("/data/user/0/") ->
+            listOf(path, path.replaceFirst("/data/user/0/", "/data/data/"))
+        path.startsWith("/data/data/") ->
+            listOf(path, path.replaceFirst("/data/data/", "/data/user/0/"))
+        else -> listOf(path)
+    }
+
     /**
      * The extracted-library directory this device can actually execute.
      *

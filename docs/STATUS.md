@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-115927-1091`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-130607-5723`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -115,6 +115,10 @@ nativePid              = 17583       (= the Activity's pid)
 echo                   = native:hello
 nativeLibraryDir       = …/virtual/apk/com.unique.probe/22/lib/x86_64
 libcWrite              = ok:…/virtual/users/0/data/com.unique.probe/files/probe-libc.txt
+
+io_redirect installed  1 slot(s) in 1/318 libraries, 8 rule(s), page size 4096
+libcRawWrite           = ok:/data/data/com.unique.probe/files/probe-libc-raw.txt
+libcRawLandedInInstance= true    (a path hard-coded in native code, redirected by libc)
 ```
 
 What the guest itself reported (`docs/evidence/phase2-first-launch-engine.log`):
@@ -182,7 +186,6 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
 | Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
-| libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`; the table is complete and tested, the ~30 hooks are not |
 | Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
 | Every Google bridge body | 6 | Interfaces and routing exist and are tested; no bridge has an implementation |
 | Device profile regenerate | 7 | UI row says it is not available yet |
@@ -200,11 +203,9 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Phase 4: libc IO redirection, so native code that builds its own absolute paths lands
-   in the instance's directory rather than UNIQUE's. The table is implemented and tested;
-   the ~30 interception points are not.
-2. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
+1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
    filters), URI permissions and `FileProvider` sharing.
+2. A library the guest loads *after* bootstrap is not hooked until the next install.
 3. Give `onServiceConnected` the guest's own `ComponentName`.
 4. ARM64 itself, which only the physical device can answer.
 

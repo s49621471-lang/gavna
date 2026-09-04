@@ -19,6 +19,14 @@ public class ProbeApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Touching the native class here loads the library in Application.onCreate, which
+        // is where an app that needs native code at startup does it - and is the timing
+        // UNIQUE's IO interception is designed around.
+        try {
+            android.util.Log.i(TAG, "native arch=" + ProbeNative.arch());
+        } catch (Throwable t) {
+            android.util.Log.e(TAG, "native library unavailable", t);
+        }
         applicationOnCreateAt = System.nanoTime();
         Log.i(TAG, "Application.onCreate package=" + getPackageName()
                 + " class=" + getClass().getName()

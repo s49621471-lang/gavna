@@ -81,6 +81,20 @@ object UniqueNative {
      */
     fun redirect(path: String): String? = if (loaded) nativeRedirect(path) else null
 
+    /**
+     * Limits the interception to libraries whose path contains one of [paths].
+     *
+     * Must be set before [installIoRedirect], which refuses an empty scope. Patching every
+     * library in the process would redirect UNIQUE's own file operations as well as the
+     * guest's, and "redirect everything" is not a thing to do by accident.
+     */
+    fun setRedirectScope(paths: List<String>) {
+        if (loaded) nativeSetRedirectScope(paths.toTypedArray())
+    }
+
+    /** GOT entries patched by the last [installIoRedirect]. Zero means nothing was hooked. */
+    fun redirectSlotsPatched(): Int = if (loaded) nativeRedirectSlotsPatched() else 0
+
     fun installIoRedirect(): InstallStatus =
         if (loaded) InstallStatus.of(nativeInstallIoRedirect()) else InstallStatus.FAILED
 
@@ -96,6 +110,8 @@ object UniqueNative {
     @JvmStatic private external fun nativeClearRedirectRules()
     @JvmStatic private external fun nativeRedirectRuleCount(): Int
     @JvmStatic private external fun nativeRedirect(path: String): String?
+    @JvmStatic private external fun nativeSetRedirectScope(paths: Array<String>)
+    @JvmStatic private external fun nativeRedirectSlotsPatched(): Int
     @JvmStatic private external fun nativeInstallIoRedirect(): Int
     @JvmStatic private external fun nativeSetProperty(key: String, value: String)
     @JvmStatic private external fun nativeClearProperties()

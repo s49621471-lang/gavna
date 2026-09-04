@@ -909,13 +909,20 @@ class VirtualLaunchTest {
         // 16 KB Android 15 device is what docs/PHYSICAL_DEVICE_TEST.md exists to cover.
         assertThat(observed["pageSize"]!!.toLong()).isAtLeast(4096L)
 
-        // libc file IO from native code. Redirection is not implemented yet, so this
-        // succeeds only because the guest passed an already-redirected absolute path -
-        // which is exactly the gap phase 4's interception closes.
+        // libc file IO through the path the Context gives. Works with or without native
+        // interception, and is the common case.
         assertThat(observed["libcWrite"]).startsWith("ok:")
         assertThat(observed["libcFileExists"]).isEqualTo("true")
         assertThat(observed["libcWrite"])
             .contains(model.filesDir(instance.vuid, probePackage))
+
+        // And through the path an app *hard-codes* in native code. Nothing in Java
+        // rewrites "/data/data/<pkg>/files/…", so without libc interception this either
+        // fails outright or lands in a directory that is not the instance's — which is
+        // the whole reason the interception exists.
+        assertThat(observed["libcRawPath"]).isEqualTo("/data/data/$probePackage/files/probe-libc-raw.txt")
+        assertThat(observed["libcRawWrite"]).startsWith("ok:")
+        assertThat(observed["libcRawLandedInInstance"]).isEqualTo("true")
     }
 
     // -----------------------------------------------------------------------------
