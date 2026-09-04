@@ -344,6 +344,35 @@ class VirtualLaunchTest {
         assertThat(service["bindCount"]!!.toInt()).isAtLeast(1)
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: the guest's manifest-declared BroadcastReceiver.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t08_theGuestsManifestReceiverGetsBroadcasts() = runBlocking {
+        val instance = requireInstance()
+        val receiverResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-receiver.properties")
+        receiverResult.delete()
+
+        // The guest has to be running: a dynamic registration lives only as long as the
+        // process, so a manifest receiver cannot yet wake a dead one. t07 left it up.
+        assertThat(runningVirtualPids()).isNotEmpty()
+
+        context.sendBroadcast(
+            Intent("com.unique.probe.PING").putExtra("probe.extra", "hello-from-unique")
+        )
+
+        val observed = awaitFile(receiverResult)
+
+        assertThat(observed["action"]).isEqualTo("com.unique.probe.PING")
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+        // The payload survived the trip into the guest.
+        assertThat(observed["extra"]).isEqualTo("hello-from-unique")
+        // And it ran against the guest's own storage, not UNIQUE's.
+        assertThat(observed["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+    }
+
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {

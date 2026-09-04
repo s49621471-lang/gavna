@@ -164,6 +164,15 @@ object AppBootstrap {
 
         val ready = Result.Ready(params, manifest, application, appInfo)
 
+        // Registered after the application exists, because the guest's own Context is
+        // what its receivers must run with.
+        runCatching { VirtualReceiverRegistry.install(ready) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "RECEIVER_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         Diagnostics.vuid = params.vuid
         Diagnostics.packageName = params.packageName
         Diagnostics.info(
