@@ -446,6 +446,52 @@ class VirtualLaunchTest {
         assertThat(observed["type"]).isEqualTo("vnd.android.cursor.dir/probe")
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: an activity the guest starts for itself.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t10_theGuestStartsItsOwnSecondActivity() = runBlocking {
+        val instance = requireInstance()
+        val secondResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-second.properties")
+        secondResult.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.startSecond", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        val first = awaitResult(instance)
+        val second = awaitFile(secondResult)
+
+        // UNIQUE launches the first activity of an instance; every screen after it is the
+        // app's own startActivity, naming a component the system has never installed.
+        // Those go to IActivityTaskManager, not IActivityManager.
+        assertThat(second["activityClass"]).isEqualTo("$probePackage.ProbeSecondActivity")
+        assertThat(second["packageName"]).isEqualTo(probePackage)
+        assertThat(second["componentName"])
+            .isEqualTo("$probePackage/$probePackage.ProbeSecondActivity")
+
+        // The payload the app put on its own intent survived the wrap and unwrap.
+        assertThat(second["extra"]).isEqualTo("carried-through")
+
+        // Same instance, same process, same task as the activity that started it.
+        assertThat(second["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+        assertThat(second["pid"]).isEqualTo(first["pid"])
+        assertThat(second["taskId"]).isEqualTo(first["taskId"])
+    }
+
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {

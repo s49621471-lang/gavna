@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-081621-24341`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-082425-26970`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -77,6 +77,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t07` the guest's own Service runs, started *and* bound | **PASS** |
 | `t08` the guest's manifest BroadcastReceiver gets broadcasts | **PASS** |
 | `t09` the guest's ContentProvider answers its own authority | **PASS** |
+| `t10` the guest starts its own second Activity | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -88,6 +89,8 @@ Service.onBind         count=1 component=com.unique.probe/.ProbeService
 onServiceConnected     com.unique/.stub.ServiceStub_p0_s0
 Receiver.onReceive     action=com.unique.probe.PING package=com.unique.probe
 Provider.onCreate      package=com.unique.probe
+ACTIVITY_INTENT_ROUTED activity=…ProbeSecondActivity stub=…ActivityStub_p0_m0_a0
+TRANSACTION_REWRITTEN  activity=com.unique.probe.ProbeSecondActivity
 rowCount               = 3
 provider.packageName   = com.unique.probe
 provider.filesDir      = …/virtual/users/0/data/com.unique.probe/files
@@ -138,6 +141,7 @@ visible to unit tests:
 | `t06` passed vacuously: `/proc` is `hidepid=invisible`, so the pid check saw nothing | fixed (`ActivityManager.getRunningAppProcesses`) |
 | `t06`: the crash extra never arrived — the task was recreated from its *stored* intent | fixed (`FLAG_ACTIVITY_CLEAR_TASK`) |
 | Every bind reached AMS unrewritten: `ContextImpl` calls `bindServiceInstance` from Android 12 on, and the shim was registered for `bindService`, which still exists and so bound cleanly | fixed (structural service matcher; the bind report now names the concrete methods) |
+| The same shape again: `activity_task` was declared as a hook target and never installed, so a guest could not open a second screen | fixed (`VirtualActivityTaskManagerHook`) |
 | `stageProbeApk` declared no inputs, so the suite ran an old probe against a new engine while reporting green | fixed (probe sources are inputs; the APK is rebuilt, not reused) |
 | `verify-device.sh` piped `adb install` into `tail`, discarding its exit status — a failed install ran the suite against whatever was installed before | fixed |
 
@@ -173,7 +177,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: the task/back stack, foreground services and their Android 14 type
+1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
+   filters), `startActivityForResult`, foreground services and their Android 14 type
    intersection, `PendingIntent`, URI permissions, runtime permissions and AppOps,
    `JobScheduler`, `AlarmManager`, the clipboard, the notification bridge.
 2. Give `onServiceConnected` the guest's own `ComponentName`.

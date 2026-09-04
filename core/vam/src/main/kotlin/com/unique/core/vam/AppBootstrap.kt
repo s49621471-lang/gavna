@@ -149,6 +149,15 @@ object AppBootstrap {
             )
         }
 
+        // Activity starts made by the guest itself go to IActivityTaskManager, not
+        // IActivityManager - Instrumentation.execStartActivity has called
+        // ActivityTaskManager.getService() since Android 10. Hooking only the latter
+        // would bind cleanly and never fire, which is how the bind path failed for a
+        // week. Not fatal on its own: the first activity is launched by UNIQUE and works
+        // regardless, so a failure here degrades to "the guest cannot open a second
+        // screen" with a diagnostic, rather than refusing the launch outright.
+        VirtualActivityTaskManagerHook.install(params.packageName, hostContext)
+
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {
             return Result.Failed(

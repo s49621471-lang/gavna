@@ -72,6 +72,11 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "querying own provider");
             queryOwnProvider();
         }
+        if (request != null && request.getBooleanExtra("probe.startSecond", false)) {
+            Log.i(TAG, "starting own second activity");
+            startActivity(new Intent(this, ProbeSecondActivity.class)
+                    .putExtra("probe.second.extra", "carried-through"));
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -89,6 +94,7 @@ public class ProbeActivity extends Activity {
         out.put("activityClass", getClass().getName());
         out.put("componentName", getComponentName().flattenToString());
         out.put("pid", String.valueOf(android.os.Process.myPid()));
+        out.put("taskId", String.valueOf(getTaskId()));
         out.put("uid", String.valueOf(android.os.Process.myUid()));
         out.put("dataDir", getDataDir().getAbsolutePath());
         out.put("filesDir", getFilesDir().getAbsolutePath());
