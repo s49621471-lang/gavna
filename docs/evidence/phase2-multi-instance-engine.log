@@ -1,0 +1,206 @@
+09-04 07:23:31.205 I/AndroidJUnitRunner(11678): newApplication com.unique.app.UniqueApplication
+09-04 07:23:31.473 W/com.unique(11678): Verification of void com.unique.app.UniqueApplication.initCore() took 108.726ms (735.79 bytecodes/s) (2928B approximate peak alloc)
+[11678] 2026-09-04 07:23:33.022 I PROCESS PROCESS_START process=com.unique kind=CORE sdk=34 abi=x86_64
+[11678] libunique_native loaded (page size 4096)
+[11678] 2026-09-04 07:23:34.082 I NATIVE NATIVE_LOADED pageSize=4096
+[11678] 2026-09-04 07:23:43.045 I STORAGE PACKAGE_IMPORTED package=com.unique.probe versionCode=7 splits=1 libs=0 bytes=12709 readOnlyApks=1
+[11678] 2026-09-04 07:23:44.773 I STORAGE INSTANCE_PREPARED vuid=0 package=com.unique.probe created=13
+[11678] 2026-09-04 07:23:45.129 I STORAGE INSTANCE_CREATED package=com.unique.probe vuid=0 name=Profile 1 androidId=a7f83904f188a93e
+[11678] 2026-09-04 07:23:47.477 I PROCESS PROCESS_ASSIGNED slot=:vapp0 vuid=0 process=com.unique.probe
+[11678] 2026-09-04 07:23:49.202 I LAUNCH LAUNCH_REQUESTED package=com.unique.probe vuid=0 activity=com.unique.probe.ProbeActivity slot=:vapp0 launchMode=0
+[11745] 2026-09-04 07:23:57.287 I PROCESS PROCESS_START process=com.unique:vapp0 kind=VAPP sdk=34 abi=x86_64
+[11745] 2026-09-04 07:23:57.939 I HOOK HIDDEN_API_GRANTED via=HiddenApiBypass
+[11745] libunique_native loaded (page size 4096)
+[11745] 2026-09-04 07:23:58.169 I LAUNCH INTERCEPTOR_INSTALLED executeTransaction=159
+[11745] 2026-09-04 07:23:58.237 I PROCESS VAPP_READY slot=0
+[11745] 2026-09-04 07:23:58.362 I PROCESS STUB_PROVIDER_CREATED slot=0
+[11745] 2026-09-04 07:23:58.499 D LAUNCH CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11745] 2026-09-04 07:23:59.411 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackages
+[11745] 2026-09-04 07:23:59.487 I LAUNCH VPM_HOOK_INSTALLED package=com.unique.probe bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+[11745] 2026-09-04 07:24:00.091 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=callerIdentity,getContentProvider
+[11745] 2026-09-04 07:24:00.147 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=2
+[11745] Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11745] 2026-09-04 07:24:00.636 I LAUNCH u0 com.unique.probe BOOTSTRAP_OK package=com.unique.probe vuid=0 slot=0 applicationClass=com.unique.probe.ProbeApplication dataDir=/data/user/0/com.unique/files/virtual/
+[11745] 2026-09-04 07:24:00.741 I LAUNCH u0 com.unique.probe TRANSACTION_REWRITTEN package=com.unique.probe activity=com.unique.probe.ProbeActivity vuid=0 item=LaunchActivityItem theme=0
+[11745] wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+[11745] packageName=com.unique.probe
+[11745] applicationClass=com.unique.probe.ProbeApplication
+[11745] applicationOnCreateRan=true
+[11745] applicationBeforeActivity=true
+[11745] activityClass=com.unique.probe.ProbeActivity
+[11745] componentName=com.unique.probe/com.unique.probe.ProbeActivity
+[11745] pid=11745
+[11745] uid=10109
+[11745] dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11745] filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11745] cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+[11745] codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+[11745] packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11745] packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11745] appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11745] appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11745] appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/lib/arm64-v8a
+[11745] targetSdk=34
+[11745] launchCount=1
+[11745] sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+[11745] fileLineCount=1
+[11745] filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+[11745] dbRowCount=1
+[11745] dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+09-04 07:24:03.167 I/TestRunner(11678): started: t03_theAppDoesNotWriteIntoUniquesOwnDirectories(com.unique.app.VirtualLaunchTest)
+[11745] 2026-09-04 07:24:03.526 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11745] 2026-09-04 07:24:03.755 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11745] 2026-09-04 07:24:03.986 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=149 obj=android.os.BinderProxy
+[11745] 2026-09-04 07:24:04.198 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=164 obj=java.lang.String
+09-04 07:24:04.711 I/TestRunner(11678): finished: t03_theAppDoesNotWriteIntoUniquesOwnDirectories(com.unique.app.VirtualLaunchTest)
+[11678] 2026-09-04 07:24:07.103 I LAUNCH LAUNCH_REQUESTED package=com.unique.probe vuid=0 activity=com.unique.probe.ProbeActivity slot=:vapp0 launchMode=0
+[11766] 2026-09-04 07:24:12.284 I PROCESS PROCESS_START process=com.unique:vapp0 kind=VAPP sdk=34 abi=x86_64
+[11766] 2026-09-04 07:24:13.089 I HOOK HIDDEN_API_GRANTED via=HiddenApiBypass
+[11766] libunique_native loaded (page size 4096)
+[11766] 2026-09-04 07:24:13.331 I LAUNCH INTERCEPTOR_INSTALLED executeTransaction=159
+[11766] 2026-09-04 07:24:13.367 I PROCESS VAPP_READY slot=0
+[11766] 2026-09-04 07:24:13.509 I PROCESS STUB_PROVIDER_CREATED slot=0
+[11766] 2026-09-04 07:24:13.658 D LAUNCH CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11766] 2026-09-04 07:24:14.411 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackages
+[11766] 2026-09-04 07:24:14.465 I LAUNCH VPM_HOOK_INSTALLED package=com.unique.probe bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+[11766] 2026-09-04 07:24:15.010 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=callerIdentity,getContentProvider
+[11766] 2026-09-04 07:24:15.067 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=2
+[11766] Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11766] 2026-09-04 07:24:15.470 I LAUNCH u0 com.unique.probe BOOTSTRAP_OK package=com.unique.probe vuid=0 slot=0 applicationClass=com.unique.probe.ProbeApplication dataDir=/data/user/0/com.unique/files/virtual/
+[11766] 2026-09-04 07:24:15.558 I LAUNCH u0 com.unique.probe TRANSACTION_REWRITTEN package=com.unique.probe activity=com.unique.probe.ProbeActivity vuid=0 item=LaunchActivityItem theme=0
+[11766] wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+[11766] packageName=com.unique.probe
+[11766] applicationClass=com.unique.probe.ProbeApplication
+[11766] applicationOnCreateRan=true
+[11766] applicationBeforeActivity=true
+[11766] activityClass=com.unique.probe.ProbeActivity
+[11766] componentName=com.unique.probe/com.unique.probe.ProbeActivity
+[11766] pid=11766
+[11766] uid=10109
+[11766] dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11766] filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11766] cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+[11766] codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+[11766] packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11766] packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11766] appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11766] appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11766] appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/lib/arm64-v8a
+[11766] targetSdk=34
+[11766] launchCount=2
+[11766] sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+[11766] fileLineCount=2
+[11766] filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+[11766] dbRowCount=2
+[11766] dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+[11766] 2026-09-04 07:24:17.655 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11766] 2026-09-04 07:24:17.831 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11766] 2026-09-04 07:24:17.997 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=149 obj=android.os.BinderProxy
+[11766] 2026-09-04 07:24:18.141 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=149 obj=android.os.BinderProxy
+[11678] 2026-09-04 07:24:20.214 I STORAGE INSTANCE_PREPARED vuid=1 package=com.unique.probe created=13
+[11678] 2026-09-04 07:24:20.883 I STORAGE INSTANCE_CREATED package=com.unique.probe vuid=1 name=Profile 2 androidId=720fe87ac559bfed
+[11678] 2026-09-04 07:24:21.142 I PROCESS PROCESS_ASSIGNED slot=:vapp1 vuid=1 process=com.unique.probe
+[11766] 2026-09-04 07:24:21.349 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11678] 2026-09-04 07:24:21.443 I LAUNCH LAUNCH_REQUESTED package=com.unique.probe vuid=1 activity=com.unique.probe.ProbeActivity slot=:vapp1 launchMode=0
+[11766] 2026-09-04 07:24:21.790 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11786] 2026-09-04 07:24:25.811 I PROCESS PROCESS_START process=com.unique:vapp1 kind=VAPP sdk=34 abi=x86_64
+[11786] 2026-09-04 07:24:26.417 I HOOK HIDDEN_API_GRANTED via=HiddenApiBypass
+[11786] libunique_native loaded (page size 4096)
+[11786] 2026-09-04 07:24:26.633 I LAUNCH INTERCEPTOR_INSTALLED executeTransaction=159
+[11786] 2026-09-04 07:24:26.698 I PROCESS VAPP_READY slot=1
+[11786] 2026-09-04 07:24:26.831 I PROCESS STUB_PROVIDER_CREATED slot=1
+[11786] 2026-09-04 07:24:26.966 D LAUNCH CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11786] 2026-09-04 07:24:28.778 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackages
+[11786] 2026-09-04 07:24:28.835 I LAUNCH VPM_HOOK_INSTALLED package=com.unique.probe bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+[11786] 2026-09-04 07:24:29.425 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=callerIdentity,getContentProvider
+[11786] 2026-09-04 07:24:29.575 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=2
+[11786] Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files
+[11786] 2026-09-04 07:24:29.991 I LAUNCH u1 com.unique.probe BOOTSTRAP_OK package=com.unique.probe vuid=1 slot=1 applicationClass=com.unique.probe.ProbeApplication dataDir=/data/user/0/com.unique/files/virtual/
+[11786] 2026-09-04 07:24:30.127 I LAUNCH u1 com.unique.probe TRANSACTION_REWRITTEN package=com.unique.probe activity=com.unique.probe.ProbeActivity vuid=1 item=LaunchActivityItem theme=0
+[11786] wrote /data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/probe-result.properties
+[11786] packageName=com.unique.probe
+[11786] applicationClass=com.unique.probe.ProbeApplication
+[11786] applicationOnCreateRan=true
+[11786] applicationBeforeActivity=true
+[11786] activityClass=com.unique.probe.ProbeActivity
+[11786] componentName=com.unique.probe/com.unique.probe.ProbeActivity
+[11786] pid=11786
+[11786] uid=10109
+[11786] dataDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe
+[11786] filesDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files
+[11786] cacheDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/cache
+[11786] codeCacheDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/code_cache
+[11786] packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11786] packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11786] appInfoDataDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe
+[11786] appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11786] appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/lib/arm64-v8a
+[11786] targetSdk=34
+[11786] launchCount=1
+[11786] sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/shared_prefs/probe.xml
+[11786] fileLineCount=1
+[11786] filePath=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/launches.log
+[11786] dbRowCount=1
+[11786] dbPath=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/databases/probe.db
+09-04 07:24:32.070 I/TestRunner(11678): started: t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(com.unique.app.VirtualLaunchTest)
+[11786] 2026-09-04 07:24:32.437 D LAUNCH u1 com.unique.probe CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11786] 2026-09-04 07:24:32.549 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11786] 2026-09-04 07:24:32.674 D LAUNCH u1 com.unique.probe CALLBACK_ALIVE what=164 obj=java.lang.String
+[11786] 2026-09-04 07:24:32.803 D LAUNCH u1 com.unique.probe CALLBACK_ALIVE what=149 obj=android.os.BinderProxy
+[11766] 2026-09-04 07:24:33.783 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11786] 2026-09-04 07:24:36.574 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11786] 2026-09-04 07:24:37.225 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11807] 2026-09-04 07:24:40.344 I PROCESS PROCESS_START process=com.unique:vapp0 kind=VAPP sdk=34 abi=x86_64
+[11807] 2026-09-04 07:24:40.957 I HOOK HIDDEN_API_GRANTED via=HiddenApiBypass
+[11807] libunique_native loaded (page size 4096)
+[11807] 2026-09-04 07:24:41.451 I LAUNCH INTERCEPTOR_INSTALLED executeTransaction=159
+[11807] 2026-09-04 07:24:41.593 I PROCESS VAPP_READY slot=0
+[11807] 2026-09-04 07:24:41.970 I PROCESS STUB_PROVIDER_CREATED slot=0
+[11807] 2026-09-04 07:24:42.317 D LAUNCH CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11807] 2026-09-04 07:24:43.147 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackages
+[11807] 2026-09-04 07:24:43.257 I LAUNCH VPM_HOOK_INSTALLED package=com.unique.probe bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+[11807] 2026-09-04 07:24:43.838 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=callerIdentity,getContentProvider
+[11807] 2026-09-04 07:24:43.887 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=2
+[11807] Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11807] 2026-09-04 07:24:44.391 I LAUNCH u0 com.unique.probe BOOTSTRAP_OK package=com.unique.probe vuid=0 slot=0 applicationClass=com.unique.probe.ProbeApplication dataDir=/data/user/0/com.unique/files/virtual/
+[11807] 2026-09-04 07:24:44.442 I LAUNCH u0 com.unique.probe TRANSACTION_REWRITTEN package=com.unique.probe activity=com.unique.probe.ProbeActivity vuid=0 item=LaunchActivityItem theme=0
+[11807] wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+[11807] packageName=com.unique.probe
+[11807] applicationClass=com.unique.probe.ProbeApplication
+[11807] applicationOnCreateRan=true
+[11807] applicationBeforeActivity=true
+[11807] activityClass=com.unique.probe.ProbeActivity
+[11807] componentName=com.unique.probe/com.unique.probe.ProbeActivity
+[11807] pid=11807
+[11807] uid=10109
+[11807] dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11807] filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+[11807] cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+[11807] codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+[11807] packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11807] packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11807] appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+[11807] appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/base.apk
+[11807] appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/7/lib/arm64-v8a
+[11807] targetSdk=34
+[11807] launchCount=3
+[11807] sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+[11807] fileLineCount=3
+[11807] filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+[11807] dbRowCount=3
+[11807] dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+[11807] 2026-09-04 07:24:46.686 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=159 obj=android.app.servertransaction.ClientTransaction
+[11807] 2026-09-04 07:24:46.778 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11807] 2026-09-04 07:24:46.853 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=164 obj=java.lang.String
+[11807] 2026-09-04 07:24:46.931 D LAUNCH u0 com.unique.probe CALLBACK_ALIVE what=149 obj=android.os.BinderProxy
+[11786] 2026-09-04 07:24:48.427 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11807] 2026-09-04 07:24:54.834 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11678] 2026-09-04 07:24:54.875 I LAUNCH LAUNCH_REQUESTED package=com.unique.probe vuid=1 activity=com.unique.probe.ProbeActivity slot=:vapp1 launchMode=0
+[11807] 2026-09-04 07:24:55.161 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11786] 2026-09-04 07:24:55.425 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[TopResumedActivityChangeItem] mActivityToken:Bin
+[11786] 2026-09-04 07:24:55.799 D LAUNCH u1 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+[11807] 2026-09-04 07:24:58.626 D LAUNCH u0 com.unique.probe NO_LAUNCH_ITEM transaction=android.app.servertransaction.ClientTransaction shape=mActivityCallbacks:[] mActivityToken:BinderProxy mClient:null mLifec
+09-04 07:27:56.687 E/TestRunner(11678): failed: t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(com.unique.app.VirtualLaunchTest)
+09-04 07:27:56.834 E/TestRunner(11678): 	at com.unique.app.VirtualLaunchTest$t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling$1.invokeSuspend(VirtualLaunchTest.kt:284)
+09-04 07:27:56.834 E/TestRunner(11678): 	at com.unique.app.VirtualLaunchTest.t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(VirtualLaunchTest.kt:243)
+09-04 07:27:57.032 I/TestRunner(11678): finished: t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(com.unique.app.VirtualLaunchTest)

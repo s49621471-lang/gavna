@@ -1,0 +1,138 @@
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+com.unique.app.VirtualLaunchTest:
+INSTRUMENTATION_STATUS: test=t01_importsAndCreatesAnInstance
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=t01_importsAndCreatesAnInstance
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=t02_launchesAndTheAppSeesItsOwnIdentity
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=t02_launchesAndTheAppSeesItsOwnIdentity
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=t03_theAppDoesNotWriteIntoUniquesOwnDirectories
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=t03_theAppDoesNotWriteIntoUniquesOwnDirectories
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=t04_dataSurvivesAFullProcessRestart
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=t04_dataSurvivesAFullProcessRestart
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=t05_aSecondInstanceIsFullyIndependent
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=t05_aSecondInstanceIsFullyIndependent
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=com.unique.app.VirtualLaunchTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: the probe did not report within 180000ms; expected /data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/probe-result.properties
+	at com.unique.app.VirtualLaunchTest.awaitResult(VirtualLaunchTest.kt:358)
+	at com.unique.app.VirtualLaunchTest.awaitResult$default(VirtualLaunchTest.kt:345)
+	at com.unique.app.VirtualLaunchTest$t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling$1.invokeSuspend(VirtualLaunchTest.kt:284)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:94)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:70)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at com.unique.app.VirtualLaunchTest.t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(VirtualLaunchTest.kt:243)
+
+INSTRUMENTATION_STATUS: stream=
+Error in t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(com.unique.app.VirtualLaunchTest):
+java.lang.AssertionError: the probe did not report within 180000ms; expected /data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/probe-result.properties
+	at com.unique.app.VirtualLaunchTest.awaitResult(VirtualLaunchTest.kt:358)
+	at com.unique.app.VirtualLaunchTest.awaitResult$default(VirtualLaunchTest.kt:345)
+	at com.unique.app.VirtualLaunchTest$t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling$1.invokeSuspend(VirtualLaunchTest.kt:284)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:94)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:70)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at com.unique.app.VirtualLaunchTest.t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(VirtualLaunchTest.kt:243)
+
+INSTRUMENTATION_STATUS: test=t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_RESULT: stream=
+
+Time: 258.846
+There was 1 failure:
+1) t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(com.unique.app.VirtualLaunchTest)
+java.lang.AssertionError: the probe did not report within 180000ms; expected /data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/probe-result.properties
+	at com.unique.app.VirtualLaunchTest.awaitResult(VirtualLaunchTest.kt:358)
+	at com.unique.app.VirtualLaunchTest.awaitResult$default(VirtualLaunchTest.kt:345)
+	at com.unique.app.VirtualLaunchTest$t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling$1.invokeSuspend(VirtualLaunchTest.kt:284)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:94)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:70)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at com.unique.app.VirtualLaunchTest.t06_aCrashingInstanceKillsNeitherUniqueNorItsSibling(VirtualLaunchTest.kt:243)
+
+FAILURES!!!
+Tests run: 6,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

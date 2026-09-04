@@ -1,6 +1,6 @@
 package com.unique.app
 
-import android.content.ComponentName
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.os.Process
@@ -245,11 +245,17 @@ class VirtualLaunchTest {
         val victim = requireInstance()
         val survivor = requireSecondInstance()
 
-        // Both instances running.
+        // Both instances running, in processes of their own.
         val survivorBefore = awaitResult(survivor)
         val survivorPid = survivorBefore["pid"]!!.toInt()
+        val victimFirstPid = awaitResult(victim)["pid"]!!.toInt()
+        assertThat(survivorPid).isNotEqualTo(victimFirstPid)
+        assertThat(runningVirtualPids()).containsAtLeast(survivorPid, victimFirstPid)
 
-        killAndWait(awaitResult(victim)["pid"]!!.toInt())
+        // Restart the victim so the next launch genuinely runs onCreate. Launching into a
+        // live instance correctly *resumes* it instead, which is right behaviour and
+        // would make this test silently measure nothing.
+        killAndWait(victimFirstPid)
         clearResult(victim)
 
         // The stub intent is built here rather than through the launcher so an extra can
@@ -267,24 +273,47 @@ class VirtualLaunchTest {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
 
-        // The probe records its observations before it throws, so this also confirms the
-        // extra survived the rewrite and reached the virtual activity.
-        assertThat(awaitResult(victim)["packageName"]).isEqualTo(probePackage)
+        // The probe records its observations before it throws, so this confirms the extra
+        // survived the rewrite and reached the virtual activity.
+        val crashed = awaitResult(victim)
+        assertThat(crashed["packageName"]).isEqualTo(probePackage)
+        val victimPid = crashed["pid"]!!.toInt()
 
-        // Give the crash time to land.
-        Thread.sleep(8_000)
+        awaitProcessGone(victimPid)
 
         // UNIQUE is still alive - this test is running inside it.
         assertThat(Process.myPid()).isEqualTo(uniquePid)
 
-        // And the sibling instance is untouched: same process, still able to work.
-        clearResult(survivor)
-        assertThat(UniqueEngine.launch(context, survivor.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
-        val survivorAfter = awaitResult(survivor)
-        assertThat(survivorAfter["pid"]!!.toInt()).isEqualTo(survivorPid)
-        assertThat(survivorAfter["launchCount"]!!.toInt())
-            .isEqualTo(survivorBefore["launchCount"]!!.toInt() + 1)
+        // The sibling is untouched: same process, still running.
+        val after = runningVirtualPids()
+        assertThat(after).contains(survivorPid)
+        assertThat(after).doesNotContain(victimPid)
+
+        // And its data was not disturbed by the crash next door.
+        val survivorAfter = readResult(survivor)
+        assertThat(survivorAfter["launchCount"]).isEqualTo(survivorBefore["launchCount"])
+        assertThat(survivorAfter["filesDir"]).isEqualTo(survivorBefore["filesDir"])
+    }
+
+    /**
+     * The pids of UNIQUE's own live processes.
+     *
+     * `getRunningAppProcesses` returns only the caller's own processes on modern Android,
+     * which is exactly the question here and avoids depending on `/proc` visibility - the
+     * emulator mounts it `hidepid=invisible`.
+     */
+    private fun runningVirtualPids(): List<Int> {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return am.runningAppProcesses.orEmpty().map { it.pid }
+    }
+
+    private fun awaitProcessGone(pid: Int, timeoutMillis: Long = 60_000) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (pid !in runningVirtualPids()) return
+            Thread.sleep(500)
+        }
+        throw AssertionError("process $pid was still running ${timeoutMillis}ms after the crash")
     }
 
     // -----------------------------------------------------------------------------
@@ -360,12 +389,18 @@ class VirtualLaunchTest {
         )
     }
 
-    /** Kills a virtual process. Same uid as UNIQUE, so this is permitted. */
+    /**
+     * Kills a virtual process and waits for it to go.
+     *
+     * Same uid as UNIQUE, so the kill is permitted. Liveness is checked through
+     * `getRunningAppProcesses` rather than `/proc`, which the emulator mounts
+     * `hidepid=invisible`.
+     */
     private fun killAndWait(pid: Int) {
         Process.killProcess(pid)
         val deadline = System.currentTimeMillis() + 30_000
         while (System.currentTimeMillis() < deadline) {
-            if (!File("/proc/$pid").exists()) return
+            if (pid !in runningVirtualPids()) return
             Thread.sleep(250)
         }
         throw AssertionError("process $pid did not exit")
