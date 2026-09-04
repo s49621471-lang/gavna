@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-092334-4780`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-093323-6465`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -81,6 +81,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t11` a `PendingIntent` the guest built fires into the guest | **PASS** |
 | `t12` a runtime permission belongs to the instance, not to UNIQUE | **PASS** |
 | `t13` a grant survives the virtual process being killed | **PASS** |
+| `t14` app ops accept the guest's identity | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -164,7 +165,6 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
 | Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
-| AppOps | 3 | `IAppOpsService` is a declared hook target and is not installed, so a guest's app-op checks answer for UNIQUE |
 | Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`; the table is complete and tested, the ~30 hooks are not |
@@ -185,10 +185,9 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: AppOps (`IAppOpsService`), implicit activity starts (resolving
-   against the guest's own intent filters), foreground services and their Android 14 type
-   intersection, URI permissions, `JobScheduler`, `AlarmManager`, the clipboard, the
-   notification bridge.
+1. Remaining Phase 3: the notification bridge, foreground services and their Android 14
+   type intersection, implicit activity starts (resolving against the guest's own intent
+   filters), URI permissions, `JobScheduler`, `AlarmManager`, the clipboard.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
    anything.

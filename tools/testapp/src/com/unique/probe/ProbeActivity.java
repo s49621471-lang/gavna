@@ -88,6 +88,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "exercising runtime permissions");
             exercisePermissions();
         }
+        if (request != null && request.getBooleanExtra("probe.appops", false)) {
+            Log.i(TAG, "exercising app ops");
+            exerciseAppOps();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -361,5 +365,36 @@ public class ProbeActivity extends Activity {
         } catch (Throwable t) {
             Log.e(TAG, "could not write " + fileName, t);
         }
+    }
+
+    /**
+     * Asks AppOpsManager about this app, the way the framework does on the way into the
+     * camera, the microphone and the clipboard.
+     *
+     * `checkPackage` throws when the package name does not belong to the calling uid,
+     * which under virtualization it does not, so an unhandled app-op layer shows up as a
+     * SecurityException from an API that has nothing obviously to do with app ops.
+     */
+    private void exerciseAppOps() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        android.app.AppOpsManager ops =
+                (android.app.AppOpsManager) getSystemService(APP_OPS_SERVICE);
+        try {
+            ops.checkPackage(android.os.Process.myUid(), getPackageName());
+            out.put("checkPackage", "ok");
+        } catch (Throwable t) {
+            out.put("checkPackage", t.getClass().getSimpleName());
+            Log.e(TAG, "checkPackage failed", t);
+        }
+        try {
+            int mode = ops.unsafeCheckOpNoThrow(
+                    android.app.AppOpsManager.OPSTR_CAMERA,
+                    android.os.Process.myUid(), getPackageName());
+            out.put("cameraOp", String.valueOf(mode));
+        } catch (Throwable t) {
+            out.put("cameraOp", t.getClass().getSimpleName());
+        }
+        out.put("packageName", getPackageName());
+        writeMap("probe-appops.properties", out);
     }
 }

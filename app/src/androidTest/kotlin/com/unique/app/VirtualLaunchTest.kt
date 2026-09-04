@@ -661,6 +661,49 @@ class VirtualLaunchTest {
         assertThat(observed["micBefore"]).isEqualTo("DENIED")
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: app ops, which the framework consults on the way into half the platform.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t14_appOpsAcceptTheGuestsIdentity() = runBlocking {
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-appops.properties")
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.appops", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(result)
+
+        // AppOpsManager.checkPackage throws when the name does not belong to the uid, and
+        // the framework calls it on the way into the camera, the microphone, the
+        // clipboard and notifications. Unhandled, it surfaces as a SecurityException from
+        // an API with nothing obviously to do with app ops.
+        assertThat(observed["checkPackage"]).isEqualTo("ok")
+
+        // MODE_ERRORED (2) is what an unknown package gets. Anything else means the op
+        // was resolved against a package the platform actually knows.
+        assertThat(observed["cameraOp"]).isNotEqualTo("2")
+
+        // And the app still believes it is itself.
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+    }
+
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {

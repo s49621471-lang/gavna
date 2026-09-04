@@ -168,6 +168,7 @@ object AppBootstrap {
         // screen" with a diagnostic, rather than refusing the launch outright.
         VirtualActivityTaskManagerHook.install(params.packageName, hostContext)
         VirtualPermissions.installManagerHook(params.packageName, hostContext.packageName)
+        VirtualAppOpsHook.install(params.packageName, hostContext.packageName)
 
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {

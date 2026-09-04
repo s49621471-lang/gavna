@@ -611,8 +611,27 @@ It is restored at bootstrap, before the guest's `Application` exists. Without th
 is asked for every permission again on every cold start, which users read as the app being
 broken.
 
-**Not implemented:** `IAppOpsService` is a declared hook target and is not installed, so a
-guest's app-op checks still answer for UNIQUE.
+#### 6.6.5 App ops
+
+`AppOpsManager.checkPackage(uid, packageName)` throws when the name does not belong to the
+uid, and the framework calls it on the way into a great many APIs — camera, microphone,
+location, clipboard, notifications. A guest reaches it with its virtual package name, which
+no uid on the device owns, so an unhandled app-op layer surfaces as a `SecurityException`
+from an API with nothing obviously to do with app ops.
+
+The rewrite here is broader than the one on `IActivityManager`, and deliberately so. There
+the rule is limited to calls carrying an `IApplicationThread`, because `forceStopPackage`
+takes a package name as *data*. `IAppOpsService` has no equivalent reachable by an ordinary
+app: everything that acts on a different package — `setMode`, `setUidMode`,
+`resetAllModes`, `setAudioRestriction` — is gated behind `MANAGE_APP_OPS_MODES`, which
+UNIQUE does not hold and must never hold. So the general rule applies: **the virtual
+package name is not a name the platform knows, so wherever it appears in an outbound call
+it can only mean "me".** The privileged setters are excluded anyway, as defence in depth —
+the safety of this must not depend on UNIQUE continuing not to hold that permission.
+
+Ops are *attributed* to UNIQUE, because the uid is UNIQUE's. That is correct and permanent:
+an op record is a kernel-level fact about which process touched the camera. Per-instance
+denial happens a layer up, at the permission check, which is what apps actually consult.
 
 ---
 
