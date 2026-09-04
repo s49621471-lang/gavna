@@ -77,6 +77,11 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "querying own provider");
             queryOwnProvider();
         }
+
+        if (request != null && request.getBooleanExtra("probe.queryAltProvider", false)) {
+            Log.i(TAG, "querying the provider in this app's :alt process");
+            queryAltProvider();
+        }
         if (request != null && request.getBooleanExtra("probe.startSecond", false)) {
             Log.i(TAG, "starting own second activity");
             startActivity(new Intent(this, ProbeSecondActivity.class)
@@ -113,6 +118,11 @@ public class ProbeActivity extends Activity {
         if (request != null && request.getBooleanExtra("probe.graphics", false)) {
             Log.i(TAG, "exercising graphics");
             exerciseGraphics();
+        }
+
+        if (request != null && request.getBooleanExtra("probe.vulkan", false)) {
+            Log.i(TAG, "exercising Vulkan");
+            exerciseVulkan();
         }
         if (request != null && request.getBooleanExtra("probe.identity", false)) {
             Log.i(TAG, "checking own signature and the Google stack");
@@ -274,6 +284,54 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "wrote " + f.getAbsolutePath());
         } catch (Throwable t) {
             Log.e(TAG, "could not write provider result", t);
+        }
+    }
+
+    /**
+     * Queries this app's *other* process through the ContentResolver.
+     *
+     * ProbeAltProvider is declared android:process=":alt", so the provider object lives in
+     * a process this activity is not in. The resolver still goes to
+     * ActivityManagerService for the authority; the difference is that the answer has to
+     * come back over a Binder from somewhere else, which is what makes this a different
+     * test from queryOwnProvider() rather than a copy of it.
+     */
+    private void queryAltProvider() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        Cursor cursor = null;
+        try {
+            android.net.Uri uri =
+                    android.net.Uri.parse("content://" + ProbeAltProvider.AUTHORITY + "/rows");
+            cursor = getContentResolver().query(uri, null, null, null, null);
+            if (cursor == null) {
+                out.put("error", "resolver returned no cursor");
+            } else {
+                out.put("rowCount", String.valueOf(cursor.getCount()));
+                while (cursor.moveToNext()) {
+                    out.put("provider." + cursor.getString(0), cursor.getString(1));
+                }
+                out.put("type", String.valueOf(getContentResolver().getType(uri)));
+            }
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "alt provider query failed", t);
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        out.put("callerPid", String.valueOf(android.os.Process.myPid()));
+        try {
+            File f = new File(getFilesDir(), "probe-altprovider.properties");
+            FileOutputStream fos = new FileOutputStream(f, false);
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> e : out.entrySet()) {
+                Log.i(TAG, e.getKey() + "=" + e.getValue());
+                body.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+            }
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write alt provider result", t);
         }
     }
 
@@ -605,6 +663,29 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-alarm-clip.properties", out);
+    }
+
+    /**
+     * Creates a real Vulkan instance, device and queue, and writes down what happened.
+     *
+     * The report is written whatever the outcome, including "this device has no Vulkan at
+     * all". A probe that only writes a file when it succeeds turns every failure into a
+     * timeout, and a timeout says nothing about which of a dozen steps went wrong.
+     */
+    private void exerciseVulkan() {
+        String report = ProbeVulkan.report();
+        try {
+            File f = new File(getFilesDir(), "probe-vulkan.properties");
+            FileOutputStream fos = new FileOutputStream(f, false);
+            StringBuilder body = new StringBuilder(report);
+            body.append("callerPid=").append(android.os.Process.myPid()).append('\n');
+            body.append("packageName=").append(getPackageName()).append('\n');
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath() + "\n" + report);
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write vulkan result", t);
+        }
     }
 
     /**

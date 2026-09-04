@@ -129,7 +129,7 @@ grant what they require through `UiAutomation`, so no manual `pm grant` is neede
 
 ## What the suite checks
 
-Fifteen tests, run in order; each builds on the state the previous one left.
+Twenty-eight tests, run in order; each builds on the state the previous one left.
 
 | Test | What a failure would mean |
 |---|---|
@@ -140,7 +140,7 @@ Fifteen tests, run in order; each builds on the state the previous one left.
 | `t05` a second instance is fully independent | Two clones would share data |
 | `t06` a crash kills neither UNIQUE nor a sibling | Process isolation is not real |
 | `t07` the guest's Service runs, started **and** bound | Service routing, or the bind rename (§6.2.1) |
-| `t08` the guest's manifest receiver gets broadcasts | Receiver bridging |
+| `t08` the guest's manifest receiver gets broadcasts | Receiver bridging into a live process |
 | `t09` the guest's ContentProvider answers its authority | Provider publication |
 | `t10` the guest starts its own second Activity | `IActivityTaskManager` routing — every screen after the first |
 | `t11` a `PendingIntent` the guest built fires into the guest | Stub intent identity (§6.4.1) |
@@ -148,10 +148,37 @@ Fifteen tests, run in order; each builds on the state the previous one left.
 | `t13` a grant survives the process being killed | Permission persistence |
 | `t14` app ops accept the guest's identity | `checkPackage`, which gates half the platform |
 | `t15` a notification is posted, and two instances do not collide | Identity, channel and id namespacing, icon flattening |
+| `t16` the guest's foreground service starts | Android 14 FGS types, declared on the *stub* |
+| `t17` the guest loads and runs its own native library | **ARM64 JNI.** The main reason this run matters |
+| `t18` the guest's job is scheduled, and the system runs it | `JobScheduler` proxying and `jobFinished` |
+| `t19` the guest sets alarms and uses the clipboard | Caller-identity hooks on two more services |
+| `t20` the guest renders with OpenGL, and the pixel reads back | EGL and GLES under the graft |
+| `t21` the guest reads its own signature, and the truth about GMS | `signingInfo` *and* legacy `signatures` |
+| `t22` two instances have different device identities | `DeviceProfileProvider`, and `Settings.Secure` interception |
+| `t23` an update keeps the instance's data | In-place update: data is keyed by vuid, never by version |
+| `t24` an update signed by someone else is refused | Signature continuity |
+| `t25` a *dead* guest is woken by a broadcast | `VirtualBroadcastRouter`, and the reserved cold-broadcast stub |
+| `t26` UNIQUE itself reads a guest's provider | Cross-process provider routing, `:core` → `:vappN` |
+| `t27` a guest reaches its own provider in another process | The same, `:vappN` → `:vappM`, via the host router |
+| `t28` the guest brings up Vulkan if the device has it | **On a real GPU this is the first real Vulkan run.** Instance, physical device, logical device, graphics queue |
 
 An OEM build that diverges will usually fail *one* of these, and which one names the
 subsystem. Send the whole run directory regardless — `engine.log` says more than the
 table does.
+
+### The three that only a phone can answer
+
+`t17`, `t20` and `t28` are the reason this checklist exists.
+
+- **`t17`** loads an ARM64 `.so` from the instance's own directory and calls into it. On
+  the emulator the same test runs against x86_64, which proves the plumbing and nothing
+  about the ABI.
+- **`t20`** renders through a real GPU driver rather than a software rasteriser.
+- **`t28`** creates a Vulkan instance, enumerates physical devices, and creates a logical
+  device with a graphics queue. The headless emulator declares no Vulkan at all, so the
+  test there only confirms the probe ran and reported honestly — it asserts nothing.
+  **On a device that declares `FEATURE_VULKAN_HARDWARE_VERSION` it asserts all of it**,
+  and until such a run exists Vulkan stays `NOT_TESTED` in `docs/COMPATIBILITY.md`.
 
 ## Also worth doing by hand
 
@@ -160,26 +187,44 @@ what it cannot:
 
 1. `adb shell am start -n com.unique/.MainActivity` — UNIQUE's own interface should open,
    dark, with the mark in the app bar.
-2. Add the probe through **Add App**, then launch it from Home. **Look at the screen**:
+2. Add the probe through **Add App**. Both routes should work: *Installed* lists apps on
+   the device, and *APK* opens the system file picker (select a base APK together with
+   its splits — they are one import). Then launch it from Home. **Look at the screen**:
    the probe draws a black page of white `key = value` lines. If it renders, the
    virtualized activity is genuinely drawing through the normal Android surface path.
 3. Rotate the device. The probe should survive it.
 4. Pull down the shade. The probe's notification from `t15` should be there, **with a
    visible icon** — a blank or wrong icon means the flattening in §6.7 did not work on
    this OEM's SystemUI. Run two instances and check both notifications appear.
-5. Note anything that looks wrong even if the suite passed — a flash of the wrong colour
+5. **Settings → Advanced → Export diagnostics.** It writes a zip into UNIQUE's own cache
+   and shows the path. Pull it off the device and send it with the run:
+
+   ```bash
+   adb exec-out run-as com.unique tar c cache/diagnostics 2>/dev/null > diagnostics.tar
+   # or, on a build where run-as is unavailable:
+   adb shell am start -n com.unique/.MainActivity   # then use the path the UI shows
+   ```
+
+   It contains UNIQUE's structured log, the log pulled from every `:vappN` alive at the
+   time, crash records pushed here by processes that already died, and a description of
+   the device. It contains **nothing** from inside a virtualized app — no databases, no
+   shared preferences, no cookies, no tokens — and every line has been through the
+   redactor. Taking it *while the app that misbehaved is still running* is worth far more
+   than taking it afterwards: the per-process logs are pulled live.
+6. Note anything that looks wrong even if the suite passed — a flash of the wrong colour
    at launch, a wrong window size, a missing status bar. Those are the fidelity problems
    an assertion cannot see.
 
 ## Known limits before you start
 
-- Nothing native has been exercised yet: the probe has no `.so` files. ARM64 JNI loading
-  is phase 4, and is the main reason this run matters.
-- No Google flow has been implemented — those interfaces have no bodies yet.
-- A guest only receives broadcasts while it is already running; a dead one cannot be
-  woken. A provider is only served inside its own virtual process.
-- Foreground services are designed and not implemented, so an app that starts one will
-  fail on this build.
+- No Google flow has been implemented — those interfaces have no bodies yet, and `t21`
+  asserts that UNIQUE *reports* that honestly rather than that anything works.
+- A broadcast arriving while UNIQUE's own process is not running is missed: the
+  registrations live there. A guest that is merely closed is woken fine (`t25`).
+- Play Integrity, Play Games and Play Billing are expected not to work.
+- There is no AOT: since Android 10 an app cannot invoke `dex2oat`, so virtual apps are
+  JIT-only and cold start is slower than an installed app. This is a platform property,
+  not something to report.
 - On Xiaomi/HyperOS, aggressive background management may kill `:vappN` processes;
   if a test fails there, check `processes.txt` before assuming an engine bug.
 - `t15` needs POST_NOTIFICATIONS. On an OEM build that refuses the `UiAutomation` grant,

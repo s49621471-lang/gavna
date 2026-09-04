@@ -8,7 +8,9 @@ import android.content.Intent
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
+import android.content.pm.ProviderInfo
 import com.unique.core.common.shim.MethodShim
+import com.unique.core.common.shim.ShimCall
 import com.unique.core.common.shim.shim
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.SystemServiceHook
@@ -171,15 +173,18 @@ object VirtualActivityManagerHook {
         shim("getContentProvider") {
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
             replaceWith { call ->
-                // A guest authority is answered here: ActivityManagerService resolves
-                // authorities against installed packages and would return null.
-                val authority = call.args.filterIsInstance<String>()
-                    .firstOrNull { VirtualProviderRegistry.owns(it) }
                 val ready = AppBootstrap.current
-                if (authority != null && ready != null) {
-                    VirtualProviderRegistry.holderFor(authority, ready) ?: call.proceed()
+                // A guest authority this process publishes is answered right here:
+                // ActivityManagerService resolves authorities against *installed*
+                // packages and would return null.
+                val local = call.args.filterIsInstance<String>()
+                    .firstOrNull { VirtualProviderRegistry.owns(it) }
+                if (local != null && ready != null) {
+                    VirtualProviderRegistry.holderFor(local, ready) ?: call.proceed()
                 } else {
+                    val redirected = redirectToOwningSlot(call, ready, hostPackage)
                     wrapProviderHolder(call.proceed(), hostSource)
+                        ?.also { if (redirected != null) restoreAuthority(it, redirected) }
                 }
             }
         },
@@ -389,6 +394,106 @@ object VirtualActivityManagerHook {
                 intent
             }
             ComponentKind.PROVIDER -> intent
+        }
+    }
+
+
+    /**
+     * Points an acquisition at the slot that actually publishes the authority.
+     *
+     * A guest's provider may live in another of its own processes — `android:process` on a
+     * `<provider>` is ordinary and apps rely on it — or another instance's. Neither is
+     * something `ActivityManagerService` can resolve, so the authority argument is
+     * rewritten to the *stub* provider of the slot that serves it, which AMS does know:
+     * it is declared in UNIQUE's manifest. Acquiring it starts that process, and the bind
+     * that precedes the rewrite makes the process be the right instance and widens the
+     * stub's authority set so the caller's own URIs are accepted afterwards.
+     *
+     * Returns the guest authority when a redirect happened, so the holder can be told
+     * about it, or null when this was not a guest authority at all.
+     */
+    private fun redirectToOwningSlot(
+        call: ShimCall,
+        ready: AppBootstrap.Result.Ready?,
+        hostPackage: String,
+    ): String? {
+        if (ready == null) return null
+        val index = call.args.indices.firstOrNull { i ->
+            val value = call.args[i]
+            value is String && isCandidateAuthority(value, hostPackage)
+        } ?: return null
+        val authority = call.args[index] as String
+
+        // Asking the router about every unknown authority would put an IPC in front of
+        // every `settings` and `media` read the guest makes. One miss is remembered.
+        if (authority in notGuestAuthorities) return null
+
+        val context = ready.application
+        val route = VirtualProviderBridge.resolve(context, ready.params.vuid, authority)
+        if (route == null) {
+            notGuestAuthorities += authority
+            return null
+        }
+        if (VirtualProviderBridge.bind(context, route) == null) return null
+
+        call.args[index] = VirtualProviderRouter.stubAuthority(hostPackage, route.slot)
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PROVIDER_ACQUIRE_REDIRECTED",
+            mapOf(
+                "authority" to authority,
+                "slot" to route.slot.toString(),
+                "package" to route.packageName,
+            ),
+        )
+        return authority
+    }
+
+    /**
+     * Authorities remembered as "not a guest's", so the router is asked at most once.
+     *
+     * Only ever grows within a process, and only with answers the host gave. An authority
+     * that becomes a guest's *after* this process asked would be missed - but that means
+     * an app was imported after this virtual process started, and this process cannot be
+     * serving it.
+     */
+    private val notGuestAuthorities =
+        java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** UNIQUE's own authorities are never redirected: that is how the recursion ends. */
+    private fun isCandidateAuthority(value: String, hostPackage: String): Boolean =
+        value != hostPackage &&
+            value != "$hostPackage.router" &&
+            !value.startsWith("$hostPackage.vprovider.") &&
+            value.contains('.')
+
+    /**
+     * Lets `ActivityThread` cache the holder under the authority the caller asked for.
+     *
+     * `installProvider` keys its map by `holder.info.authority`, which after the redirect
+     * names the stub. Without this every acquisition of the guest authority would miss
+     * that cache and repeat the whole resolve-and-bind round trip.
+     */
+    private fun restoreAuthority(holder: Any, guestAuthority: String) {
+        runCatching {
+            val info = holder.javaClass.getField("info").get(holder) as? ProviderInfo
+                ?: error("ContentProviderHolder.info is not a ProviderInfo")
+            val existing = info.authority.orEmpty()
+            if (guestAuthority !in existing.split(';')) {
+                info.authority = if (existing.isEmpty()) guestAuthority
+                else "$existing;$guestAuthority"
+            }
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "PROVIDER_HOLDER_AUTHORITY_EXTENDED",
+                mapOf("authority" to info.authority.orEmpty()),
+            )
+        }.onFailure {
+            // Not fatal: the acquisition still works, it just will not be cached, so the
+            // next one repeats the resolve and bind. Reported because "slow for no
+            // visible reason" is the hardest kind of regression to notice.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_HOLDER_AUTHORITY_UNCHANGED",
+                mapOf("authority" to guestAuthority, "error" to it.toString()),
+            )
         }
     }
 

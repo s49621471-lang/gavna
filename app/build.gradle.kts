@@ -19,7 +19,9 @@ plugins {
 // ---------------------------------------------------------------------------------
 val vappProcessCount = rootProject.extra["vappProcessCount"] as Int
 val stubActivitiesPerProcess = rootProject.extra["stubActivitiesPerProcess"] as Int
-val STUB_SERVICES_PER_PROCESS = 6
+// One more than a guest may use: the last of each slot is reserved for cold
+// broadcast delivery. See VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX.
+val STUB_SERVICES_PER_PROCESS = 7
 
 val generatedManifestDir = layout.buildDirectory.dir("generated/unique/manifest")
 val generatedSourceDir = layout.buildDirectory.dir("generated/unique/kotlin")

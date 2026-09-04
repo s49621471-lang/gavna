@@ -49,6 +49,13 @@ class UniqueBridgeClient {
   Future<EngineOutcome> importApk(List<String> paths) async =>
       _outcome('importApk', {'paths': paths});
 
+  /// Opens the system file picker and imports whatever the user chose.
+  ///
+  /// Returns an outcome with `cancelled` set when the user backed out, which is not a
+  /// failure and must not be shown as one.
+  Future<EngineOutcome> importApkFromPicker() async =>
+      _outcome('importApkFromPicker', const {});
+
   Future<EngineOutcome> cloneInstance(String packageName) async =>
       _outcome('cloneInstance', {'package': packageName});
 
@@ -67,6 +74,22 @@ class UniqueBridgeClient {
   Future<EngineOutcome> _outcome(String method, Map<String, Object?> args) async {
     final result = await _method.invokeMapMethod<Object?, Object?>(method, args);
     return EngineOutcome.fromMap(result ?? const {});
+  }
+
+  /// Writes a diagnostics package and returns where it landed.
+  ///
+  /// The file is UNIQUE's to keep: it lands in app-private storage and carries nothing
+  /// from inside a virtualized app. See `DiagnosticsExport` on the Kotlin side.
+  Future<DiagnosticsExportResult> exportDiagnostics() async {
+    final result =
+        await _method.invokeMapMethod<Object?, Object?>('exportDiagnostics');
+    return DiagnosticsExportResult.fromMap(result ?? const {});
+  }
+
+  /// What this device can offer a virtualized app's Google flows.
+  Future<GoogleStatus> googleStatus() async {
+    final result = await _method.invokeMapMethod<Object?, Object?>('googleStatus');
+    return GoogleStatus.fromMap(result ?? const {});
   }
 
   Future<List<DiagRecord>> diagnosticsSnapshot() async {

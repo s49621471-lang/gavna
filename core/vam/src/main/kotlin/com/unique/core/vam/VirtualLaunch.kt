@@ -63,6 +63,9 @@ data class VirtualLaunchParams(
         const val KEY_PROCESS = "unique.process"
         const val KEY_SLOT = "unique.slot"
 
+        /** The guest's own broadcast, carried inside a stub service start. */
+        const val KEY_BROADCAST = "unique.broadcast"
+
         /** Reads the parameters back, or null when this intent is not a UNIQUE launch. */
         fun from(intent: Intent?): VirtualLaunchParams? {
             val i = intent ?: return null

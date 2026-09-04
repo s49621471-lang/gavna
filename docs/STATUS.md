@@ -3,7 +3,7 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0-5 complete. Phases 6 and 7 begun: signatures, and per-instance device identity.**
+**Phases 0-5 complete. Phases 6, 7 and 8 begun: signatures, per-instance device identity, splits and updates, cross-process components, and diagnostics export.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
 launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-152728-26118`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-163557-14136`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -92,6 +92,10 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t22` two instances have different device identities | **PASS** |
 | `t23` an update keeps the instance's data | **PASS** |
 | `t24` an update signed by someone else is refused | **PASS** |
+| `t25` a *dead* guest is woken by a broadcast, and its receiver runs | **PASS** |
+| `t26` UNIQUE itself reads a guest's provider, across the process boundary | **PASS** |
+| `t27` a guest reaches its own provider in another of its processes | **PASS** |
+| `t28` the guest creates a Vulkan instance, device and graphics queue | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
@@ -187,16 +191,16 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 | Surface | Phase | What it does instead |
 |---|---|---|
-| Waking a *dead* virtual process on a broadcast | 3 | A manifest receiver is a dynamic registration inside the live process; a dead guest receives nothing. `VirtualReceiverRegistry.registeredActions` reports what is live |
-| Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
-| Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
+| A broadcast arriving while UNIQUE itself is not running | 3 | `VirtualBroadcastRouter` holds the registrations in UNIQUE's main process, so it must be alive. Static registrations in the host manifest would close it, and need the actions known at build time |
+| Implicit system broadcasts to a guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters, and UNIQUE's own registrations are `RECEIVER_NOT_EXPORTED`. A sender inside UNIQUE must scope its intent |
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
-| Every Google bridge body | 6 | Interfaces and routing exist and are tested; no bridge has an implementation |
+| Every Google bridge body | 6 | Interfaces, routing and host-environment detection exist and are tested; no bridge has an implementation. `docs/GOOGLE_DEVICE_TEST.md` is the procedure that would settle each flow |
+| Native crash handler | 14 | A SIGSEGV inside a guest's `.so` leaves the platform's tombstone and UNIQUE's events up to the crash, but no record written by UNIQUE. The Java handler is implemented and pushes its record out of the dying process |
 | Device profile regenerate | 7 | UI row says it is not available yet |
+| URI permission grants between virtual processes | 3 | `grantUriPermission` across `:vappN` is not implemented |
 | VirtualCore server interface | 3 | `onBind` returns null; the UI process owns the database for now |
-| APK file picker | 3 | Import from an installed app works; the picker is not wired |
 
 ## Known limits that are not bugs
 
@@ -210,11 +214,14 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 ## Next steps, in order
 
 1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
-   filters), URI permissions and `FileProvider` sharing.
-2. Waking a dead guest on a broadcast, and cross-process providers — both need `:server`.
-3. Vulkan, which needs a probe that creates a real device and queue.
-4. Give `onServiceConnected` the guest's own `ComponentName`.
-5. ARM64 itself, which only the physical device can answer.
+   filters), URI permission grants and `FileProvider` sharing across virtual processes.
+2. Give `onServiceConnected` the guest's own `ComponentName`.
+3. A native crash handler, so a SIGSEGV in a guest `.so` leaves a UNIQUE record and not
+   only a tombstone.
+4. ARM64, a real GPU driver, and a hardware Vulkan ICD — which only a physical device can
+   answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
+5. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
+   procedure, in the order that makes one failure explain the next.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

@@ -11,6 +11,10 @@ import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.vam.LaunchInterceptor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /** Which of UNIQUE's processes this code is running in. */
 enum class UniqueProcess {
@@ -105,6 +109,18 @@ class UniqueApplication : Application() {
         // both unnecessary and, as an earlier crash showed, unsafe.
         if (processKind == UniqueProcess.CORE) {
             UniqueEngine.init(this)
+            // Held for the life of the process on purpose: these registrations are what
+            // makes a dead guest reachable at all, so they must outlive whatever screen
+            // happened to be open when they were made.
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                runCatching { UniqueEngine.registerBroadcastRoutes(this@UniqueApplication) }
+                    .onFailure {
+                        Diagnostics.error(
+                            DiagChannel.PROCESS, "BROADCAST_ROUTER_FAILED",
+                            mapOf("error" to it.toString()),
+                        )
+                    }
+            }
         }
     }
 

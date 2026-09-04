@@ -126,6 +126,16 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
+        <!-- The one component of UNIQUE that every other process of UNIQUE can reach.
+             It answers "which :vappN slot serves this guest authority", which only the
+             main process can know: it holds the instance table and the process pool.
+             Not exported - nothing outside UNIQUE has any business asking. -->
+        <provider
+            android:name="com.unique.app.runtime.UniqueRouterProvider"
+            android:authorities="${applicationId}.router"
+            android:exported="false"
+            android:grantUriPermissions="false" />
+
         <!-- The VirtualCore server. Single writer for the state database. -->
         <service
             android:name="com.unique.app.server.UniqueServerService"

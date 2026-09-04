@@ -53,6 +53,11 @@ if [ -n "$ndk" ] && [ -d "$ndk" ]; then
         "$clang" --target="$target" -shared -fPIC -O2 -Wall \
             -Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 \
             -o "$out/lib/$abi/libprobelate.so" "$here/native/probe_late.c"
+        # Vulkan. Not linked against libvulkan on purpose - it is dlopen()ed, so this
+        # library still loads on a device that has no Vulkan and can say so.
+        "$clang" --target="$target" -shared -fPIC -O2 -Wall \
+            -Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 \
+            -o "$out/lib/$abi/libprobevulkan.so" "$here/native/probe_vulkan.c"
     done
 else
     echo "  no NDK found; the probe will carry no native code" >&2

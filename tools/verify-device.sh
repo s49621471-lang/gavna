@@ -9,7 +9,7 @@
 #   ANDROID_HOME=/opt/android-sdk ./tools/verify-device.sh
 #
 # Env:
-#   UNIQUE_ABIS   ABIs to build (default arm64-v8a; use x86_64 for an emulator)
+#   UNIQUE_ABIS   ABIs to build (default: the ABI this device actually runs)
 #   TESTS         restrict to one test, e.g. TESTS=t02_launchesAndTheAppSeesItsOwnIdentity
 #   SKIP_BUILD    reuse the APKs from the last build
 #   RUN_ID        override the generated run id
@@ -17,7 +17,6 @@ set -uo pipefail
 
 : "${ANDROID_HOME:?set ANDROID_HOME}"
 ADB="$ANDROID_HOME/platform-tools/adb"
-ABIS="${UNIQUE_ABIS:-arm64-v8a}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)-$$}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 logs="$root/build/device-verification/$RUN_ID"
@@ -37,6 +36,22 @@ abi=$(adb shell getprop ro.product.cpu.abilist | tr -d '\r')
 sdk=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
 model=$(adb shell getprop ro.product.model | tr -d '\r')
 echo "   $model  API $sdk  $abi"
+
+# The ABI defaults to what the attached device runs, rather than to the release ABI.
+# Getting this wrong costs a full build before adb says INSTALL_FAILED_NO_MATCHING_ABIS,
+# and the run that produced that lesson had already spent four minutes compiling arm64
+# for an x86_64 emulator. Release policy is arm64-first (§8.1) and is set by the release
+# build, not by what a test happens to be attached to.
+if [ -n "${UNIQUE_ABIS:-}" ]; then
+    ABIS="$UNIQUE_ABIS"
+else
+    case ",$abi," in
+        *,arm64-v8a,*) ABIS="arm64-v8a" ;;
+        *,x86_64,*)    ABIS="x86_64" ;;
+        *) fail "device reports no ABI UNIQUE builds for: $abi" ;;
+    esac
+fi
+echo "   building for $ABIS"
 { echo "runId=$RUN_ID"; echo "model=$model"; echo "sdk=$sdk"; echo "abilist=$abi";
   echo "fingerprint=$(adb shell getprop ro.build.fingerprint | tr -d '\r')";
   echo "pagesize=$(adb shell getconf PAGE_SIZE | tr -d '\r')";

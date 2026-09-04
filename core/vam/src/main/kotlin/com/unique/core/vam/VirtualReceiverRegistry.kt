@@ -116,6 +116,38 @@ object VirtualReceiverRegistry {
         }
     }
 
+    /**
+     * Runs one of the guest's receivers for an intent that arrived from outside.
+     *
+     * The path a *cold* delivery takes: UNIQUE's main process holds the registration,
+     * starts this instance's process, and hands the intent over. By the time this runs the
+     * graft has happened, so the guest's receiver gets its own `Context` exactly as it
+     * would for a live delivery.
+     */
+    @Synchronized
+    fun deliverColdStart(ready: AppBootstrap.Result.Ready, className: String, intent: Intent): Boolean {
+        val entry = ready.manifest.components.firstOrNull {
+            it.kind == ComponentKind.RECEIVER && it.className == className
+        }
+        if (entry == null) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "COLD_RECEIVER_NOT_DECLARED",
+                mapOf("receiver" to className, "package" to ready.params.packageName),
+            )
+            return false
+        }
+        return runCatching {
+            GuestReceiverBridge(ready, entry).onReceive(ready.application, intent)
+            true
+        }.getOrElse {
+            Diagnostics.error(
+                DiagChannel.PROCESS, "COLD_RECEIVER_FAILED",
+                mapOf("receiver" to className, "error" to it.toString()),
+            )
+            false
+        }
+    }
+
     private fun buildFilter(entry: IntentFilterEntry): IntentFilter? {
         if (entry.actions.isEmpty()) return null
         val filter = IntentFilter()
@@ -133,7 +165,7 @@ object VirtualReceiverRegistry {
      * A new instance per delivery, which is what the platform does for manifest
      * receivers: they are explicitly not allowed to hold state between broadcasts.
      */
-    private class GuestReceiverBridge(
+    internal class GuestReceiverBridge(
         private val ready: AppBootstrap.Result.Ready,
         private val entry: ComponentEntry,
     ) : BroadcastReceiver() {

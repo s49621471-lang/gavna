@@ -73,6 +73,28 @@ object Diagnostics {
     fun error(channel: DiagChannel, code: String, fields: Map<String, String> = emptyMap(), t: Throwable? = null) =
         event(channel, DiagLevel.ERROR, code, fields, t)
 
+    /**
+     * Where a virtual process sends a record that must outlive it.
+     *
+     * The buffers are process-local, so a `:vappN` that crashes takes its own history with
+     * it — and a crash is exactly the record that matters most. Set in a virtual process
+     * by the bootstrap; null in UNIQUE's own, which has nowhere further to send anything.
+     */
+    @Volatile var remoteSink: ((List<String>) -> Unit)? = null
+
+    /** One event as it appears in an export: formatted, and redacted. */
+    fun formatted(e: DiagEvent): String = format(DiagRedactor.redact(e))
+
+    /**
+     * This process's events, ready to be written or shipped somewhere else.
+     *
+     * Redacted here rather than at the far end. A line that has left this object must
+     * never need trusting again — the redactor is what stands between an export and an
+     * OAuth token, and putting it at every consumer is how one consumer ends up missing it.
+     */
+    fun exportLines(channel: DiagChannel? = null): List<String> =
+        snapshot(channel).map(::formatted)
+
     fun snapshot(channel: DiagChannel? = null): List<DiagEvent> =
         if (channel != null) buffers[channel]?.toList().orEmpty()
         else buffers.values.flatMap { it.toList() }.sortedBy { it.timestampMillis }

@@ -9,7 +9,7 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="34"
+    android:versionCode="35"
     android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
@@ -63,6 +63,14 @@
         <provider
             android:name="com.unique.probe.ProbeProvider"
             android:authorities="com.unique.probe.provider"
+            android:exported="false" />
+
+        <!-- Same class of thing, in a second process. An ordinary app shape, and the one
+             that needs a query to cross a process boundary. -->
+        <provider
+            android:name="com.unique.probe.ProbeAltProvider"
+            android:authorities="com.unique.probe.altprovider"
+            android:process=":alt"
             android:exported="false" />
 
     </application>

@@ -94,16 +94,26 @@ class InstalledApp {
 
 /// The result of an engine action. Failures carry a message meant for the user.
 class EngineOutcome {
-  const EngineOutcome({required this.ok, this.message, this.vuid});
+  const EngineOutcome({
+    required this.ok,
+    this.message,
+    this.vuid,
+    this.cancelled = false,
+  });
 
   final bool ok;
   final String? message;
   final int? vuid;
 
+  /// The user backed out of a picker. Success with nothing done, and never an error:
+  /// showing "import failed" to someone who pressed Back is a lie about their own action.
+  final bool cancelled;
+
   static EngineOutcome fromMap(Map<Object?, Object?> m) => EngineOutcome(
         ok: (m['ok'] as bool?) ?? false,
         message: (m['message'] as String?) ?? (m['code'] as String?),
         vuid: (m['vuid'] as int?),
+        cancelled: (m['cancelled'] as bool?) ?? false,
       );
 }
 
@@ -206,5 +216,102 @@ class DiagRecord {
             .map((k, v) => MapEntry(k.toString(), v.toString())),
         packageName: m['package'] as String?,
         vuid: m['vuid'] as int?,
+      );
+}
+
+/// Where a diagnostics package landed, and what went into it.
+///
+/// Carries the counts as well as the path because "exported" on its own does not tell
+/// the user whether the export is worth sending: a package assembled while no virtual
+/// process was alive contains far less than one taken with the app still running, and
+/// that distinction is the difference between a useful report and a wasted round trip.
+class DiagnosticsExportResult {
+  const DiagnosticsExportResult({
+    required this.ok,
+    this.path,
+    this.name,
+    this.bytes = 0,
+    this.processes = 0,
+    this.lines = 0,
+    this.message,
+  });
+
+  final bool ok;
+  final String? path;
+  final String? name;
+  final int bytes;
+  final int processes;
+  final int lines;
+  final String? message;
+
+  static DiagnosticsExportResult fromMap(Map<Object?, Object?> m) =>
+      DiagnosticsExportResult(
+        ok: (m['ok'] as bool?) ?? false,
+        path: m['path'] as String?,
+        name: m['name'] as String?,
+        bytes: (m['bytes'] as num?)?.toInt() ?? 0,
+        processes: (m['processes'] as num?)?.toInt() ?? 0,
+        lines: (m['lines'] as num?)?.toInt() ?? 0,
+        message: m['message'] as String?,
+      );
+}
+
+/// What the device can offer a virtualized app's Google flows.
+///
+/// Every field is read from the device when the screen opens. `bridgesImplemented` is
+/// carried explicitly rather than inferred: a screen that shows a healthy device and says
+/// nothing about the bridges having no bodies would be telling two thirds of the truth.
+class GoogleStatus {
+  const GoogleStatus({
+    required this.gmsPresent,
+    required this.gmsEnabled,
+    required this.gmsVersionCode,
+    required this.gmsVersionName,
+    required this.vendingPresent,
+    required this.gsfPresent,
+    required this.customTabsPackage,
+    required this.hostGmsAvailable,
+    required this.virtualGmsInstalled,
+    required this.customTabsAvailable,
+    required this.bridgesImplemented,
+    required this.note,
+  });
+
+  final bool gmsPresent;
+  final bool gmsEnabled;
+  final String gmsVersionCode;
+  final String gmsVersionName;
+  final bool vendingPresent;
+  final bool gsfPresent;
+  final String customTabsPackage;
+  final bool hostGmsAvailable;
+  final bool virtualGmsInstalled;
+  final bool customTabsAvailable;
+  final bool bridgesImplemented;
+  final String note;
+
+  /// Present but not usable: installed, or installed and disabled, or a version too old
+  /// to answer. The state that produces the most confusing app-side failures.
+  bool get presentButUnusable => gmsPresent && !hostGmsAvailable;
+
+  static bool _flag(Map<Object?, Object?> m, String key) =>
+      (m[key] as bool?) ?? m[key]?.toString() == 'true';
+
+  static String _text(Map<Object?, Object?> m, String key) =>
+      m[key]?.toString() ?? '-';
+
+  static GoogleStatus fromMap(Map<Object?, Object?> m) => GoogleStatus(
+        gmsPresent: _flag(m, 'gmsPresent'),
+        gmsEnabled: _flag(m, 'gmsEnabled'),
+        gmsVersionCode: _text(m, 'gmsVersionCode'),
+        gmsVersionName: _text(m, 'gmsVersionName'),
+        vendingPresent: _flag(m, 'vendingPresent'),
+        gsfPresent: _flag(m, 'gsfPresent'),
+        customTabsPackage: _text(m, 'customTabs'),
+        hostGmsAvailable: _flag(m, 'hostGmsAvailable'),
+        virtualGmsInstalled: _flag(m, 'virtualGmsInstalled'),
+        customTabsAvailable: _flag(m, 'customTabsAvailable'),
+        bridgesImplemented: _flag(m, 'bridgesImplemented'),
+        note: _text(m, 'note'),
       );
 }

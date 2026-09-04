@@ -7,13 +7,17 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagEvent
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
+import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
+import com.unique.app.engine.DiagnosticsExport
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vpm.CreateResult
@@ -100,18 +104,49 @@ object UniqueBridge {
         eventChannel = null
     }
 
+    /**
+     * Bridge methods that change which packages exist, and so which broadcast actions
+     * UNIQUE must hold registrations for.
+     *
+     * Re-registering here rather than inside each handler keeps the rule in one place:
+     * whenever the instance set changes, the router is rebuilt from it. The alternative -
+     * remembering to call it from every mutating path - is the kind of thing that stays
+     * correct only until the next path is added.
+     */
+    private val instanceSetChanging = setOf(
+        "importInstalled", "importApk", "importApkFromPicker", "cloneInstance",
+        "removeInstance",
+    )
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun dispatch(context: Context, method: String, args: Any?): Any? {
         val a = args as? Map<String, Any?> ?: emptyMap()
+        if (method in instanceSetChanging) {
+            return dispatchInner(context, method, a).also {
+                runCatching { UniqueEngine.registerBroadcastRoutes(context) }
+            }
+        }
+        return dispatchInner(context, method, a)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun dispatchInner(
+        context: Context,
+        method: String,
+        a: Map<String, Any?>,
+    ): Any? {
         return when (method) {
             "engineStatus" -> engineStatus(context)
             "listInstalledApps" -> listInstalledApps(context, a)
             "appIcon" -> appIcon(context, a["package"] as String)
             "diagnosticsSnapshot" -> Diagnostics.snapshot().map { it.toMap() }
+            "googleStatus" -> googleStatus(context)
+            "exportDiagnostics" -> exportDiagnostics(context)
 
             "listInstances" -> listInstances()
             "importInstalled" -> importInstalled(context, a["package"] as String)
             "importApk" -> importApk((a["paths"] as List<*>).map { File(it as String) })
+            "importApkFromPicker" -> importApkFromPicker(context)
             "cloneInstance" -> cloneInstance(a["package"] as String)
             "launchInstance" -> launchInstance(context, (a["vuid"] as Number).toInt())
             "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
@@ -121,6 +156,61 @@ object UniqueBridge {
 
             else -> throw UnsupportedOperationException("Unknown bridge method: $method")
         }
+    }
+
+    /**
+     * What this device can offer a virtualized app's Google flows.
+     *
+     * Read from the device every time rather than cached: Play services can be disabled,
+     * updated or side-loaded between two openings of this screen, and a stale "available"
+     * is exactly the answer that sends a user chasing a failure that is not theirs.
+     */
+    private suspend fun googleStatus(context: Context): Map<String, Any?> {
+        val imported = UniqueEngine.instances.instances().map { it.packageName }.toSet()
+        val report = GoogleEnvironment.inspect(context, imported)
+        return report.toMap() + mapOf(
+            // The bridges have no bodies. Said here, once, rather than left for the UI to
+            // infer from an empty list - which is how "not implemented" turns into
+            // "nothing to report".
+            "bridgesImplemented" to false,
+            "note" to "Routing is implemented and the device is read here; no Google " +
+                "flow has an implementation yet. See docs/GOOGLE_DEVICE_TEST.md.",
+        )
+    }
+
+    /**
+     * Writes a diagnostics package and reports where it is.
+     *
+     * The live slots are read from the launcher rather than guessed: an export that asks a
+     * slot with no process wastes a Binder round trip and, worse, would make an empty
+     * `vappN.log` look like a process that recorded nothing.
+     */
+    private suspend fun exportDiagnostics(context: Context): Map<String, Any?> {
+        val liveSlots = UniqueEngine.launcher.snapshot()
+            .filter { it.occupant != null }
+            .map { it.index }
+        val instances = UniqueEngine.instances.instances().map { instance ->
+            mapOf(
+                "vuid" to instance.vuid.toString(),
+                "package" to instance.packageName,
+                "versionCode" to instance.versionCode.toString(),
+                "profile" to instance.displayName,
+                "androidId" to instance.profile.androidId,
+            )
+        }
+        return runCatching { DiagnosticsExport.write(context, liveSlots, instances) }.fold(
+            onSuccess = { result ->
+                mapOf(
+                    "ok" to true,
+                    "path" to result.file.absolutePath,
+                    "name" to result.file.name,
+                    "bytes" to result.bytes,
+                    "processes" to result.processes,
+                    "lines" to result.lines,
+                )
+            },
+            onFailure = { mapOf("ok" to false, "message" to it.toString()) },
+        )
     }
 
     // ---------------------------------------------------------------------------------
@@ -157,6 +247,76 @@ object UniqueBridge {
 
     private suspend fun importApk(files: List<File>): Map<String, Any?> =
         UniqueEngine.importFiles(files).toMap()
+
+    /**
+     * Puts the system file picker on screen, then imports whatever came back.
+     *
+     * The chosen files are copied into UNIQUE's own cache before the importer sees them.
+     * A `content://` URI is a grant, not a path: it is scoped to this task, can be
+     * revoked the moment the picker's host process is killed, and the importer needs to
+     * read each file more than once — the manifest first, then the bytes. Copying makes
+     * the import independent of how long the grant lasts.
+     */
+    private suspend fun importApkFromPicker(context: Context): Map<String, Any?> {
+        val picker = picker
+            ?: return mapOf("ok" to false, "message" to "No window is open to pick a file in.")
+        val uris = picker.pickApks()
+        if (uris.isEmpty()) return mapOf("ok" to true, "cancelled" to true)
+
+        val staged = withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "import").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+            uris.mapIndexedNotNull { index, uri ->
+                runCatching {
+                    val name = displayNameOf(context, uri) ?: "picked-$index.apk"
+                    val dest = File(dir, name.substringAfterLast('/'))
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        dest.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("could not open $uri")
+                    dest
+                }.getOrElse {
+                    Diagnostics.warn(
+                        DiagChannel.STORAGE, "IMPORT_STAGE_FAILED",
+                        mapOf("uri" to uri.toString(), "error" to it.toString()),
+                    )
+                    null
+                }
+            }
+        }
+        if (staged.isEmpty()) {
+            return mapOf("ok" to false, "message" to "None of the selected files could be read.")
+        }
+        Diagnostics.info(
+            DiagChannel.STORAGE, "IMPORT_PICKED",
+            mapOf("files" to staged.size.toString(), "selected" to uris.size.toString()),
+        )
+        return UniqueEngine.importFiles(staged).toMap()
+    }
+
+    /** The name the picker's document provider gives a file, if it gives one. */
+    private fun displayNameOf(context: Context, uri: Uri): String? = runCatching {
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
+
+    /**
+     * How the bridge asks for a file, when it has no window of its own.
+     *
+     * Implemented by [com.unique.app.MainActivity], which is the only thing that can put
+     * a picker on screen. Null whenever no UI is attached, and the bridge says so rather
+     * than pretending the user cancelled.
+     */
+    interface ApkPicker {
+        suspend fun pickApks(): List<Uri>
+    }
+
+    @Volatile
+    var picker: ApkPicker? = null
 
     private suspend fun cloneInstance(packageName: String): Map<String, Any?> =
         UniqueEngine.instances.createInstance(packageName).toMap()

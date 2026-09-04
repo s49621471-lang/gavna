@@ -55,6 +55,11 @@ object AppBootstrap {
 
     @Volatile private var bootstrapped: Result.Ready? = null
 
+    @Volatile private var hostPackage: String? = null
+
+    /** UNIQUE's own package name once this process has been grafted; null before. */
+    val hostPackageName: String? get() = hostPackage
+
     val current: Result.Ready? get() = bootstrapped
 
     /** True once this process is serving a virtual package. */
@@ -152,6 +157,11 @@ object AppBootstrap {
         // the real PackageManagerService for this package and throws when it is not
         // installed - which, for an app UNIQUE imported rather than installed, it is not.
         VirtualPackageManagerHook.hostPackageName = hostContext.packageName
+        // Kept because after the graft nothing else in this process can answer "what is
+        // UNIQUE called": `context.packageName` reports the guest, which is the point.
+        // Anything addressing UNIQUE's own components - the router provider, the stubs -
+        // needs the real name.
+        hostPackage = hostContext.packageName
         val pmHooked = VirtualPackageManagerHook.install(
             packageName = params.packageName,
             manifest = manifest,
@@ -219,6 +229,15 @@ object AppBootstrap {
         // after this point is not covered until the next install; that limit is recorded
         // rather than papered over.
         installIoRedirection(hostContext, effective, appInfo)
+
+        // Where a crash record goes when this process stops existing. Installed before
+        // any guest code runs, because the earliest crashes are the ones with no other
+        // trace at all.
+        runCatching {
+            VirtualDiagnostics.installRemoteSink(
+                hostContext, hostContext.packageName, ":vapp${effective.slot}",
+            )
+        }
 
         // Providers first: the platform creates a process's providers before any other
         // component and apps rely on that ordering.

@@ -29,6 +29,10 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
   bool _includeSystem = false;
   Future<List<InstalledApp>>? _future;
 
+  bool _importing = false;
+  bool _pickerFailed = false;
+  String? _pickerMessage;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +43,31 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
     setState(() {
       _future = widget.state.installedApps(includeSystem: _includeSystem);
     });
+  }
+
+  /// Picks APK files and imports them as one app.
+  ///
+  /// Everything the user selected goes to the engine in a single call: a base APK and
+  /// its splits are one package, and importing them one at a time would either fail or,
+  /// worse, produce an app missing the split it needed.
+  Future<void> _pickAndImport() async {
+    setState(() {
+      _importing = true;
+      _pickerFailed = false;
+      _pickerMessage = null;
+    });
+    final result = await widget.state.importApkFromPicker();
+    if (!mounted) return;
+    setState(() {
+      _importing = false;
+      _pickerFailed = !result.ok;
+      _pickerMessage = result.cancelled
+          ? null
+          : result.ok
+              ? 'Imported. It is on Home now.'
+              : result.message ?? 'The selected files could not be imported.';
+    });
+    if (result.ok && !result.cancelled && mounted) Navigator.of(context).pop();
   }
 
   @override
@@ -186,17 +215,26 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
             ),
             const Spacer(),
             FilledButton.icon(
-              // TODO(phase-2): open the system picker and run PackageInstaller.import.
-              // Disabled rather than wired to a no-op, so the control never lies.
-              onPressed: null,
-              icon: const Icon(Icons.file_open_rounded),
-              label: const Text('Select APK'),
+              onPressed: _importing ? null : _pickAndImport,
+              icon: _importing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.file_open_rounded),
+              label: Text(_importing ? 'Importing...' : 'Select APK'),
             ),
             const SizedBox(height: UniqueSpace.sm),
             Text(
-              'Importing lands in the next milestone.',
+              _pickerMessage ??
+                  'Select a base APK and its splits together - importing a base without '
+                      'its ABI split produces an app with no native code.',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _pickerFailed
+                        ? Theme.of(context).colorScheme.error
+                        : null,
+                  ),
             ),
           ],
         ),

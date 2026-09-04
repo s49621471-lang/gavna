@@ -25,7 +25,22 @@ import com.unique.core.diagnostics.Diagnostics
 object VirtualServiceRouter {
 
     /** Must match `STUB_SERVICES_PER_PROCESS` in app/build.gradle.kts. */
-    const val STUBS_PER_PROCESS = 6
+    const val STUBS_PER_PROCESS = 7
+
+    /**
+     * The stub each slot keeps back for cold broadcast delivery.
+     *
+     * Reserved structurally rather than by convention. The engine starts this stub to
+     * bring a dead guest's process up, and [reserve] never hands it out, so a guest
+     * service can never land on it — which is what lets [resolve] returning null be a
+     * reliable signal that a `CREATE_SERVICE` is a cold broadcast rather than a lost
+     * reservation. An agreement of the "index 5 is probably free" kind would hold only
+     * until a guest ran six services.
+     */
+    const val COLD_BROADCAST_STUB_INDEX = STUBS_PER_PROCESS - 1
+
+    /** Stubs available to a guest's own services. */
+    private const val GUEST_STUBS = STUBS_PER_PROCESS - 1
 
     private data class Binding(val stubIndex: Int, val entry: ComponentEntry, val vuid: Int)
 
@@ -55,14 +70,14 @@ object VirtualServiceRouter {
         byRealClass[entry.className]?.let {
             return StubRouter.stubService(slot, it.stubIndex)
         }
-        val free = (0 until STUBS_PER_PROCESS).firstOrNull { it !in byStubIndex }
+        val free = (0 until GUEST_STUBS).firstOrNull { it !in byStubIndex }
         if (free == null) {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "SERVICE_STUB_POOL_EXHAUSTED",
                 mapOf(
                     "slot" to slot.toString(),
                     "service" to entry.className,
-                    "capacity" to STUBS_PER_PROCESS.toString(),
+                    "capacity" to GUEST_STUBS.toString(),
                 ),
             )
             return null

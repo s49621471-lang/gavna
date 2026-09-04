@@ -19,12 +19,11 @@ import com.unique.core.hook.Reflect
  * instantiates a process's providers before any other component, and apps rely on that
  * ordering.
  *
- * ## What this cannot do
- *
- * Only callers inside the same virtual process are served. A provider is normally a
- * *cross-process* interface, and answering another process's acquisition requires
- * `:server` to hold the authority table and route the Binder. Until then an authority
- * queried from outside its own virtual process resolves to nothing, which is reported.
+ * Callers in *other* processes are served too, through the slot's stub provider: see
+ * [VirtualProviderBridge] for the caller's half and [publishedAuthorities] /
+ * [providerFor] for this one. The stub does no marshalling of its own — it routes by
+ * authority to the objects published here, so a cross-process caller ends up talking to
+ * the same `ContentProvider` instance a same-process caller does.
  */
 object VirtualProviderRegistry {
 
@@ -46,8 +45,13 @@ object VirtualProviderRegistry {
 
     @Synchronized
     fun install(ready: AppBootstrap.Result.Ready) {
+        // Only the providers this *process* is supposed to own. `android:process` on a
+        // <provider> is ordinary, and apps rely on the separation: publishing every
+        // provider in every process would put two live instances of the same class, each
+        // with its own open handle to the same database, in two processes at once.
         val providers = ready.manifest.components.filter {
-            it.kind == ComponentKind.PROVIDER && it.enabled && it.authorities.isNotEmpty()
+            it.kind == ComponentKind.PROVIDER && it.enabled && it.authorities.isNotEmpty() &&
+                it.processName == ready.params.processName
         }
         var published = 0
         for (entry in providers) {
@@ -86,6 +90,7 @@ object VirtualProviderRegistry {
             DiagChannel.PROCESS, "PROVIDERS_PUBLISHED",
             mapOf(
                 "package" to ready.params.packageName,
+                "process" to ready.params.processName,
                 "declared" to providers.size.toString(),
                 "authorities" to byAuthority.keys.joinToString(",").take(300),
             ),
@@ -94,6 +99,15 @@ object VirtualProviderRegistry {
 
     @Synchronized
     fun reset() = byAuthority.clear()
+
+    /** The authorities this process currently publishes. */
+    @Synchronized
+    fun publishedAuthorities(): Set<String> = byAuthority.keys.toSet()
+
+    /** The guest `ContentProvider` serving an authority, for the stub to route into. */
+    @Synchronized
+    fun providerFor(authority: String?): ContentProvider? =
+        authority?.let { byAuthority[it]?.provider }
 
     private fun providerInfoFor(ready: AppBootstrap.Result.Ready, published: Published): ProviderInfo =
         ProviderInfo().apply {

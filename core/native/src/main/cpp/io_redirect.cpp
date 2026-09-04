@@ -204,6 +204,18 @@ int h_statfs(const char* path, struct statfs* out) {
 }
 
 std::vector<std::string> g_filters;
+
+/// Every PLT slot this process has patched, since the process started.
+///
+/// Cumulative, not "what the last scan found". A re-scan after a late dlopen legitimately
+/// finds zero *new* slots — the ones already patched no longer point at the original libc
+/// symbols, so they do not match again — and overwriting the total with that zero produced
+/// a diagnostic that read as though the hooks had been lost:
+///
+///   io_redirect: rehooked after loading libprobevulkan.so (1 -> 0 slots)
+///
+/// They had not. But a number that only looks like a regression is worse than no number,
+/// because it is the number someone will believe while looking for a bug that is not there.
 int g_slots_patched = 0;
 bool g_watching = false;
 
@@ -226,9 +238,10 @@ void rescan_after_load(const char* what) {
     t_rescanning = true;
     const int before = g_slots_patched;
     install_locked();
-    if (g_slots_patched != before) {
-        ULOGI("io_redirect: rehooked after loading %s (%d -> %d slots)",
-              what == nullptr ? "?" : what, before, g_slots_patched);
+    const int added = g_slots_patched - before;
+    if (added > 0) {
+        ULOGI("io_redirect: hooked %d new slot(s) after loading %s (%d total)",
+              added, what == nullptr ? "?" : what, g_slots_patched);
     }
     t_rescanning = false;
 }
@@ -301,13 +314,14 @@ InstallStatus install_locked() {
 
     auto report = plt::hook_all(filters, requests,
                                 sizeof(requests) / sizeof(requests[0]));
-    g_slots_patched = report.slots_patched;
+    g_slots_patched += report.slots_patched;
     for (const auto& failure : report.failures) {
         ULOGE("io_redirect: %s", failure.c_str());
     }
-    ULOGI("io_redirect installed: %d slot(s) in %d/%d libraries, %d rule(s), page size %ld",
+    ULOGI("io_redirect installed: %d slot(s) in %d/%d libraries (%d total), %d rule(s), "
+          "page size %ld",
           report.slots_patched, report.libraries_matched, report.libraries_scanned,
-          rule_count(), sysconf(_SC_PAGESIZE));
+          g_slots_patched, rule_count(), sysconf(_SC_PAGESIZE));
     if (report.libraries_matched == 0) {
         for (const auto& filter : filters) {
             ULOGW("io_redirect: filter did not match: %s", filter.c_str());

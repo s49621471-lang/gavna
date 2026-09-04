@@ -9,6 +9,10 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.service.notification.StatusBarNotification
 import android.os.Build
+import android.net.Uri
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.os.Process
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,6 +21,8 @@ import com.google.common.truth.Truth.assertThat
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.vam.LaunchResult
+import com.unique.core.vam.VirtualBroadcastRouter
+import com.unique.core.vam.VirtualProviderBridge
 import com.unique.core.vam.StubRouter
 import com.unique.core.vam.VirtualLaunchIntent
 import com.unique.core.vam.VirtualLaunchParams
@@ -299,10 +305,10 @@ class VirtualLaunchTest {
         // UNIQUE is still alive - this test is running inside it.
         assertThat(Process.myPid()).isEqualTo(uniquePid)
 
-        // The sibling is untouched: same process, still running.
-        val after = runningVirtualPids()
-        assertThat(after).contains(survivorPid)
-        assertThat(after).doesNotContain(victimPid)
+        // The sibling is untouched: same process, still running. Asked of the kernel,
+        // because ActivityManager's own list has been seen to outlive a process.
+        assertThat(isAlive(survivorPid)).isTrue()
+        assertThat(isAlive(victimPid)).isFalse()
 
         // And its data was not disturbed by the crash next door.
         val survivorAfter = readResult(survivor)
@@ -1129,8 +1135,181 @@ class VirtualLaunchTest {
     }
 
     // -----------------------------------------------------------------------------
-    // Phase 5: graphics. EGL and GLES inside a virtualized process.
+    // Phase 3: waking a guest that is not running, which is what a manifest receiver
+    // is mostly for.
     // -----------------------------------------------------------------------------
+
+    @Test
+    fun t25_aDeadGuestIsWokenByABroadcast() = runBlocking {
+        val instance = requireInstance()
+        val receiverResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-receiver.properties")
+
+        // Registrations are rebuilt from the current instance set, the same way the bridge
+        // rebuilds them after an import. t01 ran after the Application did, so without
+        // this the router would be holding routes for an empty device.
+        UniqueEngine.registerBroadcastRoutes(context)
+        assertThat(VirtualBroadcastRouter.registeredActions).contains("com.unique.probe.PING")
+
+        // Whatever earlier tests left running has to go. Delivering into a live process is
+        // t08's job and would pass here without exercising a single line of the cold path.
+        val hostPid = Process.myPid()
+        val killed = runningVappProcesses().values.toSet()
+        killed.forEach { killAndWait(it) }
+        // Only that the ones we killed are gone. Asserting the pool is *empty* would be
+        // asserting that nothing restarted one, and a `:vappN` publishes a stub
+        // ContentProvider, which ActivityManager is entitled to bring back for a client
+        // that still holds a reference. That would be a test about ActivityManager.
+        killed.forEach { assertThat(isAlive(it)).isFalse() }
+
+        receiverResult.delete()
+        assertThat(receiverResult.exists()).isFalse()
+
+        context.sendBroadcast(
+            Intent("com.unique.probe.PING")
+                .setPackage(context.packageName)
+                .putExtra("probe.extra", "cold-start")
+        )
+
+        val observed = awaitFile(receiverResult)
+
+        assertThat(observed["action"]).isEqualTo("com.unique.probe.PING")
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+        assertThat(observed["extra"]).isEqualTo("cold-start")
+        // The guest's own storage, so the graft ran rather than the receiver being
+        // instantiated in UNIQUE's process against UNIQUE's directories.
+        assertThat(observed["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+
+        // And in a process that did not exist when the broadcast was sent.
+        val pid = observed["pid"]!!.toInt()
+        assertThat(pid).isNotEqualTo(hostPid)
+        assertThat(killed).doesNotContain(pid)
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: a content provider read from a process that is not the guest's.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t26_uniqueItselfReadsAGuestsProvider() = runBlocking {
+        val instance = requireInstance()
+        UniqueEngine.registerBroadcastRoutes(context)
+
+        // This test runs in UNIQUE's own process, which is exactly the caller the feature
+        // is for: sharing a file out of a guest, or reading one, means crossing from :core
+        // into a :vappN. Nothing here is inside the virtual process.
+        assertThat(Process.myPid()).isEqualTo(uniqueCorePid())
+
+        val client = VirtualProviderBridge.open(
+            context, instance.vuid, "com.unique.probe.provider",
+        ) ?: throw AssertionError("UNIQUE could not reach the guest's provider")
+
+        val rows = try {
+            client.query(
+                Uri.parse("content://com.unique.probe.provider/rows"), null, null, null, null,
+            ).use { cursor ->
+                checkNotNull(cursor) { "the guest's provider returned no cursor" }
+                buildMap {
+                    while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+                }
+            }
+        } finally {
+            client.close()
+        }
+
+        // The answer came from the guest's own provider object, running as the guest.
+        assertThat(rows["packageName"]).isEqualTo(probePackage)
+        assertThat(rows["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+        // And from a different process than this one.
+        assertThat(rows["pid"]!!.toInt()).isNotEqualTo(Process.myPid())
+        assertThat(runningVappProcesses().values).contains(rows["pid"]!!.toInt())
+    }
+
+    @Test
+    fun t27_aGuestReachesItsOwnProviderInAnotherProcess() = runBlocking {
+        val instance = requireInstance()
+        UniqueEngine.registerBroadcastRoutes(context)
+
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-altprovider.properties")
+        result.delete()
+        clearResult(instance)
+
+        // ProbeAltProvider is declared android:process=":alt", so the provider the guest
+        // is about to query lives in a slot of its own. Until slots could route between
+        // themselves this shape returned nothing at all.
+        launchProbeWith(instance) { it.putExtra("probe.queryAltProvider", true) }
+
+        val observed = awaitFile(result)
+        assertThat(observed["error"]).isNull()
+        assertThat(observed["rowCount"]!!.toInt()).isAtLeast(3)
+        assertThat(observed["provider.packageName"]).isEqualTo(probePackage)
+        assertThat(observed["provider.filesDir"])
+            .isEqualTo(model.filesDir(instance.vuid, probePackage))
+        assertThat(observed["type"]).isEqualTo("vnd.android.cursor.dir/probe-alt")
+
+        // The two really are different processes: the caller wrote its own pid, the
+        // provider wrote the pid it answered from.
+        val callerPid = observed["callerPid"]!!.toInt()
+        val providerPid = observed["provider.pid"]!!.toInt()
+        assertThat(providerPid).isNotEqualTo(callerPid)
+        assertThat(observed["provider.processName"]).isEqualTo("$probePackage:alt")
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 5: graphics. EGL, GLES and Vulkan inside a virtualized process.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t28_theGuestBringsUpVulkanIfTheDeviceHasIt() = runBlocking {
+        val instance = requireInstance()
+        val result = File(model.filesDir(instance.vuid, probePackage), "probe-vulkan.properties")
+        result.delete()
+        clearResult(instance)
+
+        launchProbeWith(instance) { it.putExtra("probe.vulkan", true) }
+        val observed = awaitFile(result)
+
+        // Whatever the device turns out to have, the probe ran inside the virtual process
+        // and the library loaded. That much is UNIQUE's business: a redirect scope that
+        // was too wide would stop the loader finding /system/lib64/libvulkan.so, and this
+        // is where that would show.
+        assertThat(observed["ran"]).isEqualTo("true")
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+        assertThat(observed["callerPid"]!!.toInt()).isNotEqualTo(Process.myPid())
+        assertThat(observed["libraryLoaded"]).isEqualTo("true")
+        assertThat(observed["symbolsResolved"]).isEqualTo("true")
+
+        // What the *device* claims, asked outside virtualization. UNIQUE cannot conjure a
+        // GPU, so this is the only honest bar: a guest must see exactly what the host has.
+        val pm = context.packageManager
+        val hostHasVulkan =
+            pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
+
+        if (!hostHasVulkan) {
+            // A headless software emulator is this case, and there is nothing to prove
+            // here beyond the probe running and saying so. Recorded rather than skipped:
+            // a test that quietly passes on a device that cannot run it is how
+            // NOT_TESTED gets written down as SUPPORTED.
+            assertThat(observed).containsKey("createInstanceResult")
+            android.util.Log.i(
+                "UniqueTest",
+                "t28: this device declares no Vulkan; guest reported " +
+                    "instance=${observed["instanceCreated"]} " +
+                    "devices=${observed["physicalDevices"]}",
+            )
+            return@runBlocking
+        }
+
+        // The device has Vulkan, so the guest must get all the way to a queue.
+        assertThat(observed["instanceCreated"]).isEqualTo("true")
+        assertThat(observed["physicalDevices"]!!.toInt()).isAtLeast(1)
+        assertThat(observed["deviceName"]).isNotEmpty()
+        assertThat(observed["deviceCreated"]).isEqualTo("true")
+        assertThat(observed["queueAcquired"]).isEqualTo("true")
+        assertThat(observed["instanceDestroyed"]).isEqualTo("true")
+    }
+
 
     @Test
     fun t20_theGuestRendersWithOpenGl() = runBlocking {
@@ -1352,10 +1531,48 @@ class VirtualLaunchTest {
         return am.runningAppProcesses.orEmpty().map { it.pid }
     }
 
+    /**
+     * Launches the probe's main activity with an extra, from a clean task.
+     *
+     * CLEAR_TASK for the same reason t06 needs it: with NEW_TASK alone the system finds
+     * the existing task and recreates its top activity from the *stored* intent, so the
+     * extra never arrives and the test waits for something nobody was asked to do.
+     */
+    private fun launchProbeWith(instance: Instance, decorate: (Intent) -> Unit) {
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        val intent = VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        decorate(intent)
+        context.startActivity(intent)
+    }
+
+    /** The pid of UNIQUE's own `:core` process, which is where this test runs. */
+    private fun uniqueCorePid(): Int {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return am.runningAppProcesses.orEmpty()
+            .firstOrNull { it.processName == context.packageName }
+            ?.pid ?: Process.myPid()
+    }
+
+    /** UNIQUE's live `:vappN` processes, by process name. Never UNIQUE's own. */
+    private fun runningVappProcesses(): Map<String, Int> {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return am.runningAppProcesses.orEmpty()
+            .filter { it.processName.contains(":vapp") }
+            .associate { it.processName to it.pid }
+    }
+
     private fun awaitProcessGone(pid: Int, timeoutMillis: Long = 60_000) {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
-            if (pid !in runningVirtualPids()) return
+            if (!isAlive(pid)) return
             Thread.sleep(500)
         }
         throw AssertionError("process $pid was still running ${timeoutMillis}ms after the crash")
@@ -1447,9 +1664,25 @@ class VirtualLaunchTest {
         Process.killProcess(pid)
         val deadline = System.currentTimeMillis() + 30_000
         while (System.currentTimeMillis() < deadline) {
-            if (pid !in runningVirtualPids()) return
+            if (!isAlive(pid)) return
             Thread.sleep(250)
         }
         throw AssertionError("process $pid did not exit")
+    }
+
+    /**
+     * Whether a pid still exists, asked of the kernel rather than of ActivityManager.
+     *
+     * `getRunningAppProcesses` has listed a process three minutes after `system_server`
+     * logged its obituary, which turned a test about broadcasts into a test about
+     * ActivityManager's bookkeeping. `kill(pid, 0)` performs the permission check and the
+     * existence check and delivers nothing; UNIQUE and its `:vappN` processes share a uid,
+     * so the permission half always passes and `ESRCH` means exactly what it says.
+     */
+    private fun isAlive(pid: Int): Boolean = try {
+        Os.kill(pid, 0)
+        true
+    } catch (e: ErrnoException) {
+        e.errno != OsConstants.ESRCH
     }
 }

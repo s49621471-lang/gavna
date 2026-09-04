@@ -466,26 +466,64 @@ its own for each action the guest declares, and on delivery instantiates the gue
 `BroadcastReceiver` from the guest's class loader and calls `onReceive` with the guest's
 `Context`. A fresh instance per delivery, which is what the platform does.
 
-Three limits, all of them real and none of them hidden:
+Two limits remain, both real and neither hidden:
 
-- **A dynamic registration lives only as long as the process.** A manifest receiver's
-  whole point is often to *wake* a dead process, and that needs `:server` to hold the
-  registration and start the virtual process on delivery.
-  `VirtualReceiverRegistry.registeredActions` reports exactly what is live.
 - **Android 8+ implicit-broadcast restrictions** apply to UNIQUE's registration just as
   they would to the guest's. Actions that cannot be registered are reported individually.
 - **Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS`** (compat change
   229362273, on from `targetSdk` 34) matches an implicit intent — one with neither a
-  component nor a package — only against *exported* filters. UNIQUE mirrors the guest's
-  own `android:exported` rather than forcing either answer: forcing `NOT_EXPORTED` is
-  safer in isolation but is not what the app asked for, and forcing `EXPORTED` would let
-  any app on the device poke a receiver its author marked private. The consequence is that
-  a **sender inside UNIQUE must scope its intent** with `setPackage`, and that a system
-  broadcast arriving implicitly does not reach a non-exported guest receiver. Closing that
-  needs the same `:server`-side re-dispatch a dead process needs.
+  component nor a package — only against *exported* filters. UNIQUE's own registrations
+  are `RECEIVER_NOT_EXPORTED` (§6.3.1), so a **sender inside UNIQUE must scope its
+  intent** with `setPackage`, and a system broadcast arriving implicitly does not reach a
+  guest receiver.
 
 Ordered broadcasts, sticky broadcasts and `BroadcastReceiver.PendingResult` (`goAsync`)
 are not proxied yet.
+
+#### 6.3.1 Waking a guest that is not running
+
+**Implemented; `t25` covers it.** A dynamic registration lives only as long as the process
+that made it, and a manifest receiver's whole point is usually to *wake* a process that is
+not running. Earlier drafts of this document said that needed a `:server` process. It did
+not: what it needed was *a* long-lived process holding the registration, and UNIQUE's own
+main process is one. `:server` was only ever shorthand for that.
+
+`VirtualBroadcastRouter` runs there. At import — and again whenever the instance set
+changes — it reads every imported manifest and registers one dynamic receiver per declared
+action, `RECEIVER_NOT_EXPORTED`, on behalf of every instance that declared it. On delivery
+it finds the matching routes and, for each, brings that instance's process up carrying the
+intent.
+
+Three details are load-bearing.
+
+**It starts a service, not an activity.** A broadcast must not put a window on screen, and
+starting a service is the least intrusive way to make a process exist — a process cannot
+be started by wishing for one.
+
+**The stub that runs is reserved, not borrowed.** `VirtualServiceRouter` keeps the last
+stub of each slot back (`COLD_BROADCAST_STUB_INDEX`) and never hands it out to a guest
+service. That is what makes the rule in `LaunchInterceptor` sound: a `CREATE_SERVICE` for
+that index is a cold broadcast, so the interceptor leaves the `ServiceInfo` alone and
+`StubServiceBase` itself runs — the one path where reaching that class is intended rather
+than a failure. An "index 5 is probably free" agreement would have held only until a guest
+ran six services.
+
+**The slot is leased at delivery, not at registration.** A registration made at import time
+outlives every process it could name; a slot is a lease on one of the host's `:vappN`
+processes, handed out by `VirtualLauncher` when something actually starts. Baking one into
+a registration would name a process that, by the time a broadcast arrives, may belong to a
+different app. `ProcessPool.acquire` is idempotent per occupant, so a guest that is already
+running keeps the slot it has and the broadcast joins the live process instead of racing a
+second one into a different slot.
+
+Once the process exists the ordinary graft runs, and the guest's receiver is instantiated
+from the guest's class loader with the guest's own `Context` — the same object a live
+delivery would get. Nothing in the receiver's code can tell the two apart.
+
+What this still cannot do: UNIQUE's main process must be alive to hold the registration. A
+broadcast arriving while the whole app is dead and unstarted is missed. Closing that needs
+the registrations to be *static* in the host manifest, which means knowing the actions at
+build time rather than at import time.
 
 ### 6.4 Content providers
 
@@ -504,13 +542,80 @@ lifetime and not AMS.
 Anything that is *not* a guest authority still goes to the real service and gets the
 host's `AttributionSource` substituted (§6.1.2).
 
-**Cross-process acquisition is not implemented.** A provider is normally a cross-process
-interface, and answering another virtual process's acquisition requires `:server` to hold
-the authority → (vuid, process) map and route the Binder. Until then an authority queried
-from outside its own virtual process resolves to nothing, and that is reported rather than
-faked.
+Only publication is process-scoped: a provider is published in the process its manifest
+puts it in, and nowhere else. `android:process` on a `<provider>` is ordinary, and
+publishing every provider in every process would put two live instances of the same class,
+each holding its own handle to the same database, in two processes at once.
 
 `FileProvider`, `DocumentsProvider` and URI permission grants are handled in §7.4.
+
+#### 6.4.0 Reaching a provider from another process
+
+**Implemented; `t26` and `t27` cover it.** A provider is normally a *cross-process*
+interface — an app whose sync provider lives in `:remote` is an ordinary shape, and
+UNIQUE's own UI reading a guest's `FileProvider` is the thing file sharing is made of.
+Neither works if an authority only resolves inside the process that publishes it.
+
+The obstacle is not routing but the platform's own check. `ContentProvider.Transport`
+compares an incoming URI's authority against the provider's before it dispatches:
+
+```
+SecurityException: The authority com.example.app.files does not match the one of the
+    contentProvider: com.unique.vprovider.2
+```
+
+So a stub provider cannot simply proxy for a guest: it has to *be* something the platform
+agrees answers for that authority. The authorities are not known until an app is imported,
+and two clones declare the same one, so they cannot be in the host manifest either.
+
+The resolution has three moving parts and one trick.
+
+1. **A router provider in UNIQUE's main process**, `<applicationId>.router`. Only that
+   process holds the instance table and the process pool, so only it can answer "which
+   slot serves `(vuid, authority)`" — and only it can lease one. A `ContentProvider` in
+   the host manifest is the cheapest thing the platform will carry between two processes
+   of one app; no AIDL had to be invented for a single question. The key is
+   `(vuid, authority)`, never the authority alone: two clones of an app declare the same
+   authority, and picking the first would hand a caller another instance's database.
+
+2. **A `call()` to that slot's stub provider**, which is what starts the process — and the
+   same call makes the process *be* that instance, grafting the guest and publishing its
+   providers. Synchronous, which is the point: starting a service and polling for
+   readiness would put a race and a timeout where an answer belongs. The graft itself is
+   posted to the main thread and waited on, because a guest's `Application.onCreate` must
+   run there — apps create `Handler`s in it — and because
+   `ActivityThread.handleBindApplication` installs a process's providers *before* calling
+   `Application.onCreate`, so a `call()` can arrive before UNIQUE's own `onCreate` has
+   installed anything. A message posted to the main looper cannot be dispatched until that
+   finishes.
+
+3. **The trick: the stub's authority set is widened at runtime.**
+   `ContentProvider.setAuthorities` has existed since API 21 and is what `attachInfo`
+   itself calls. Once the guest's providers are published, the stub is told it answers to
+   its own authority *plus* theirs. After that the platform's own dispatch does everything
+   else, and what the caller holds is a genuine Binder to a genuine `ContentProvider` in
+   the guest's process: cursors, `openFile` and `call` behave exactly as they would for an
+   installed app, because nothing is re-marshalled by UNIQUE.
+
+   `setAuthorities` *replaces* the set rather than adding to it, so the stub's own
+   authority has to be included every time. A call that lists only the guest's authorities
+   silently revokes the stub's, and the next bind — which is how every acquisition
+   arrives — is refused by the platform naming `com.unique.vprovider.N`. The first
+   acquisition then works and the second does not, which is a shape of bug that looks like
+   anything except what it is.
+
+On the caller's side the `getContentProvider` shim rewrites the authority argument to the
+stub's, and afterwards adds the guest authority back onto `ContentProviderHolder.info` so
+`ActivityThread` caches the holder under the name the caller asked for. Without that every
+acquisition repeats the whole resolve-and-bind round trip — correct, and slow for no
+visible reason. UNIQUE's own authorities are never redirected; that is what ends the
+recursion.
+
+**What is not covered.** A slot is leased per (instance, manifest process), so a guest
+whose provider process has been reaped and whose slot has been handed to another instance
+is refused with a diagnostic rather than grafted twice — `SLOT_ALREADY_BOUND`. And nothing
+here grants URI permissions across the boundary; `grantUriPermission` between two virtual
+processes is still §7.4's problem.
 
 ### 6.4.1 Stub intents need an identity of their own
 
@@ -1093,6 +1198,35 @@ place where a measurement is cheap.
 UNIQUE does not attempt to *defeat* attestation, and that is a scope decision rather than
 a claim about feasibility.
 
+### 9.8 What is actually implemented, and what is only decided
+
+The layer has two halves, and only one of them has a body.
+
+**Implemented and device-checked:** `GoogleEnvironment` reads the *host* — is
+`com.google.android.gms` present, is it enabled, is its version code high enough to be
+usable, is `com.android.vending` there, is there a browser that can serve a Custom Tab.
+Present-but-disabled and present-but-a-stub are distinguished from available, because both
+report as installed and answer nothing, and reading either as available produces a failure
+much later and much less clearly. The result is shown in Settings → Google, read afresh
+each time the screen opens.
+
+**Implemented and unit-tested:** `GoogleCompatRouter` turns those capabilities plus the
+app's own manifest into a mode per flow, and records the choice as
+`GOOGLE_ROUTE flow=… mode=… why=…`. What UNIQUE *intended* is therefore always visible,
+even when nothing was served.
+
+**Not implemented:** every bridge body. All five return `GoogleResult.Unsupported` naming
+the flow. Nothing pretends, and the UI says so in the same panel that reports the device.
+
+The reason this is where it stops is environmental and worth stating plainly rather than
+implying it was an oversight: the verification emulator is `aosp_atd` and has no Google
+stack at all, so every claim made against it would be speculation. A Google APIs image
+exists in the SDK and was not installed because the container has ~4 GB of writable disk
+against an 8.2 GB existing image, and losing the environment that produces twenty-eight
+device-proven results would be a bad trade for a partial Google answer.
+`docs/GOOGLE_DEVICE_TEST.md` is the procedure that would settle each flow, in the order
+that makes a failure in one explain the next.
+
 ---
 
 ## 10. Graphics, input, audio, media
@@ -1126,7 +1260,34 @@ pbuffer rather than the window surface, so the result does not depend on a windo
 visible — which on a headless emulator it never does.
 
 What that does **not** cover, and is left `NOT_TESTED` rather than assumed: a real GPU
-driver (this rasterises in software), the window/`SurfaceView` path, and Vulkan.
+driver (this rasterises in software) and the window/`SurfaceView` path.
+
+### 10.1 Vulkan
+
+`t28` creates a Vulkan instance, enumerates physical devices, and creates a logical device
+with a graphics queue, from inside a virtual process. It does more than ask whether the
+library exists on purpose: a "Vulkan works" claim resting on `dlopen` succeeding is worth
+nothing, because `libvulkan.so` is present on essentially every Android 10+ device
+including ones whose loader finds no ICD and whose `vkEnumeratePhysicalDevices` returns
+zero. Creating a device and fetching a queue is the first point at which a driver has
+committed to anything, and the probe also checks the queue handle came back non-null,
+because a driver returning `VK_SUCCESS` and nothing is a real failure mode.
+
+`libvulkan` is `dlopen`ed rather than linked, for two reasons. A device with no Vulkan must
+still load the probe and *report that*, instead of failing at load time with nothing to
+say. And the `dlopen` is itself a test of UNIQUE: the loader has to find a **system**
+library while the process runs under redirected IO, so a redirect scope that was too wide
+would show up here as a driver unable to open its own `/system` files.
+
+**On the emulator this test asserts almost nothing, and says so.** The headless
+software-rendered emulator declares no `FEATURE_VULKAN_HARDWARE_VERSION`, so `t28` asserts
+only that the probe ran inside the virtual process and that the library loaded and resolved
+its symbols. On a device that *does* declare the feature it asserts the whole chain —
+instance, physical device, logical device, queue — and compares the guest's answer against
+what the host claims, because UNIQUE cannot conjure a GPU and a guest must see exactly what
+the host has. Until such a run exists, Vulkan stays `NOT_TESTED` in
+`docs/COMPATIBILITY.md`. A test that quietly passes on hardware that cannot run it is how
+`NOT_TESTED` gets written down as `SUPPORTED`.
 
 ---
 
@@ -1208,16 +1369,68 @@ architecture test that forbids `packageName ==` comparisons anywhere outside
 ## 14. Diagnostics and crash handling
 
 Structured events (`timestamp, vuid, package, channel, level, code, fields`) into per-channel
-ring buffers (`LAUNCH, PROCESS, NATIVE, STORAGE, GOOGLE, WEBVIEW, NOTIFICATION, CRASH`),
-spilled to disk per instance. Export produces
-`diagnostics/{app.json, runtime.log, crash.log, gms.log, environment.json}` with a redaction
-pass that drops OAuth tokens, cookies, `Authorization` headers, account names and file
-contents; the redactor has its own unit tests, because a leaky diagnostics export is a
-security bug.
+ring buffers (`LAUNCH, PROCESS, NATIVE, STORAGE, GOOGLE, WEBVIEW, NOTIFICATION, CRASH`).
+Ring buffers rather than unbounded lists because a misbehaving app can emit thousands of
+events a second, and the diagnostics subsystem must never be the reason a device runs out
+of memory.
 
-Crashes: a native signal handler plus a Java `UncaughtExceptionHandler` in every `:vappN`
-write a crash record and let the process die. The UI shows `App stopped · [Restart]
-[Details]` with time, component and a short reason. Stack traces live only in diagnostics.
+### 14.1 Getting the events out of the process they happened in
+
+The buffers are *per process*, which is right and also the whole difficulty: the events
+that matter most are in `:vappN`, which the user cannot see, and the events from a process
+that crashed are gone with it. An export assembled only from UNIQUE's own buffers shows the
+launch request and never the launch.
+
+Two directions, because the two cases are genuinely different.
+
+**Pull, on export.** UNIQUE asks each live `:vappN` for its buffers through that slot's
+stub provider (§6.4.0 built the channel; this reuses it rather than inventing a second
+one). Nothing is copied while an app is merely running, so the cost is paid once, by the
+person who pressed *Export*. It also means an export taken *while the misbehaving app is
+still up* is worth far more than one taken afterwards, and the UI says so by reporting how
+many processes it reached.
+
+**Push, on crash.** A crashing process has seconds to live and nobody will ask it anything
+afterwards, so `CrashGuard` sends its crash records to UNIQUE's main process itself before
+letting the process die. This is what makes rule 10 — *every crash leaves a diagnostic
+trace* — a statement about what the user can read afterwards rather than about what was
+briefly in memory.
+
+### 14.2 The export package
+
+`environment.txt`, `instances.txt`, `unique.log`, `crash.log`, one `vappN.log` per slot
+reached, and a `README.txt` that says what the archive does and does not contain. It is
+written into UNIQUE's own cache directory — app-private storage, never anywhere
+world-readable — and goes further only if the user sends it.
+
+What is deliberately absent is a structural property, not a filter: **nothing from inside
+an instance's data directory**. No databases, no `shared_prefs`, no cookies, no tokens. The
+exporter never opens those directories, which is a stronger guarantee than remembering to
+exclude them. The instance summary lists identity UNIQUE itself generated — `vuid`,
+package, version, the virtual `ANDROID_ID` — because that is what a support conversation is
+about, and nothing an app stored.
+
+Every line still passes through `DiagRedactor` on the way out, which drops OAuth tokens,
+cookies, `Authorization` headers, account names and file contents. Redaction happens where
+a line *leaves* `Diagnostics`, not at each consumer: a line that has left that object must
+never need trusting again, and putting the redactor at every consumer is how one consumer
+ends up without it. The redactor has its own unit tests, because a leaky diagnostics export
+is a security bug and not a cosmetic one.
+
+### 14.3 Crashes
+
+A Java `UncaughtExceptionHandler` in every `:vappN` writes a crash record, pushes it to
+UNIQUE's main process, and lets the process die. It deliberately does not swallow the
+exception: a virtual app process that survives an unhandled exception is in an undefined
+state and produces worse failures later, and §3.1 depends on `:vappN` actually dying. The
+UI shows `App stopped · [Restart] [Details]` with time, component and a short reason
+derived from the exception chain's *root* cause rather than the outermost wrapper, which is
+usually a framework `RuntimeException` that says nothing. Stack traces live only in
+diagnostics.
+
+A native signal handler is **not implemented**: a SIGSEGV in a guest's own `.so` today
+leaves the platform's tombstone and UNIQUE's last events before the crash, but no record
+written by UNIQUE.
 
 ---
 

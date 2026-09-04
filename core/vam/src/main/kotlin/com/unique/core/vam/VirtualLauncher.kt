@@ -33,6 +33,20 @@ class VirtualLauncher(
 
     fun release(vuid: Int, reason: String) = pool.releaseAll(vuid, reason)
 
+    /**
+     * Leases a slot for a virtual process started by something other than [launch].
+     *
+     * Cold broadcast delivery needs a process without an activity to put on screen, so it
+     * cannot go through [launch]. The lease is the same one: [ProcessPool.acquire] is
+     * idempotent per occupant, so a guest that is already running keeps the slot it has
+     * and the broadcast is delivered into the live process rather than a second one.
+     *
+     * Returns null when the pool is full, which the caller must treat as "not delivered"
+     * rather than evicting a running app.
+     */
+    fun acquireSlot(vuid: Int, packageName: String, processName: String): Int? =
+        pool.acquire(Occupant(vuid, packageName, processName))?.index
+
     fun launch(
         context: Context,
         vuid: Int,

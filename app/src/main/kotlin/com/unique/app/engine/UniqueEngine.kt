@@ -1,6 +1,8 @@
 package com.unique.app.engine
 
 import android.content.Context
+import android.content.ComponentName
+import android.content.Intent
 import android.os.Process
 import android.app.ActivityManager
 import android.content.pm.PackageManager
@@ -14,6 +16,13 @@ import com.unique.core.vam.LaunchResult
 import com.unique.core.vam.VirtualLauncher
 import com.unique.core.vpm.CreateResult
 import com.unique.core.vpm.Instance
+import com.unique.core.vam.ColdBroadcastTarget
+import com.unique.core.vam.StubRouter
+import com.unique.core.vam.VirtualBroadcastRouter
+import com.unique.core.vam.VirtualComponentKind
+import com.unique.core.vam.VirtualLaunchParams
+import com.unique.core.vam.VirtualProviderRouter
+import com.unique.core.vam.VirtualServiceRouter
 import com.unique.core.vpm.UpdateResult
 import com.unique.core.vpm.InstanceManager
 import com.unique.core.vpm.db.UniqueDatabase
@@ -88,6 +97,94 @@ object UniqueEngine {
             mapOf("package" to packageName, "files" to files.size.toString()),
         )
         return instances.importAndCreate(files)
+    }
+
+    /**
+     * Rebuilds what UNIQUE's main process knows on every instance's behalf.
+     *
+     * Called once the engine is up, and again after an import, a clone, an update or a
+     * removal. Two tables, both of which exist for the same reason: a guest's components
+     * live inside its own process, and something that outlives that process has to know
+     * they exist.
+     *
+     *  - Broadcast routes, so a dead guest can be woken (§6.3.1).
+     *  - Provider authorities, so a process that is not the guest's can find it (§6.4.1).
+     */
+    suspend fun registerBroadcastRoutes(context: Context) {
+        VirtualBroadcastRouter.starter = ::startForBroadcast
+        VirtualProviderRouter.slotLeaser = ::leaseSlotFor
+        var registered = 0
+        for (instance in instances.instances()) {
+            val manifest = runCatching { manifestOf(instance) }.getOrNull() ?: continue
+            VirtualBroadcastRouter.register(context, instance.vuid, manifest)
+            VirtualProviderRouter.register(instance.vuid, manifest)
+            registered++
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "BROADCAST_ROUTER_READY",
+            mapOf(
+                "instances" to registered.toString(),
+                "actions" to VirtualBroadcastRouter.registeredActions.size.toString(),
+                "authorities" to VirtualProviderRouter.size.toString(),
+            ),
+        )
+    }
+
+    /**
+     * The `:vappN` slot that will serve one instance's provider process.
+     *
+     * The same lease the launcher hands out, and idempotent for the same reason: a
+     * provider acquisition against a guest that is already running must reach the running
+     * process, not start a second copy of it in another slot.
+     */
+    private fun leaseSlotFor(target: VirtualProviderRouter.Target): Int? =
+        launcher.acquireSlot(target.vuid, target.packageName, target.processName)
+
+    /**
+     * Brings a virtual process up and hands it a broadcast.
+     *
+     * A stub *service* rather than an activity: starting a service is the least intrusive
+     * way to make a process exist, and a broadcast must not put a window on screen.
+     */
+    private fun startForBroadcast(
+        context: Context,
+        target: ColdBroadcastTarget,
+        broadcast: Intent,
+    ): Boolean = runCatching {
+        // The slot is leased here, not at registration: a registration outlives every
+        // process it ever names. If the guest is already running this returns the slot it
+        // is already in, so the broadcast joins the live process instead of racing a
+        // second one into a different `:vappN`.
+        val slot = launcher.acquireSlot(target.vuid, target.packageName, target.processName)
+        if (slot == null) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "BROADCAST_NO_FREE_SLOT",
+                mapOf("package" to target.packageName, "vuid" to target.vuid.toString()),
+            )
+            return@runCatching false
+        }
+        val params = VirtualLaunchParams(
+            vuid = target.vuid,
+            packageName = target.packageName,
+            versionCode = target.versionCode,
+            targetComponent = target.receiverClass,
+            kind = VirtualComponentKind.RECEIVER,
+            processName = target.processName,
+            slot = slot,
+        )
+        val stub = StubRouter.stubService(slot, VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX)
+        val intent = Intent().apply {
+            component = ComponentName(context.packageName, stub)
+            params.writeTo(this)
+            putExtra(VirtualLaunchParams.KEY_BROADCAST, broadcast)
+        }
+        context.startService(intent) != null
+    }.getOrElse {
+        Diagnostics.error(
+            DiagChannel.PROCESS, "BROADCAST_STUB_START_FAILED",
+            mapOf("package" to target.packageName, "error" to it.toString()),
+        )
+        false
     }
 
     /** Imports from explicit files: a base APK plus any splits. */

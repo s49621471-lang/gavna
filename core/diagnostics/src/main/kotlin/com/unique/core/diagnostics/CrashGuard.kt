@@ -45,6 +45,14 @@ object CrashGuard {
                     },
                     throwable = error,
                 )
+                // Push it out of this process before the process stops existing. A ring
+                // buffer in a dying process is a record nobody will ever read, and
+                // "every crash leaves a diagnostic trace" is a rule about what the *user*
+                // can see afterwards, not about what was briefly in memory.
+                Diagnostics.remoteSink?.let { sink ->
+                    val records = Diagnostics.snapshot(DiagChannel.CRASH).map(Diagnostics::formatted)
+                    runCatching { sink(records) }
+                }
             }
             previous?.uncaughtException(thread, error)
         }

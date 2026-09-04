@@ -7,15 +7,22 @@ import android.app.job.JobService
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Intent
+import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.vam.LaunchInterceptor
+import com.unique.core.vam.VirtualColdBroadcast
+import com.unique.core.vam.VirtualComponentKind
+import com.unique.core.vam.VirtualDiagnostics
 import com.unique.core.vam.VirtualJobDispatcher
 import com.unique.core.vam.VirtualLaunchParams
+import com.unique.core.vam.VirtualProviderBridge
+import com.unique.core.vam.VirtualProviderHost
 
 /**
  * Base classes for the generated stub components.
@@ -72,10 +79,14 @@ abstract class StubActivityBase(private val slot: Int) : Activity() {
 /**
  * Base for the generated stub services.
  *
- * On the success path this class is never constructed: [LaunchInterceptor] replaces the
- * stub's `ServiceInfo` before `ActivityThread` instantiates anything, so the guest's own
- * `Service` runs instead. Reaching here means the hand-off did not happen, and the
- * reasons are reported separately on the PROCESS channel.
+ * For a guest's own service this class is never constructed: [LaunchInterceptor] replaces
+ * the stub's `ServiceInfo` before `ActivityThread` instantiates anything, so the guest's
+ * `Service` runs instead. Reaching here that way means the hand-off did not happen, and
+ * the reasons are reported separately on the PROCESS channel.
+ *
+ * The one deliberate exception is cold broadcast delivery, which starts the stub reserved
+ * at `VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX` precisely so that this class runs:
+ * there is no guest service to swap in, only a process that needs to exist.
  */
 abstract class StubServiceBase(private val slot: Int) : Service() {
 
@@ -92,12 +103,23 @@ abstract class StubServiceBase(private val slot: Int) : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val params = VirtualLaunchParams.from(intent)
+
+        // A cold broadcast delivery. Unlike every other start that reaches this class,
+        // this one is *meant* to: the stub exists to bring the process up, and the guest
+        // has no service to swap in. See VirtualBroadcastRouter.
+        if (params != null && params.kind == VirtualComponentKind.RECEIVER) {
+            VirtualColdBroadcast.deliver(this, params, intent)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         Diagnostics.error(
             DiagChannel.PROCESS, "STUB_SERVICE_START_NOT_ROUTED",
             mapOf(
                 "slot" to slot.toString(),
                 "stub" to javaClass.name,
-                "requested" to (VirtualLaunchParams.from(intent)?.targetComponent ?: "-"),
+                "requested" to (params?.targetComponent ?: "-"),
             ),
         )
         stopSelf(startId)
@@ -155,18 +177,60 @@ abstract class StubProviderBase(private val slot: Int) : ContentProvider() {
         return true
     }
 
-    // TODO(phase-3): forward these to the virtual app's provider through :server.
-    // Until then they return empty rather than throwing, so a caller probing an authority
-    // gets a well-formed "nothing here" instead of a crash.
+    /**
+     * The one method a caller may invoke before this process is anything in particular.
+     *
+     * Acquiring this provider is what started the process; `bind` is what makes it *be* a
+     * given instance and tells the caller which authorities it may then use. See
+     * [VirtualProviderHost].
+     */
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        if (method == VirtualProviderBridge.METHOD_BIND) {
+            return VirtualProviderHost.bind(this.context ?: return null, this, extras)
+        }
+        // Answered whether or not this process is serving anything yet: the buffers of a
+        // slot that failed to bind are exactly the ones worth reading.
+        if (method == VirtualDiagnostics.METHOD_SNAPSHOT) {
+            return VirtualDiagnostics.snapshotBundle(":vapp$slot")
+        }
+        return VirtualProviderHost.route(arg?.let { Uri.parse(it).authority }, "call")
+            ?.call(method, arg, extras)
+    }
+
+    // Everything below is pure routing. The stub owns no data of its own; it exists
+    // because the platform will only publish a provider that a manifest declares, and a
+    // guest's manifest is not one the platform has read.
+
     override fun query(
         uri: Uri, projection: Array<out String>?, selection: String?,
         selectionArgs: Array<out String>?, sortOrder: String?,
-    ): Cursor? = null
+    ): Cursor? = VirtualProviderHost.route(uri.authority, "query")
+        ?.query(uri, projection, selection, selectionArgs, sortOrder)
 
-    override fun getType(uri: Uri): String? = null
-    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun getType(uri: Uri): String? =
+        VirtualProviderHost.route(uri.authority, "getType")?.getType(uri)
+
+    override fun insert(uri: Uri, values: ContentValues?): Uri? =
+        VirtualProviderHost.route(uri.authority, "insert")?.insert(uri, values)
+
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int =
+        VirtualProviderHost.route(uri.authority, "delete")
+            ?.delete(uri, selection, selectionArgs) ?: 0
+
     override fun update(
         uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?,
-    ): Int = 0
+    ): Int = VirtualProviderHost.route(uri.authority, "update")
+        ?.update(uri, values, selection, selectionArgs) ?: 0
+
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? =
+        VirtualProviderHost.route(uri.authority, "openFile")?.openFile(uri, mode)
+
+    override fun getStreamTypes(uri: Uri, mimeTypeFilter: String): Array<String>? =
+        VirtualProviderHost.route(uri.authority, "getStreamTypes")
+            ?.getStreamTypes(uri, mimeTypeFilter)
+
+    override fun openTypedAssetFile(
+        uri: Uri, mimeTypeFilter: String, opts: Bundle?,
+    ): AssetFileDescriptor? = VirtualProviderHost.route(uri.authority, "openTypedAssetFile")
+        ?.openTypedAssetFile(uri, mimeTypeFilter, opts)
 }

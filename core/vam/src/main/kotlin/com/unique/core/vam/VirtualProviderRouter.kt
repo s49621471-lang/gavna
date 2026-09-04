@@ -1,0 +1,153 @@
+package com.unique.core.vam
+
+import android.net.Uri
+import android.os.Bundle
+import com.unique.core.common.apk.ApkManifest
+import com.unique.core.common.apk.ComponentKind
+import com.unique.core.common.diag.DiagChannel
+import com.unique.core.diagnostics.Diagnostics
+
+/**
+ * Where every imported package's content-provider authorities are known.
+ *
+ * `ActivityManagerService` resolves an authority against *installed* packages, so a guest
+ * authority resolves to nothing no matter who asks. Inside the guest's own process
+ * [VirtualProviderRegistry] answers the acquisition directly (§6.4). This is the other
+ * half: the table that lets a process which is *not* the guest's find out which of the
+ * host's `:vappN` slots to talk to.
+ *
+ * It lives in UNIQUE's main process, next to [VirtualBroadcastRouter] and for the same
+ * reason — that is the process that outlives any individual virtual app. Other processes
+ * reach it through [UNIQUE's router provider][ROUTER_METHOD_RESOLVE], because a
+ * `ContentProvider` declared in the host manifest is the one interface the platform will
+ * carry between two processes of the same app without UNIQUE inventing an AIDL for it.
+ *
+ * The key is `(vuid, authority)`, never the authority alone. Two clones of one app
+ * declare the *same* authority, and answering "which instance did you mean" by picking
+ * the first would hand a caller another instance's database.
+ */
+object VirtualProviderRouter {
+
+    /** One instance's provider, as the host knows it. */
+    data class Target(
+        val vuid: Int,
+        val packageName: String,
+        val versionCode: Long,
+        val providerClass: String,
+        val processName: String,
+        val authority: String,
+    )
+
+    const val ROUTER_METHOD_RESOLVE = "unique.resolveProvider"
+
+    const val KEY_VUID = "unique.vuid"
+    const val KEY_AUTHORITY = "unique.authority"
+    const val KEY_PACKAGE = "unique.package"
+    const val KEY_VERSION_CODE = "unique.versionCode"
+    const val KEY_PROVIDER = "unique.provider"
+    const val KEY_PROCESS = "unique.process"
+    const val KEY_SLOT = "unique.slot"
+
+    /** The host provider every other process asks. `<applicationId>.router`. */
+    fun routerUri(hostPackage: String): Uri = Uri.parse("content://$hostPackage.router")
+
+    /** The stub provider serving one slot, as generated into the host manifest. */
+    fun stubAuthority(hostPackage: String, slot: Int): String = "$hostPackage.vprovider.$slot"
+
+    private val targets = LinkedHashMap<Key, Target>()
+
+    private data class Key(val vuid: Int, val authority: String)
+
+    /** Set by the engine: leases the `:vappN` slot that will serve an instance. */
+    @Volatile
+    var slotLeaser: ((Target) -> Int?)? = null
+
+    val size: Int get() = synchronized(this) { targets.size }
+
+    @Synchronized
+    fun register(vuid: Int, manifest: ApkManifest) {
+        targets.keys.removeAll { it.vuid == vuid }
+        var added = 0
+        for (entry in manifest.components) {
+            if (entry.kind != ComponentKind.PROVIDER || !entry.enabled) continue
+            for (authority in entry.authorities) {
+                targets[Key(vuid, authority)] = Target(
+                    vuid = vuid,
+                    packageName = manifest.packageName,
+                    versionCode = manifest.versionCode,
+                    providerClass = entry.className,
+                    processName = entry.processName,
+                    authority = authority,
+                )
+                added++
+            }
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PROVIDER_ROUTES_REGISTERED",
+            mapOf(
+                "package" to manifest.packageName,
+                "vuid" to vuid.toString(),
+                "authorities" to added.toString(),
+            ),
+        )
+    }
+
+    @Synchronized
+    fun unregister(vuid: Int) {
+        targets.keys.removeAll { it.vuid == vuid }
+    }
+
+    @Synchronized
+    fun reset() = targets.clear()
+
+    @Synchronized
+    fun target(vuid: Int, authority: String): Target? = targets[Key(vuid, authority)]
+
+    /** Every authority any imported instance declares, whichever instance owns it. */
+    @Synchronized
+    fun allAuthorities(): Set<String> = targets.keys.mapTo(LinkedHashSet()) { it.authority }
+
+    /**
+     * Answers one `resolveProvider` call, leasing the slot that will serve the instance.
+     *
+     * Runs in UNIQUE's main process; the reply crosses back to whoever asked.
+     */
+    fun resolve(extras: Bundle?): Bundle? {
+        val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
+        val authority = extras?.getString(KEY_AUTHORITY)
+        if (vuid < 0 || authority.isNullOrEmpty()) return null
+
+        val target = target(vuid, authority) ?: run {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_ROUTE_UNKNOWN",
+                mapOf("vuid" to vuid.toString(), "authority" to authority),
+            )
+            return null
+        }
+        val slot = slotLeaser?.invoke(target) ?: run {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_ROUTE_NO_SLOT",
+                mapOf("vuid" to vuid.toString(), "authority" to authority),
+            )
+            return null
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PROVIDER_ROUTE_RESOLVED",
+            mapOf(
+                "vuid" to vuid.toString(),
+                "authority" to authority,
+                "slot" to slot.toString(),
+                "process" to target.processName,
+            ),
+        )
+        return Bundle().apply {
+            putInt(KEY_SLOT, slot)
+            putInt(KEY_VUID, target.vuid)
+            putString(KEY_PACKAGE, target.packageName)
+            putLong(KEY_VERSION_CODE, target.versionCode)
+            putString(KEY_PROVIDER, target.providerClass)
+            putString(KEY_PROCESS, target.processName)
+            putString(KEY_AUTHORITY, target.authority)
+        }
+    }
+}

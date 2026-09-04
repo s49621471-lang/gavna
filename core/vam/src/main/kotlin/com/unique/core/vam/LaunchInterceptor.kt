@@ -173,6 +173,25 @@ object LaunchInterceptor {
             return
         }
         val stubInfo = infoField.get(data) as? ServiceInfo ?: return
+
+        // A cold broadcast delivery starts a stub service purely to bring the process up,
+        // and the *stub* is what must run - there is no guest service to swap in. Leaving
+        // its ServiceInfo alone is what lets StubServiceBase see the intent and hand the
+        // broadcast to the guest's receiver.
+        //
+        // Recognised from the stub's index rather than from a flag set by the engine: the
+        // engine runs in UNIQUE's own process and this runs in `:vappN`, so anything it
+        // "told" this object would be told to a different copy of it.
+        if (StubRouter.parseStubService(stubInfo.name)?.second ==
+            VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX
+        ) {
+            Diagnostics.info(
+                DiagChannel.PROCESS, "CREATE_SERVICE_COLD_BROADCAST",
+                mapOf("stub" to stubInfo.name),
+            )
+            return
+        }
+
         val entry = VirtualServiceRouter.resolve(stubInfo.name)
         if (entry == null) {
             // Not one of ours, or a stub whose reservation is gone. Either way, leaving it
@@ -210,6 +229,9 @@ object LaunchInterceptor {
         val intentField = fieldOfType(data.javaClass, Intent::class.java) ?: return
         val stubIntent = intentField.get(data) as? Intent ?: return
         val params = VirtualLaunchParams.from(stubIntent) ?: return
+        // A cold broadcast start must reach the stub with its extras intact: the stub is
+        // the thing that runs, and the guest's broadcast is riding inside.
+        if (params.kind == VirtualComponentKind.RECEIVER) return
         val target = params.targetComponent ?: return
         intentField.set(data, unwrapServiceIntent(stubIntent, target))
     }

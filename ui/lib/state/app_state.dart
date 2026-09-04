@@ -103,6 +103,12 @@ class AppState extends ChangeNotifier {
     return result;
   }
 
+  Future<EngineOutcome> importApkFromPicker() async {
+    final result = await _bridge.importApkFromPicker();
+    if (result.ok && !result.cancelled) await refresh();
+    return result;
+  }
+
   Future<EngineOutcome> clone(VirtualApp app) async {
     final result = await _bridge.cloneInstance(app.packageName);
     if (result.ok) await refresh();
@@ -128,6 +134,11 @@ class AppState extends ChangeNotifier {
     if (result.ok) await refresh();
     return result;
   }
+
+  Future<DiagnosticsExportResult> exportDiagnostics() =>
+      _bridge.exportDiagnostics();
+
+  Future<GoogleStatus> googleStatus() => _bridge.googleStatus();
 
   void _listenToDiagnostics() {
     _bridge.diagnostics().listen((record) {
