@@ -607,10 +607,58 @@ class VirtualLaunchTest {
         assertThat(observed["cameraRationaleBefore"]).isEqualTo("false")
         assertThat(observed["cameraRationaleAfter"]).isEqualTo("false")
 
+        // The decision is UNIQUE's record, kept under runtime/ rather than in the app's
+        // own data directory: a guest that can rewrite its own grants has none.
+        val state = File(model.permissionsFile(instance.vuid, probePackage))
+        assertThat(state.isFile).isTrue()
+        assertThat(state.readText()).contains("android.permission.CAMERA=GRANTED")
+        assertThat(state.path).doesNotContain(model.dataDir(instance.vuid, probePackage))
+
         // A permission the app declared and never asked for stays denied: the grant is
         // per permission, not a blanket switch to the host's state. RECORD_AUDIO is also
         // one the host does not hold, so both reasons agree here.
         assertThat(observed["micAfter"]).isEqualTo("DENIED")
+    }
+
+    @Test
+    fun t13_aGrantSurvivesTheProcessBeingKilled() = runBlocking {
+        // Depends on t12 having granted CAMERA to this instance, the way t08 depends on
+        // t07 leaving the guest running. After a full process kill the app must not have
+        // to ask again: being re-prompted on every cold start is what users read as the
+        // app being broken.
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-permissions.properties")
+
+        val before = awaitResult(instance)
+        killAndWait(before["pid"]!!.toInt())
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.permissions", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        val relaunched = awaitResult(instance)
+        assertThat(relaunched["pid"]).isNotEqualTo(before["pid"])
+        val observed = awaitFile(result)
+
+        // Granted before the app asks anything this time: the decision was restored.
+        assertThat(observed["cameraBefore"]).isEqualTo("GRANTED")
+        assertThat(observed["cameraViaPm"]).isEqualTo("GRANTED")
+        // A permission never decided is still denied, so this is a restore and not a
+        // blanket fallback to the host's own grants.
+        assertThat(observed["micBefore"]).isEqualTo("DENIED")
     }
 
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {

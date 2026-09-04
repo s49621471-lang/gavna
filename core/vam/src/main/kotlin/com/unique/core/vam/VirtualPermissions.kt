@@ -5,10 +5,12 @@ import android.content.pm.PackageManager
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.shim.shim
+import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.SystemServiceHook
 import com.unique.core.vpermission.PermissionState
 import com.unique.core.vpermission.PermissionStore
+import java.io.File
 import java.lang.reflect.Method
 
 /**
@@ -39,7 +41,12 @@ import java.lang.reflect.Method
  */
 object VirtualPermissions {
 
-    private data class Binding(val vuid: Int, val packageName: String, val declared: Set<String>)
+    private data class Binding(
+        val vuid: Int,
+        val packageName: String,
+        val declared: Set<String>,
+        val stateFile: File,
+    )
 
     @Volatile private var binding: Binding? = null
     @Volatile private var hostContext: Context? = null
@@ -81,16 +88,70 @@ object VirtualPermissions {
      */
     @Synchronized
     fun bind(vuid: Int, packageName: String, declared: Collection<String>, context: Context) {
-        hostContext = context.applicationContext ?: context
-        binding = Binding(vuid, packageName, declared.toSet())
+        val host = context.applicationContext ?: context
+        hostContext = host
+        val model = VirtualPathModel(host.filesDir.absolutePath)
+        val b = Binding(
+            vuid, packageName, declared.toSet(),
+            File(model.permissionsFile(vuid, packageName)),
+        )
+        binding = b
+        val restored = restore(b)
         Diagnostics.info(
             DiagChannel.PROCESS, "PERMISSIONS_BOUND",
             mapOf(
                 "package" to packageName,
                 "vuid" to vuid.toString(),
                 "declared" to declared.size.toString(),
+                "restored" to restored.toString(),
             ),
         )
+    }
+
+    /**
+     * Reads back what the user has already decided for this instance.
+     *
+     * Without this a guest is asked for every permission again on every cold start, which
+     * users read as the app being broken. The file holds only decisions UNIQUE recorded;
+     * it is still intersected with the host's live grant on every check, so a stale
+     * GRANTED here can never outlive the user revoking it from UNIQUE.
+     */
+    private fun restore(b: Binding): Int {
+        if (!b.stateFile.isFile) return 0
+        var count = 0
+        runCatching {
+            b.stateFile.readLines().forEach { line ->
+                val name = line.substringBefore('=', "").trim()
+                val value = line.substringAfter('=', "").trim()
+                if (name.isEmpty() || value.isEmpty()) return@forEach
+                val state = runCatching { PermissionState.valueOf(value) }.getOrNull()
+                    ?: return@forEach
+                store.set(b.vuid, b.packageName, name, state)
+                count++
+            }
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PERMISSIONS_RESTORE_FAILED",
+                mapOf("package" to b.packageName, "error" to it.toString()),
+            )
+        }
+        return count
+    }
+
+    /** Writes the whole record; small enough that a rewrite beats a merge. */
+    private fun persist(b: Binding) {
+        runCatching {
+            b.stateFile.parentFile?.mkdirs()
+            b.stateFile.writeText(
+                store.snapshot(b.vuid, b.packageName)
+                    .entries.joinToString("\n") { "${it.key}=${it.value.name}" } + "\n"
+            )
+        }.onFailure {
+            Diagnostics.error(
+                DiagChannel.PROCESS, "PERMISSIONS_PERSIST_FAILED",
+                mapOf("package" to b.packageName, "error" to it.toString()),
+            )
+        }
     }
 
     /** What the guest observes for [permission]: the host's grant narrowed by the instance's. */
@@ -113,6 +174,7 @@ object VirtualPermissions {
             b.vuid, b.packageName, permission,
             if (granted) PermissionState.GRANTED else PermissionState.DENIED,
         )
+        persist(b)
         Diagnostics.info(
             DiagChannel.PROCESS, "PERMISSION_RESULT_RECORDED",
             mapOf(
@@ -131,6 +193,7 @@ object VirtualPermissions {
     fun setStored(permission: String, state: PermissionState) {
         val b = binding ?: return
         store.set(b.vuid, b.packageName, permission, state)
+        persist(b)
     }
 
     @Synchronized

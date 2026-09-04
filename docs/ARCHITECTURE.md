@@ -598,9 +598,21 @@ type, like everything else — and records the outcome against the instance. It 
 **observed, never rewritten**: the result still reaches the guest exactly as the platform
 sent it, so `onRequestPermissionsResult` sees the truth.
 
-**Not implemented:** the per-instance state lives in the virtual process's memory, so a
-guest that is killed loses its grants and must ask again. `IAppOpsService` is a declared
-hook target and is not installed, so a guest's app-op checks still answer for UNIQUE.
+#### 6.6.4 Where the decision is kept
+
+Under `runtime/permissions/<vuid>/<package>.properties`, inside UNIQUE's app-private
+storage — **not** in the guest's data directory. A guest that can rewrite its own grants
+has none, and anything resembling a security decision belongs where the app being governed
+cannot reach it. The file holds only decisions UNIQUE recorded and is still intersected
+with the host's live grant on every check, so a stale `GRANTED` can never outlive the user
+revoking it from UNIQUE.
+
+It is restored at bootstrap, before the guest's `Application` exists. Without that a guest
+is asked for every permission again on every cold start, which users read as the app being
+broken.
+
+**Not implemented:** `IAppOpsService` is a declared hook target and is not installed, so a
+guest's app-op checks still answer for UNIQUE.
 
 ---
 

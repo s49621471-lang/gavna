@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-091645-3060`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-092334-4780`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -80,6 +80,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t10` the guest starts its own second Activity | **PASS** |
 | `t11` a `PendingIntent` the guest built fires into the guest | **PASS** |
 | `t12` a runtime permission belongs to the instance, not to UNIQUE | **PASS** |
+| `t13` a grant survives the virtual process being killed | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -163,7 +164,6 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
 | Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
-| Per-instance permission state across a restart | 3 | Held in the virtual process's memory; a guest that is killed loses its grants and must ask again. Needs the state database |
 | AppOps | 3 | `IAppOpsService` is a declared hook target and is not installed, so a guest's app-op checks answer for UNIQUE |
 | Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
@@ -188,8 +188,7 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 1. Remaining Phase 3: AppOps (`IAppOpsService`), implicit activity starts (resolving
    against the guest's own intent filters), foreground services and their Android 14 type
    intersection, URI permissions, `JobScheduler`, `AlarmManager`, the clipboard, the
-   notification bridge. Per-instance permission state is in memory only and does not yet
-   survive a process restart.
+   notification bridge.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
    anything.

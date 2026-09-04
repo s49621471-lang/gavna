@@ -73,6 +73,17 @@ class VirtualPathModel(private val hostFilesRoot: String) {
     fun diagnosticsDir(vuid: Int, packageName: String) =
         "${runtimeDir()}/diagnostics/$vuid/$packageName"
 
+    /**
+     * Where an instance's runtime permission decisions are kept.
+     *
+     * Under `runtime/`, not under the app's data directory: this is UNIQUE's record of
+     * what the user allowed, and a guest that can rewrite its own grants has none. It is
+     * inside UNIQUE's app-private storage, which is also where anything resembling a
+     * security decision has to live.
+     */
+    fun permissionsFile(vuid: Int, packageName: String) =
+        "${runtimeDir()}/permissions/$vuid/$packageName.properties"
+
     /** Directories that must exist before an app is first launched. */
     fun instanceDirectories(vuid: Int, packageName: String): List<String> = listOf(
         dataDir(vuid, packageName),
