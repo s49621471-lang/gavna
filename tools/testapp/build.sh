@@ -6,7 +6,14 @@
 # out of `./gradlew assembleRelease`, where it does not belong.
 set -euo pipefail
 
-: "${ANDROID_HOME:?set ANDROID_HOME}"
+# ANDROID_HOME is not always exported - Gradle invokes this script too, and the Android
+# plugin resolves the SDK from local.properties rather than the environment.
+if [ -z "${ANDROID_HOME:-}" ]; then
+    root="$(cd "$(dirname "$0")/../.." && pwd)"
+    ANDROID_HOME="${ANDROID_SDK_ROOT:-$(sed -n 's/^sdk\.dir=//p' "$root/local.properties" 2>/dev/null | head -1)}"
+fi
+: "${ANDROID_HOME:?set ANDROID_HOME, or sdk.dir in local.properties}"
+export ANDROID_HOME
 BUILD_TOOLS="${BUILD_TOOLS:-$ANDROID_HOME/build-tools/36.0.0}"
 PLATFORM="${PLATFORM:-$ANDROID_HOME/platforms/android-36/android.jar}"
 

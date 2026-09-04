@@ -36,6 +36,16 @@ import com.unique.core.diagnostics.Diagnostics
  * they would to the guest's, so the set of system actions that can be delivered is
  * genuinely smaller than the manifest asks for. Actions that cannot be registered are
  * reported individually.
+ *
+ * Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` (compat change
+ * 229362273, on from `targetSdk` 34) is the second limit, and it is easy to mistake for a
+ * bug in this class: an *implicit* broadcast - one with neither a component nor a package
+ * - is matched only against *exported* filters. So a sender inside UNIQUE that means a
+ * particular guest must scope the intent with `setPackage`, and a guest receiver declared
+ * `android:exported="false"` will not see a system broadcast that arrives implicitly.
+ * Closing that needs `:server` to hold the registration and re-dispatch, the same
+ * mechanism a dead process needs; it is not something this class can do from inside the
+ * guest.
  */
 object VirtualReceiverRegistry {
 
@@ -62,10 +72,16 @@ object VirtualReceiverRegistry {
                 val bridge = GuestReceiverBridge(ready, entry)
                 val ok = runCatching {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        // NOT_EXPORTED: the only legitimate senders are UNIQUE's own
-                        // processes and the system. Exporting would let any app on the
-                        // device poke a guest's receiver.
-                        context.registerReceiver(bridge, filter, Context.RECEIVER_NOT_EXPORTED)
+                        // The guest's own declaration decides. Registering everything
+                        // NOT_EXPORTED would be safer in isolation but is not what the
+                        // app asked for, and registering everything EXPORTED would let
+                        // any app on the device poke a receiver its author marked
+                        // private. `exported` is already resolved by ManifestReader to
+                        // Android's own default - true when the component has a filter
+                        // and says nothing.
+                        val flag = if (entry.exported) Context.RECEIVER_EXPORTED
+                        else Context.RECEIVER_NOT_EXPORTED
+                        context.registerReceiver(bridge, filter, flag)
                     } else {
                         @Suppress("UnspecifiedRegisterReceiverFlag")
                         context.registerReceiver(bridge, filter)
@@ -89,6 +105,7 @@ object VirtualReceiverRegistry {
                 "declared" to receivers.size.toString(),
                 "registered" to installed.toString(),
                 "actions" to registered.keys.joinToString(";").take(400),
+                "exported" to receivers.count { it.exported }.toString(),
             ),
         )
         if (failed.isNotEmpty()) {

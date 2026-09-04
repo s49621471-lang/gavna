@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.shim.MethodShim
 import com.unique.core.common.shim.shim
 import com.unique.core.diagnostics.Diagnostics
@@ -59,6 +60,40 @@ object VirtualActivityManagerHook {
         "setServiceForeground",
     )
 
+    /**
+     * Every `IActivityManager` method that dispatches a service `Intent`.
+     *
+     * Matched structurally, because the platform *renames* these. `Context.bindService`
+     * reached `IActivityManager.bindService` through Android 10, `bindIsolatedService` in
+     * Android 11, and `bindServiceInstance` from Android 12 on. UNIQUE shimmed the first
+     * two by exact name and both still exist on the API 34 interface - they are simply
+     * never called any more - so the binding report looked healthy while every bind went
+     * out unrewritten and `system_server` answered:
+     *
+     * ```
+     * W ActivityManager: Unable to start service Intent { cmp=com.unique.probe/.ProbeService } U=0: not found
+     * ```
+     *
+     * The rule is: it carries an `Intent`, and it is about a service.
+     *
+     * This deliberately includes the *inbound-originated* members of the family,
+     * `publishService` and `unbindFinished`. `ActivityThread.handleBindService` hands the
+     * intent it was given straight back to `ActivityManagerService`, which looks the
+     * binding up by `Intent.FilterComparison` - so it has to be the stub intent again, or
+     * the connection is never completed and `onServiceConnected` never fires. Routing
+     * them through the same rewrite restores exactly the intent AMS is holding, because
+     * [VirtualServiceRouter.outbound] returns the stub already reserved for that service.
+     *
+     * `unbindFinished` is named explicitly: it is the one member of the family whose name
+     * does not say "service". Methods with no `Intent` - `unbindService`,
+     * `stopServiceToken`, `serviceDoneExecuting`, `setServiceForeground` - are keyed on a
+     * connection or a token and need no rewrite here.
+     */
+    internal fun dispatchesServiceIntent(method: Method): Boolean {
+        if (method.parameterTypes.none { it == Intent::class.java }) return false
+        return method.name.contains("Service") || method.name == "unbindFinished"
+    }
+
     @Volatile private var installedFor: String? = null
 
     val boundPackage: String? get() = installedFor
@@ -87,6 +122,9 @@ object VirtualActivityManagerHook {
                 "package" to virtualPackage,
                 "host" to hostPackage,
                 "methods" to (report.bind?.bound?.size?.toString() ?: "0"),
+                // The concrete names, not the shim labels: a shim that binds to nothing
+                // the platform still calls is the failure mode this hook already had once.
+                "matched" to (report.bind?.describeMatches()?.take(400) ?: "-"),
             ),
         )
         return true
@@ -118,19 +156,8 @@ object VirtualActivityManagerHook {
 
         // Service starts and binds have to be routed onto a stub the host declares:
         // system_server will not start a component of a package it has never installed.
-        shim("startService") {
-            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
-            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
-        },
-        shim("bindService") {
-            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
-            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
-        },
-        shim("bindIsolatedService") {
-            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
-            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
-        },
-        shim("stopService") {
+        shim("serviceDispatch") {
+            matchMethods { method -> dispatchesServiceIntent(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
             rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
         },
@@ -173,7 +200,17 @@ object VirtualActivityManagerHook {
             return intent
         }
 
-        return VirtualServiceRouter.outbound(hostPackage, intent, ready.params, entry) ?: intent
+        val routed = VirtualServiceRouter.outbound(hostPackage, intent, ready.params, entry)
+            ?: return intent
+        Diagnostics.event(
+            DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_INTENT_ROUTED",
+            mapOf(
+                "service" to component.className,
+                "stub" to (routed.component?.className ?: "-"),
+                "action" to (intent.action ?: "-"),
+            ),
+        )
+        return routed
     }
 
     /**

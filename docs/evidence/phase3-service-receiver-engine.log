@@ -1,0 +1,182 @@
+09-04 08:12:21.235 I/Unique  (13318): 2026-09-04 08:12:21.115 I PROCESS STUB_PROVIDER_CREATED slot=0
+09-04 08:12:22.455 I/Unique  (13318): 2026-09-04 08:12:22.412 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid matched=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+09-04 08:12:23.128 I/Unique  (13318): 2026-09-04 08:12:23.087 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=serviceDispatch,callerIdentity,getContentProvider matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:12:23.251 I/Unique  (13318): 2026-09-04 08:12:23.180 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=3 matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:12:23.669 I/UniqueProbe(13318): Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:12:23.767 I/UniqueProbe(13318): Provider.onCreate package=com.unique.probe
+09-04 08:12:23.893 I/Unique  (13318): 2026-09-04 08:12:23.826 I PROCESS PROVIDERS_PUBLISHED package=com.unique.probe declared=1 authorities=com.unique.probe.provider
+09-04 08:12:24.068 I/Unique  (13318): 2026-09-04 08:12:23.991 I PROCESS RECEIVERS_REGISTERED package=com.unique.probe declared=1 registered=1 actions=com.unique.probe.ProbeReceiver#com.unique.probe.PING exported=0
+09-04 08:12:26.121 I/UniqueProbe(13318): wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+09-04 08:12:26.122 I/UniqueProbe(13318): packageName=com.unique.probe
+09-04 08:12:26.126 I/UniqueProbe(13318): applicationClass=com.unique.probe.ProbeApplication
+09-04 08:12:26.127 I/UniqueProbe(13318): applicationOnCreateRan=true
+09-04 08:12:26.130 I/UniqueProbe(13318): applicationBeforeActivity=true
+09-04 08:12:26.131 I/UniqueProbe(13318): activityClass=com.unique.probe.ProbeActivity
+09-04 08:12:26.144 I/UniqueProbe(13318): componentName=com.unique.probe/com.unique.probe.ProbeActivity
+09-04 08:12:26.145 I/UniqueProbe(13318): pid=13318
+09-04 08:12:26.146 I/UniqueProbe(13318): uid=10109
+09-04 08:12:26.147 I/UniqueProbe(13318): dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:12:26.167 I/UniqueProbe(13318): filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:12:26.185 I/UniqueProbe(13318): cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+09-04 08:12:26.186 I/UniqueProbe(13318): codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+09-04 08:12:26.187 I/UniqueProbe(13318): packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:26.201 I/UniqueProbe(13318): packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:26.202 I/UniqueProbe(13318): appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:12:26.203 I/UniqueProbe(13318): appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:26.217 I/UniqueProbe(13318): appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/lib/arm64-v8a
+09-04 08:12:26.219 I/UniqueProbe(13318): targetSdk=34
+09-04 08:12:26.219 I/UniqueProbe(13318): launchCount=1
+09-04 08:12:26.241 I/UniqueProbe(13318): sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+09-04 08:12:26.242 I/UniqueProbe(13318): fileLineCount=1
+09-04 08:12:26.243 I/UniqueProbe(13318): filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+09-04 08:12:26.249 I/UniqueProbe(13318): dbRowCount=1
+09-04 08:12:26.250 I/UniqueProbe(13318): dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+09-04 08:12:39.614 I/Unique  (13338): 2026-09-04 08:12:39.549 I PROCESS STUB_PROVIDER_CREATED slot=0
+09-04 08:12:40.697 I/Unique  (13338): 2026-09-04 08:12:40.650 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid matched=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+09-04 08:12:41.302 I/Unique  (13338): 2026-09-04 08:12:41.262 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=serviceDispatch,callerIdentity,getContentProvider matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:12:41.437 I/Unique  (13338): 2026-09-04 08:12:41.314 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=3 matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:12:41.919 I/UniqueProbe(13338): Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:12:42.167 I/UniqueProbe(13338): Provider.onCreate package=com.unique.probe
+09-04 08:12:42.405 I/Unique  (13338): 2026-09-04 08:12:42.333 I PROCESS PROVIDERS_PUBLISHED package=com.unique.probe declared=1 authorities=com.unique.probe.provider
+09-04 08:12:42.578 I/Unique  (13338): 2026-09-04 08:12:42.498 I PROCESS RECEIVERS_REGISTERED package=com.unique.probe declared=1 registered=1 actions=com.unique.probe.ProbeReceiver#com.unique.probe.PING exported=0
+09-04 08:12:44.106 I/UniqueProbe(13338): wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+09-04 08:12:44.107 I/UniqueProbe(13338): packageName=com.unique.probe
+09-04 08:12:44.121 I/UniqueProbe(13338): applicationClass=com.unique.probe.ProbeApplication
+09-04 08:12:44.122 I/UniqueProbe(13338): applicationOnCreateRan=true
+09-04 08:12:44.123 I/UniqueProbe(13338): applicationBeforeActivity=true
+09-04 08:12:44.132 I/UniqueProbe(13338): activityClass=com.unique.probe.ProbeActivity
+09-04 08:12:44.133 I/UniqueProbe(13338): componentName=com.unique.probe/com.unique.probe.ProbeActivity
+09-04 08:12:44.133 I/UniqueProbe(13338): pid=13338
+09-04 08:12:44.134 I/UniqueProbe(13338): uid=10109
+09-04 08:12:44.135 I/UniqueProbe(13338): dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:12:44.150 I/UniqueProbe(13338): filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:12:44.151 I/UniqueProbe(13338): cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+09-04 08:12:44.155 I/UniqueProbe(13338): codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+09-04 08:12:44.165 I/UniqueProbe(13338): packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:44.166 I/UniqueProbe(13338): packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:44.166 I/UniqueProbe(13338): appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:12:44.167 I/UniqueProbe(13338): appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:12:44.182 I/UniqueProbe(13338): appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/lib/arm64-v8a
+09-04 08:12:44.183 I/UniqueProbe(13338): targetSdk=34
+09-04 08:12:44.188 I/UniqueProbe(13338): launchCount=2
+09-04 08:12:44.189 I/UniqueProbe(13338): sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+09-04 08:12:44.190 I/UniqueProbe(13338): fileLineCount=2
+09-04 08:12:44.191 I/UniqueProbe(13338): filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+09-04 08:12:44.199 I/UniqueProbe(13338): dbRowCount=2
+09-04 08:12:44.205 I/UniqueProbe(13338): dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+09-04 08:12:58.074 I/Unique  (13359): 2026-09-04 08:12:57.991 I PROCESS STUB_PROVIDER_CREATED slot=1
+09-04 08:12:59.206 I/Unique  (13359): 2026-09-04 08:12:59.164 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid matched=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+09-04 08:12:59.820 I/Unique  (13359): 2026-09-04 08:12:59.775 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=serviceDispatch,callerIdentity,getContentProvider matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:00.043 I/Unique  (13359): 2026-09-04 08:12:59.836 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=3 matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:00.555 I/UniqueProbe(13359): Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files
+09-04 08:13:00.651 I/UniqueProbe(13359): Provider.onCreate package=com.unique.probe
+09-04 08:13:00.799 I/Unique  (13359): 2026-09-04 08:13:00.725 I PROCESS PROVIDERS_PUBLISHED package=com.unique.probe declared=1 authorities=com.unique.probe.provider
+09-04 08:13:00.971 I/Unique  (13359): 2026-09-04 08:13:00.886 I PROCESS RECEIVERS_REGISTERED package=com.unique.probe declared=1 registered=1 actions=com.unique.probe.ProbeReceiver#com.unique.probe.PING exported=0
+09-04 08:13:02.615 I/UniqueProbe(13359): wrote /data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/probe-result.properties
+09-04 08:13:02.657 I/UniqueProbe(13359): packageName=com.unique.probe
+09-04 08:13:02.658 I/UniqueProbe(13359): applicationClass=com.unique.probe.ProbeApplication
+09-04 08:13:02.661 I/UniqueProbe(13359): applicationOnCreateRan=true
+09-04 08:13:02.662 I/UniqueProbe(13359): applicationBeforeActivity=true
+09-04 08:13:02.663 I/UniqueProbe(13359): activityClass=com.unique.probe.ProbeActivity
+09-04 08:13:02.671 I/UniqueProbe(13359): componentName=com.unique.probe/com.unique.probe.ProbeActivity
+09-04 08:13:02.673 I/UniqueProbe(13359): pid=13359
+09-04 08:13:02.674 I/UniqueProbe(13359): uid=10109
+09-04 08:13:02.676 I/UniqueProbe(13359): dataDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe
+09-04 08:13:02.677 I/UniqueProbe(13359): filesDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files
+09-04 08:13:02.678 I/UniqueProbe(13359): cacheDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/cache
+09-04 08:13:02.679 I/UniqueProbe(13359): codeCacheDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/code_cache
+09-04 08:13:02.681 I/UniqueProbe(13359): packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:02.682 I/UniqueProbe(13359): packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:02.683 I/UniqueProbe(13359): appInfoDataDir=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe
+09-04 08:13:02.699 I/UniqueProbe(13359): appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:02.700 I/UniqueProbe(13359): appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/lib/arm64-v8a
+09-04 08:13:02.723 I/UniqueProbe(13359): targetSdk=34
+09-04 08:13:02.728 I/UniqueProbe(13359): launchCount=1
+09-04 08:13:02.752 I/UniqueProbe(13359): sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/shared_prefs/probe.xml
+09-04 08:13:02.754 I/UniqueProbe(13359): fileLineCount=1
+09-04 08:13:02.755 I/UniqueProbe(13359): filePath=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/files/launches.log
+09-04 08:13:02.755 I/UniqueProbe(13359): dbRowCount=1
+09-04 08:13:02.819 I/UniqueProbe(13359): dbPath=/data/user/0/com.unique/files/virtual/users/1/data/com.unique.probe/databases/probe.db
+09-04 08:13:16.682 I/Unique  (13381): 2026-09-04 08:13:16.638 I PROCESS STUB_PROVIDER_CREATED slot=0
+09-04 08:13:17.805 I/Unique  (13381): 2026-09-04 08:13:17.745 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid matched=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+09-04 08:13:18.423 I/Unique  (13381): 2026-09-04 08:13:18.382 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=serviceDispatch,callerIdentity,getContentProvider matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:18.553 I/Unique  (13381): 2026-09-04 08:13:18.462 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=3 matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:19.034 I/UniqueProbe(13381): Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:13:19.145 I/UniqueProbe(13381): Provider.onCreate package=com.unique.probe
+09-04 08:13:19.286 I/Unique  (13381): 2026-09-04 08:13:19.207 I PROCESS PROVIDERS_PUBLISHED package=com.unique.probe declared=1 authorities=com.unique.probe.provider
+09-04 08:13:19.426 I/Unique  (13381): 2026-09-04 08:13:19.383 I PROCESS RECEIVERS_REGISTERED package=com.unique.probe declared=1 registered=1 actions=com.unique.probe.ProbeReceiver#com.unique.probe.PING exported=0
+09-04 08:13:20.897 I/UniqueProbe(13381): wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+09-04 08:13:20.897 I/UniqueProbe(13381): packageName=com.unique.probe
+09-04 08:13:20.898 I/UniqueProbe(13381): applicationClass=com.unique.probe.ProbeApplication
+09-04 08:13:20.899 I/UniqueProbe(13381): applicationOnCreateRan=true
+09-04 08:13:20.953 I/UniqueProbe(13381): applicationBeforeActivity=true
+09-04 08:13:20.955 I/UniqueProbe(13381): activityClass=com.unique.probe.ProbeActivity
+09-04 08:13:20.955 I/UniqueProbe(13381): componentName=com.unique.probe/com.unique.probe.ProbeActivity
+09-04 08:13:20.957 I/UniqueProbe(13381): pid=13381
+09-04 08:13:20.958 I/UniqueProbe(13381): uid=10109
+09-04 08:13:20.959 I/UniqueProbe(13381): dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:13:20.974 I/UniqueProbe(13381): filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:13:20.976 I/UniqueProbe(13381): cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+09-04 08:13:20.990 I/UniqueProbe(13381): codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+09-04 08:13:20.991 I/UniqueProbe(13381): packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:20.995 I/UniqueProbe(13381): packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:21.046 I/UniqueProbe(13381): appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:13:21.049 I/UniqueProbe(13381): appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:21.050 I/UniqueProbe(13381): appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/lib/arm64-v8a
+09-04 08:13:21.051 I/UniqueProbe(13381): targetSdk=34
+09-04 08:13:21.065 I/UniqueProbe(13381): launchCount=3
+09-04 08:13:21.066 I/UniqueProbe(13381): sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+09-04 08:13:21.067 I/UniqueProbe(13381): fileLineCount=3
+09-04 08:13:21.093 I/UniqueProbe(13381): filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+09-04 08:13:21.094 I/UniqueProbe(13381): dbRowCount=3
+09-04 08:13:21.095 I/UniqueProbe(13381): dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+09-04 08:13:21.112 W/UniqueProbe(13381): crashing on request
+09-04 08:13:33.974 I/Unique  (13402): 2026-09-04 08:13:33.887 I PROCESS STUB_PROVIDER_CREATED slot=0
+09-04 08:13:35.018 I/Unique  (13402): 2026-09-04 08:13:34.953 I HOOK SERVICE_HOOKED service=package cache=true singletons=1 bound=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid matched=checkPermission,checkUidPermission,getActivityInfo,getApplicationInfo,getNameForUid,getPackageInfo,getPackagesForUid
+09-04 08:13:35.674 I/Unique  (13402): 2026-09-04 08:13:35.628 I HOOK SERVICE_HOOKED service=activity cache=true singletons=1 bound=serviceDispatch,callerIdentity,getContentProvider matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:35.801 I/Unique  (13402): 2026-09-04 08:13:35.691 I LAUNCH VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique methods=3 matched=serviceDispatch=bindService+bindServiceInstance+peekService+publishService+startService+stopService+unbindFinished,callerIdentity=broadcastIntent+broadcastIntentWithFeature+getIntentSender+getIntentSenderWithFeature+grantUriPermission+moveTaskToFront+registerReceiver+registerReceiverWithFeature+revokeUriPermission+sendIntentSender+startActivity+startActivityAsUser+startActivityAsUserWithFeature+st
+09-04 08:13:36.155 I/UniqueProbe(13402): Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:13:36.269 I/UniqueProbe(13402): Provider.onCreate package=com.unique.probe
+09-04 08:13:36.427 I/Unique  (13402): 2026-09-04 08:13:36.350 I PROCESS PROVIDERS_PUBLISHED package=com.unique.probe declared=1 authorities=com.unique.probe.provider
+09-04 08:13:36.705 I/Unique  (13402): 2026-09-04 08:13:36.538 I PROCESS RECEIVERS_REGISTERED package=com.unique.probe declared=1 registered=1 actions=com.unique.probe.ProbeReceiver#com.unique.probe.PING exported=0
+09-04 08:13:38.226 I/UniqueProbe(13402): wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-result.properties
+09-04 08:13:38.227 I/UniqueProbe(13402): packageName=com.unique.probe
+09-04 08:13:38.281 I/UniqueProbe(13402): applicationClass=com.unique.probe.ProbeApplication
+09-04 08:13:38.282 I/UniqueProbe(13402): applicationOnCreateRan=true
+09-04 08:13:38.283 I/UniqueProbe(13402): applicationBeforeActivity=true
+09-04 08:13:38.298 I/UniqueProbe(13402): activityClass=com.unique.probe.ProbeActivity
+09-04 08:13:38.299 I/UniqueProbe(13402): componentName=com.unique.probe/com.unique.probe.ProbeActivity
+09-04 08:13:38.330 I/UniqueProbe(13402): pid=13402
+09-04 08:13:38.354 I/UniqueProbe(13402): uid=10109
+09-04 08:13:38.357 I/UniqueProbe(13402): dataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:13:38.358 I/UniqueProbe(13402): filesDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files
+09-04 08:13:38.358 I/UniqueProbe(13402): cacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/cache
+09-04 08:13:38.359 I/UniqueProbe(13402): codeCacheDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/code_cache
+09-04 08:13:38.412 I/UniqueProbe(13402): packageCodePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:38.413 I/UniqueProbe(13402): packageResourcePath=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:38.414 I/UniqueProbe(13402): appInfoDataDir=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe
+09-04 08:13:38.415 I/UniqueProbe(13402): appInfoSourceDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/base.apk
+09-04 08:13:38.449 I/UniqueProbe(13402): appInfoNativeLibraryDir=/data/user/0/com.unique/files/virtual/apk/com.unique.probe/9/lib/arm64-v8a
+09-04 08:13:38.450 I/UniqueProbe(13402): targetSdk=34
+09-04 08:13:38.451 I/UniqueProbe(13402): launchCount=4
+09-04 08:13:38.472 I/UniqueProbe(13402): sharedPrefsFile=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/shared_prefs/probe.xml
+09-04 08:13:38.474 I/UniqueProbe(13402): fileLineCount=4
+09-04 08:13:38.475 I/UniqueProbe(13402): filePath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/launches.log
+09-04 08:13:38.475 I/UniqueProbe(13402): dbRowCount=4
+09-04 08:13:38.503 I/UniqueProbe(13402): dbPath=/data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/databases/probe.db
+09-04 08:13:38.507 I/UniqueProbe(13402): starting own service
+09-04 08:13:38.782 I/Unique  (13402): 2026-09-04 08:13:38.562 I PROCESS u0 com.unique.probe SERVICE_STUB_RESERVED slot=0 stub=0 service=com.unique.probe.ProbeService vuid=0
+09-04 08:13:39.234 D/Unique  (13402): 2026-09-04 08:13:39.062 D PROCESS u0 com.unique.probe SERVICE_INTENT_ROUTED service=com.unique.probe.ProbeService stub=com.unique.stub.ServiceStub_p0_s0 action=-
+09-04 08:13:39.462 I/UniqueProbe(13402): binding own service
+09-04 08:13:39.754 D/Unique  (13402): 2026-09-04 08:13:39.575 D PROCESS u0 com.unique.probe SERVICE_INTENT_ROUTED service=com.unique.probe.ProbeService stub=com.unique.stub.ServiceStub_p0_s0 action=-
+09-04 08:13:40.851 I/Unique  (13402): 2026-09-04 08:13:40.810 I PROCESS u0 com.unique.probe CREATE_SERVICE_REWRITTEN stub=com.unique.stub.ServiceStub_p0_s0 service=com.unique.probe.ProbeService
+09-04 08:13:40.942 I/UniqueProbe(13402): Service.onCreate package=com.unique.probe process=13402
+09-04 08:13:41.094 I/UniqueProbe(13402): Service.onStartCommand startId=1 count=1
+09-04 08:13:41.185 I/UniqueProbe(13402): Service.onBind count=1 component=com.unique.probe/.ProbeService
+09-04 08:13:41.314 D/Unique  (13402): 2026-09-04 08:13:41.261 D PROCESS u0 com.unique.probe SERVICE_INTENT_ROUTED service=com.unique.probe.ProbeService stub=com.unique.stub.ServiceStub_p0_s0 action=-
+09-04 08:13:42.715 I/UniqueProbe(13402): onServiceConnected com.unique/.stub.ServiceStub_p0_s0
+09-04 08:13:42.785 I/UniqueProbe(13402): wrote /data/user/0/com.unique/files/virtual/users/0/data/com.unique.probe/files/probe-connection.properties
+09-04 08:13:43.985 I/UniqueProbe(13359): Receiver.onReceive action=com.unique.probe.PING package=com.unique.probe
+09-04 08:13:44.053 I/UniqueProbe(13402): Receiver.onReceive action=com.unique.probe.PING package=com.unique.probe
+09-04 08:13:44.228 I/Unique  (13402): 2026-09-04 08:13:44.089 I PROCESS u0 com.unique.probe BROADCAST_DELIVERED receiver=com.unique.probe.ProbeReceiver action=com.unique.probe.PING
+09-04 08:13:44.293 I/Unique  (13359): 2026-09-04 08:13:44.087 I PROCESS u1 com.unique.probe BROADCAST_DELIVERED receiver=com.unique.probe.ProbeReceiver action=com.unique.probe.PING

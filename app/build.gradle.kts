@@ -160,16 +160,27 @@ val stagedProbeDir = layout.buildDirectory.dir("generated/unique/androidTestAsse
 val stageProbeApk by tasks.registering {
     description = "Stages the probe APK as an asset of the instrumentation APK."
     group = "unique"
+
+    // The probe's *sources* are the input, not the APK it builds into.
+    //
+    // With no declared inputs this task was permanently UP-TO-DATE after its first run,
+    // so a changed probe was rebuilt by tools/testapp/build.sh and then never copied: the
+    // suite kept running yesterday's probe while reporting on today's engine. That is the
+    // worst kind of failure a test harness can have, because everything looks green.
+    inputs.dir(rootProject.file("tools/testapp/src"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(rootProject.file("tools/testapp/AndroidManifest.xml"))
+    inputs.file(rootProject.file("tools/testapp/build.sh"))
     outputs.dir(stagedProbeDir)
+
     doLast {
+        // Built unconditionally rather than only when missing: an APK that exists but
+        // predates the sources is exactly the stale artefact this task must not stage.
+        providers.exec {
+            commandLine("bash", rootProject.file("tools/testapp/build.sh").absolutePath)
+        }.result.get().assertNormalExitValue()
+
         val source = probeApk.asFile
-        if (!source.isFile) {
-            // Built on demand so `./gradlew assembleDebugAndroidTest` always produces a
-            // usable suite rather than one that fails confusingly on the device.
-            providers.exec {
-                commandLine("bash", rootProject.file("tools/testapp/build.sh").absolutePath)
-            }.result.get().assertNormalExitValue()
-        }
         require(source.isFile) {
             "tools/testapp/build/probe.apk is missing. Run tools/testapp/build.sh."
         }

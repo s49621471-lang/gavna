@@ -308,6 +308,7 @@ class VirtualLaunchTest {
         val instance = requireInstance()
         val serviceResult = File(model.filesDir(instance.vuid, probePackage), "probe-service.properties")
         serviceResult.delete()
+        File(model.filesDir(instance.vuid, probePackage), "probe-connection.properties").delete()
         clearResult(instance)
 
         // Started and bound in one launch: they take different paths through
@@ -339,9 +340,26 @@ class VirtualLaunchTest {
         assertThat(service["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
         assertThat(service["pid"]).isEqualTo(activity["pid"])
 
-        // Both entry points were exercised.
+        // Both entry points were exercised. bindService is the one that regressed
+        // invisibly: ContextImpl calls IActivityManager.bindServiceInstance from Android
+        // 12 on, and a shim registered for the older name "bindService" still bound - the
+        // method is on the interface, it is just never called - so the bind went out
+        // unrewritten and AMS answered "not found" while startService kept working.
         assertThat(service["startCount"]!!.toInt()).isAtLeast(1)
         assertThat(service["bindCount"]!!.toInt()).isAtLeast(1)
+
+        // The service saw its own component in the bind Intent, not the stub's.
+        assertThat(service["bindComponent"]).isEqualTo("$probePackage/.ProbeService")
+
+        // The client side connected. The ComponentName the framework hands back is AMS's,
+        // which is the stub's - recorded rather than asserted, and tracked in
+        // docs/COMPATIBILITY.md. What matters here is that the binder is the guest's own.
+        val connection = awaitFile(
+            File(model.filesDir(instance.vuid, probePackage), "probe-connection.properties")
+        )
+        assertThat(connection["connected"]).isEqualTo("true")
+        assertThat(connection["binderIsLocal"]).isEqualTo("true")
+        assertThat(connection["binderClass"]).isEqualTo("$probePackage.ProbeService\$LocalBinder")
     }
 
     // -----------------------------------------------------------------------------
@@ -359,8 +377,19 @@ class VirtualLaunchTest {
         // process, so a manifest receiver cannot yet wake a dead one. t07 left it up.
         assertThat(runningVirtualPids()).isNotEmpty()
 
+        // Scoped to UNIQUE's own package, not sent implicitly.
+        //
+        // Android 14 turns on IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS (compat
+        // change 229362273) for targetSdk 34: an intent with neither a component nor a
+        // package is matched only against *exported* filters. ProbeReceiver is declared
+        // android:exported="false", UNIQUE mirrors that, and so an implicit send is
+        // silently dropped by the platform - it is not a delivery failure to fix in the
+        // engine. A sender inside UNIQUE that means a particular guest scopes the intent,
+        // which is what the eventual notification and broadcast bridge does too.
         context.sendBroadcast(
-            Intent("com.unique.probe.PING").putExtra("probe.extra", "hello-from-unique")
+            Intent("com.unique.probe.PING")
+                .setPackage(context.packageName)
+                .putExtra("probe.extra", "hello-from-unique")
         )
 
         val observed = awaitFile(receiverResult)

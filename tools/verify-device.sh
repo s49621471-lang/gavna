@@ -52,8 +52,23 @@ fi
 probe="$root/tools/testapp/build/probe.apk"
 
 echo "== install =="
-timeout 900 "$ADB" "${serial_args[@]}" install -r -g "$root/app/build/outputs/apk/debug/app-debug.apk" | tail -1
-timeout 900 "$ADB" "${serial_args[@]}" install -r "$root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk" | tail -1
+# Piping to tail would swallow adb's exit status, and a failed install is invisible:
+# the suite then runs against whatever was installed before and reports on stale code.
+# INSTALL_FAILED_NO_MATCHING_ABIS is the one that bites, when UNIQUE_ABIS is left at its
+# arm64-v8a default for an x86_64 emulator.
+install_apk() {
+    local apk="$1" out
+    out="$(timeout 900 "$ADB" "${serial_args[@]}" install -r -g "$apk" 2>&1)" || {
+        echo "$out" | tail -3
+        fail "install of $(basename "$apk") failed"
+    }
+    case "$out" in
+        *Success*) echo "   installed $(basename "$apk")" ;;
+        *) echo "$out" | tail -3; fail "install of $(basename "$apk") did not report Success" ;;
+    esac
+}
+install_apk "$root/app/build/outputs/apk/debug/app-debug.apk"
+install_apk "$root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
 
 echo "== reset state =="
 adb shell pm clear com.unique > /dev/null

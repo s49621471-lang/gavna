@@ -30,6 +30,8 @@ public class ProbeService extends Service {
     private final IBinder mBinder = new LocalBinder();
     private int mStartCount = 0;
     private int mBindCount = 0;
+    /** The component the bind Intent named, as the service itself saw it. */
+    private String mBindComponent = "-";
 
     @Override
     public void onCreate() {
@@ -50,7 +52,9 @@ public class ProbeService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         mBindCount++;
-        Log.i(TAG, "Service.onBind count=" + mBindCount);
+        mBindComponent = intent == null || intent.getComponent() == null
+                ? "-" : intent.getComponent().flattenToShortString();
+        Log.i(TAG, "Service.onBind count=" + mBindCount + " component=" + mBindComponent);
         write("bound");
         return mBinder;
     }
@@ -71,7 +75,8 @@ public class ProbeService extends Service {
                     + "filesDir=" + getFilesDir().getAbsolutePath() + "\n"
                     + "pid=" + android.os.Process.myPid() + "\n"
                     + "startCount=" + mStartCount + "\n"
-                    + "bindCount=" + mBindCount + "\n";
+                    + "bindCount=" + mBindCount + "\n"
+                    + "bindComponent=" + mBindComponent + "\n";
             out.write(body.getBytes(StandardCharsets.UTF_8));
             out.close();
         } catch (Throwable t) {

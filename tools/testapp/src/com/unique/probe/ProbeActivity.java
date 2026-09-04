@@ -61,6 +61,7 @@ public class ProbeActivity extends Activity {
             bindService(new Intent(this, ProbeService.class), new ServiceConnection() {
                 @Override public void onServiceConnected(ComponentName name, IBinder binder) {
                     Log.i(TAG, "onServiceConnected " + name.flattenToShortString());
+                    writeConnection(name, binder);
                 }
                 @Override public void onServiceDisconnected(ComponentName name) {
                     Log.i(TAG, "onServiceDisconnected");
@@ -153,6 +154,30 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "wrote " + f.getAbsolutePath());
         } catch (Throwable t) {
             Log.e(TAG, "could not write result file", t);
+        }
+    }
+
+    /**
+     * Records what the *client* side of the bind observed.
+     *
+     * Written separately from the service's own file because the two can disagree: the
+     * ComponentName the framework hands back is the one AMS knows about, which under
+     * virtualization is the stub's.
+     */
+    private void writeConnection(ComponentName name, IBinder binder) {
+        try {
+            File f = new File(getFilesDir(), "probe-connection.properties");
+            FileOutputStream out = new FileOutputStream(f, false);
+            String body = "connected=true\n"
+                    + "connectedComponent=" + name.flattenToShortString() + "\n"
+                    + "binderClass=" + binder.getClass().getName() + "\n"
+                    + "binderIsLocal=" + (binder instanceof ProbeService.LocalBinder) + "\n"
+                    + "pid=" + android.os.Process.myPid() + "\n";
+            out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write connection result", t);
         }
     }
 }

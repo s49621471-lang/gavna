@@ -154,6 +154,9 @@ object SystemServiceHook {
                 "cache" to cachePatched.toString(),
                 "singletons" to singletons.toString(),
                 "bound" to bindResult.bound.joinToString(","),
+                // Concrete method names, because a shim can bind to a method the platform
+                // has stopped calling and still report itself bound.
+                "matched" to bindResult.describeMatches().take(400),
             ),
         )
         return InstallReport(target.serviceName, true, null, bindResult, singletons)

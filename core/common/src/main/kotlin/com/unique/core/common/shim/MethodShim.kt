@@ -210,12 +210,28 @@ class ShimBuilder(private val methodName: String) {
 fun shim(methodName: String, block: ShimBuilder.() -> Unit): MethodShim =
     ShimBuilder(methodName).apply(block).build()
 
-/** Reported by [ShimRegistry.install] so a failed binding is visible, not silent. */
+/**
+ * Reported by [ShimRegistry.wrap] so a failed binding is visible, not silent.
+ *
+ * [matched] carries the *concrete* method names each shim bound to, which is not the same
+ * question as [bound]. A shim named for a method the platform has since renamed still
+ * reports itself bound - the old method is usually still on the interface, it is simply
+ * never called any more - so "bound" alone cannot distinguish a live interception from a
+ * dead one. The concrete list can: it is what says `bindServiceInstance` was matched and
+ * not merely `bindService`.
+ */
 data class ShimBindResult(
     val bound: List<String>,
     val unbound: List<String>,
+    val matched: Map<String, List<String>> = emptyMap(),
 ) {
     val allBound: Boolean get() = unbound.isEmpty()
+
+    /** `label=m1+m2, label2=m3` - one line, for a diagnostic field. */
+    fun describeMatches(): String = matched.entries.joinToString(",") { (label, methods) ->
+        if (methods.size == 1 && methods.single() == label) label
+        else "$label=${methods.joinToString("+")}"
+    }
 }
 
 /**
@@ -239,6 +255,7 @@ class ShimRegistry(private val apiLevel: Int) {
     fun <T : Any> wrap(target: T, vararg interfaces: Class<*>): Pair<T, ShimBindResult> {
         val plans = HashMap<Method, BoundShim>()
         val boundNames = LinkedHashSet<String>()
+        val matched = LinkedHashMap<String, MutableSet<String>>()
 
         for (iface in interfaces) {
             for (method in iface.methods) {
@@ -246,6 +263,7 @@ class ShimRegistry(private val apiLevel: Int) {
                     val bound = s.bind(method) ?: continue
                     plans[method] = bound
                     boundNames += s.methodName
+                    matched.getOrPut(s.methodName) { LinkedHashSet() } += method.name
                     break // first shim that binds wins; order of registration is the priority
                 }
             }
@@ -267,7 +285,9 @@ class ShimRegistry(private val apiLevel: Int) {
         val proxy = Proxy.newProxyInstance(
             interfaces.first().classLoader, interfaces, handler,
         ) as T
-        return proxy to ShimBindResult(boundNames.toList(), unbound)
+        return proxy to ShimBindResult(
+            boundNames.toList(), unbound, matched.mapValues { it.value.toList() },
+        )
     }
 
     private fun invokeTarget(target: Any?, method: Method, args: Array<Any?>): Any? = try {
