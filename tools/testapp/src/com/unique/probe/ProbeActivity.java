@@ -1,11 +1,15 @@
 package com.unique.probe;
 
 import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.util.Log;
 import android.widget.TextView;
 
@@ -47,7 +51,23 @@ public class ProbeActivity extends Activity {
         }
         view.setText(text.toString());
 
-        if (getIntent() != null && getIntent().getBooleanExtra("probe.crash", false)) {
+        Intent request = getIntent();
+        if (request != null && request.getBooleanExtra("probe.startService", false)) {
+            Log.i(TAG, "starting own service");
+            startService(new Intent(this, ProbeService.class));
+        }
+        if (request != null && request.getBooleanExtra("probe.bindService", false)) {
+            Log.i(TAG, "binding own service");
+            bindService(new Intent(this, ProbeService.class), new ServiceConnection() {
+                @Override public void onServiceConnected(ComponentName name, IBinder binder) {
+                    Log.i(TAG, "onServiceConnected " + name.flattenToShortString());
+                }
+                @Override public void onServiceDisconnected(ComponentName name) {
+                    Log.i(TAG, "onServiceDisconnected");
+                }
+            }, BIND_AUTO_CREATE);
+        }
+        if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
         }

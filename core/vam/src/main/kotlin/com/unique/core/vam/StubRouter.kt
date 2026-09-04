@@ -26,7 +26,25 @@ object StubRouter {
     fun stubActivity(processIndex: Int, launchMode: Int, affinityIndex: Int): String =
         "com.unique.stub.ActivityStub_p${processIndex}_m${launchMode}_a$affinityIndex"
 
-    fun stubService(processIndex: Int): String = "com.unique.stub.ServiceStub_p$processIndex"
+    /**
+     * Stub services are indexed as well as slotted.
+     *
+     * `CreateServiceData` carries only the stub's `ServiceInfo`, with nothing that says
+     * which virtual service it stands for, so the stub's identity has to be the mapping
+     * key - which means one stub per concurrently-running virtual service.
+     */
+    fun stubService(processIndex: Int, serviceIndex: Int): String =
+        "com.unique.stub.ServiceStub_p${processIndex}_s$serviceIndex"
+
+    /** Recovers (slot, index) from a stub service class name, or null if it is not ours. */
+    fun parseStubService(className: String): Pair<Int, Int>? {
+        val name = className.substringAfterLast('.')
+        val match = STUB_SERVICE.matchEntire(name) ?: return null
+        val (slot, index) = match.destructured
+        return slot.toInt() to index.toInt()
+    }
+
+    private val STUB_SERVICE = Regex("""ServiceStub_p(\d+)_s(\d+)""")
 
     fun stubProvider(processIndex: Int): String = "com.unique.stub.ProviderStub_p$processIndex"
 

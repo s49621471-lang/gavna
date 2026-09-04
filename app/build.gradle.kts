@@ -19,6 +19,7 @@ plugins {
 // ---------------------------------------------------------------------------------
 val vappProcessCount = rootProject.extra["vappProcessCount"] as Int
 val stubActivitiesPerProcess = rootProject.extra["stubActivitiesPerProcess"] as Int
+val STUB_SERVICES_PER_PROCESS = 6
 
 val generatedManifestDir = layout.buildDirectory.dir("generated/unique/manifest")
 val generatedSourceDir = layout.buildDirectory.dir("generated/unique/kotlin")
@@ -31,6 +32,7 @@ val generateStubs by tasks.registering {
     inputs.file(template)
     inputs.property("processes", vappProcessCount)
     inputs.property("activitiesPerProcess", stubActivitiesPerProcess)
+    inputs.property("servicesPerProcess", STUB_SERVICES_PER_PROCESS)
     outputs.dir(generatedManifestDir)
     outputs.dir(generatedSourceDir)
 
@@ -83,13 +85,24 @@ val generateStubs by tasks.registering {
                     sources.append("\nclass $name : StubActivityBase($p)\n")
                 }
             }
+            // One stub per concurrently-running virtual service. CreateServiceData carries
+            // only the stub's ServiceInfo, with nothing to say which virtual service it
+            // stands for, so the stub identity *is* the mapping key.
+            for (sIdx in 0 until STUB_SERVICES_PER_PROCESS) {
+                components.append(
+                    """
+                    |        <service
+                    |            android:name="com.unique.stub.ServiceStub_p${p}_s$sIdx"
+                    |            android:process="$process"
+                    |            android:exported="false"
+                    |            android:foregroundServiceType="dataSync|mediaPlayback|mediaProjection|microphone|camera|location|connectedDevice|phoneCall|shortService|specialUse" />
+                    |
+                    """.trimMargin()
+                )
+                sources.append("\nclass ServiceStub_p${p}_s$sIdx : StubServiceBase($p)\n")
+            }
             components.append(
                 """
-                |        <service
-                |            android:name="com.unique.stub.ServiceStub_p$p"
-                |            android:process="$process"
-                |            android:exported="false"
-                |            android:foregroundServiceType="dataSync|mediaPlayback|mediaProjection|microphone|camera|location|connectedDevice|phoneCall|shortService|specialUse" />
                 |
                 |        <service
                 |            android:name="com.unique.stub.JobStub_p$p"
@@ -109,7 +122,6 @@ val generateStubs by tasks.registering {
             sources.append(
                 """
                 |
-                |class ServiceStub_p$p : StubServiceBase($p)
                 |class JobStub_p$p : StubJobServiceBase($p)
                 |class ProviderStub_p$p : StubProviderBase($p)
                 |
@@ -129,7 +141,7 @@ val generateStubs by tasks.registering {
         logger.lifecycle(
             "generateStubs: ${vappProcessCount} process slots, " +
                 "${vappProcessCount * stubActivitiesPerProcess} activities, " +
-                "${vappProcessCount * 3} services/providers"
+                "${vappProcessCount * (STUB_SERVICES_PER_PROCESS + 2)} services/providers"
         )
     }
 }

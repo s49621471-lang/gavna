@@ -68,20 +68,36 @@ abstract class StubActivityBase(private val slot: Int) : Activity() {
     }
 }
 
+/**
+ * Base for the generated stub services.
+ *
+ * On the success path this class is never constructed: [LaunchInterceptor] replaces the
+ * stub's `ServiceInfo` before `ActivityThread` instantiates anything, so the guest's own
+ * `Service` runs instead. Reaching here means the hand-off did not happen, and the
+ * reasons are reported separately on the PROCESS channel.
+ */
 abstract class StubServiceBase(private val slot: Int) : Service() {
 
     override fun onBind(intent: Intent?): IBinder? {
-        Diagnostics.warn(
-            DiagChannel.PROCESS, "STUB_SERVICE_BIND_NOT_IMPLEMENTED",
-            mapOf("slot" to slot.toString()),
+        Diagnostics.error(
+            DiagChannel.PROCESS, "STUB_SERVICE_BIND_NOT_ROUTED",
+            mapOf(
+                "slot" to slot.toString(),
+                "stub" to javaClass.name,
+                "requested" to (VirtualLaunchParams.from(intent)?.targetComponent ?: "-"),
+            ),
         )
         return null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Diagnostics.warn(
-            DiagChannel.PROCESS, "STUB_SERVICE_START_NOT_IMPLEMENTED",
-            mapOf("slot" to slot.toString()),
+        Diagnostics.error(
+            DiagChannel.PROCESS, "STUB_SERVICE_START_NOT_ROUTED",
+            mapOf(
+                "slot" to slot.toString(),
+                "stub" to javaClass.name,
+                "requested" to (VirtualLaunchParams.from(intent)?.targetComponent ?: "-"),
+            ),
         )
         stopSelf(startId)
         return START_NOT_STICKY

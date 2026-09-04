@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.Message
 import com.unique.core.common.diag.DiagChannel
@@ -34,6 +35,20 @@ import java.lang.reflect.Field
 object LaunchInterceptor {
 
     private const val FALLBACK_EXECUTE_TRANSACTION = 159
+
+    /**
+     * Service lifecycle still arrives as plain `ActivityThread.H` messages, not as
+     * `ClientTransaction`s, so the same callback covers them. Ids are read from the
+     * class rather than hard-coded; the fallbacks are the values that have held since
+     * API 21 and are only used if the field cannot be read.
+     */
+    private val SERVICE_MESSAGES = mapOf(
+        "CREATE_SERVICE" to 114,
+        "SERVICE_ARGS" to 115,
+        "STOP_SERVICE" to 116,
+        "BIND_SERVICE" to 121,
+        "UNBIND_SERVICE" to 122,
+    )
 
     @Volatile private var installed = false
     @Volatile private var hostContext: Context? = null
@@ -76,6 +91,15 @@ object LaunchInterceptor {
         }
 
         val executeTransaction = resolveExecuteTransaction(handler.javaClass)
+        val serviceMessages = SERVICE_MESSAGES.mapValues { (name, fallback) ->
+            resolveMessageId(handler.javaClass, name, fallback)
+        }
+        val createService = serviceMessages.getValue("CREATE_SERVICE")
+        val serviceIntentMessages = setOf(
+            serviceMessages.getValue("SERVICE_ARGS"),
+            serviceMessages.getValue("BIND_SERVICE"),
+            serviceMessages.getValue("UNBIND_SERVICE"),
+        )
         val previous = Reflect.get(Handler::class.java, "mCallback", handler) as? Handler.Callback
 
         val callback = Handler.Callback { msg ->
@@ -88,11 +112,19 @@ object LaunchInterceptor {
                     mapOf("what" to msg.what.toString(), "obj" to (msg.obj?.javaClass?.name ?: "-")),
                 )
             }
-            if (msg.what == executeTransaction) {
-                transactionsSeen++
-                runCatching { rewrite(msg) }.onFailure {
-                    report("TRANSACTION_REWRITE_FAILED",
-                        mapOf("error" to it.toString(), "seen" to transactionsSeen.toString()))
+            when (msg.what) {
+                executeTransaction -> {
+                    transactionsSeen++
+                    runCatching { rewrite(msg) }.onFailure {
+                        report("TRANSACTION_REWRITE_FAILED",
+                            mapOf("error" to it.toString(), "seen" to transactionsSeen.toString()))
+                    }
+                }
+                createService -> runCatching { rewriteCreateService(msg) }.onFailure {
+                    report("CREATE_SERVICE_REWRITE_FAILED", mapOf("error" to it.toString()))
+                }
+                in serviceIntentMessages -> runCatching { rewriteServiceIntent(msg) }.onFailure {
+                    report("SERVICE_INTENT_REWRITE_FAILED", mapOf("error" to it.toString()))
                 }
             }
             previous?.handleMessage(msg) ?: false
@@ -112,11 +144,88 @@ object LaunchInterceptor {
 
     /** `ActivityThread.H.EXECUTE_TRANSACTION`, read rather than hard-coded. */
     private fun resolveExecuteTransaction(handlerClass: Class<*>): Int =
+        resolveMessageId(handlerClass, "EXECUTE_TRANSACTION", FALLBACK_EXECUTE_TRANSACTION)
+
+    private fun resolveMessageId(handlerClass: Class<*>, name: String, fallback: Int): Int =
         runCatching {
-            handlerClass.getDeclaredField("EXECUTE_TRANSACTION")
-                .apply { isAccessible = true }
-                .getInt(null)
-        }.getOrDefault(FALLBACK_EXECUTE_TRANSACTION)
+            handlerClass.getDeclaredField(name).apply { isAccessible = true }.getInt(null)
+        }.getOrDefault(fallback)
+
+    // ---------------------------------------------------------------------------------
+    // Services
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * Replaces the stub's `ServiceInfo` with the guest's.
+     *
+     * `CreateServiceData` carries no `Intent` on every release, so which virtual service
+     * this stands for is resolved from the *stub's identity* through
+     * [VirtualServiceRouter] — which is why each concurrently-running virtual service
+     * gets a stub of its own.
+     */
+    private fun rewriteCreateService(msg: Message) {
+        val data = msg.obj ?: return
+        val infoField = fieldOfType(data.javaClass, ServiceInfo::class.java) ?: run {
+            report("CREATE_SERVICE_SHAPE_UNKNOWN", mapOf("class" to data.javaClass.name))
+            return
+        }
+        val stubInfo = infoField.get(data) as? ServiceInfo ?: return
+        val entry = VirtualServiceRouter.resolve(stubInfo.name)
+        if (entry == null) {
+            // Not one of ours, or a stub whose reservation is gone. Either way, leaving it
+            // alone lets the stub run and report, which is visible.
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "CREATE_SERVICE_UNMAPPED",
+                mapOf("stub" to stubInfo.name),
+            )
+            return
+        }
+        val ready = AppBootstrap.current
+        if (ready == null) {
+            report("CREATE_SERVICE_BEFORE_BOOTSTRAP",
+                mapOf("stub" to stubInfo.name, "service" to entry.className))
+            return
+        }
+        val virtualInfo = AppBootstrap.serviceInfoFor(ready, entry.className) ?: return
+        infoField.set(data, virtualInfo)
+
+        // The Intent, when the release carries one, still names the stub.
+        fieldOfType(data.javaClass, Intent::class.java)?.let { intentField ->
+            (intentField.get(data) as? Intent)?.let { stubIntent ->
+                intentField.set(data, unwrapServiceIntent(stubIntent, entry.className))
+            }
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "CREATE_SERVICE_REWRITTEN",
+            mapOf("stub" to stubInfo.name, "service" to entry.className),
+        )
+    }
+
+    /** `SERVICE_ARGS`, `BIND_SERVICE` and `UNBIND_SERVICE` all carry the stub Intent. */
+    private fun rewriteServiceIntent(msg: Message) {
+        val data = msg.obj ?: return
+        val intentField = fieldOfType(data.javaClass, Intent::class.java) ?: return
+        val stubIntent = intentField.get(data) as? Intent ?: return
+        val params = VirtualLaunchParams.from(stubIntent) ?: return
+        val target = params.targetComponent ?: return
+        intentField.set(data, unwrapServiceIntent(stubIntent, target))
+    }
+
+    /** Restores the guest's own component and removes UNIQUE's extras. */
+    private fun unwrapServiceIntent(stubIntent: Intent, className: String): Intent {
+        val params = VirtualLaunchParams.from(stubIntent)
+        return Intent(stubIntent).apply {
+            component = ComponentName(params?.packageName ?: className.substringBeforeLast('.'), className)
+            setPackage(null)
+            removeExtra(VirtualLaunchParams.KEY_VUID)
+            removeExtra(VirtualLaunchParams.KEY_PACKAGE)
+            removeExtra(VirtualLaunchParams.KEY_VERSION_CODE)
+            removeExtra(VirtualLaunchParams.KEY_COMPONENT)
+            removeExtra(VirtualLaunchParams.KEY_KIND)
+            removeExtra(VirtualLaunchParams.KEY_PROCESS)
+            removeExtra(VirtualLaunchParams.KEY_SLOT)
+        }
+    }
 
     // ---------------------------------------------------------------------------------
 

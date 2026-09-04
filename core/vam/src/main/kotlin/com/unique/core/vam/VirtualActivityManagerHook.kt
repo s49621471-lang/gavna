@@ -2,6 +2,8 @@ package com.unique.core.vam
 
 import android.content.AttributionSource
 import android.content.Context
+import android.content.Intent
+import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.shim.MethodShim
 import com.unique.core.common.shim.shim
@@ -103,11 +105,65 @@ object VirtualActivityManagerHook {
             rewriteResult { holder -> wrapProviderHolder(holder, hostSource) }
         },
 
+        // Service starts and binds have to be routed onto a stub the host declares:
+        // system_server will not start a component of a package it has never installed.
+        shim("startService") {
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
+        },
+        shim("bindService") {
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
+        },
+        shim("bindIsolatedService") {
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
+        },
+        shim("stopService") {
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
+        },
+
         shim("callerIdentity") {
             matchMethods { method -> carriesCallerIdentity(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
         },
     )
+
+    /**
+     * Rewrites a service intent onto a stub, or returns it unchanged.
+     *
+     * Unchanged is the right answer for anything that is not a virtual service: UNIQUE's
+     * own components share this process, and rewriting their intents would break them.
+     *
+     * Implicit intents - no component - are left alone and reported. Resolving one needs
+     * the guest's intent filters, which is provider/receiver work; silently starting the
+     * wrong service would be far worse than a start that visibly does nothing.
+     */
+    private fun routeService(hostPackage: String, intent: Intent): Intent {
+        val ready = AppBootstrap.current ?: return intent
+        val component = intent.component
+        if (component == null) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
+                mapOf("action" to (intent.action ?: "-"), "package" to ready.params.packageName),
+            )
+            return intent
+        }
+        if (component.packageName != ready.params.packageName) return intent
+
+        val entry = ready.manifest.components.firstOrNull {
+            it.kind == ComponentKind.SERVICE && it.className == component.className
+        } ?: run {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SERVICE_NOT_DECLARED",
+                mapOf("service" to component.className, "package" to ready.params.packageName),
+            )
+            return intent
+        }
+
+        return VirtualServiceRouter.outbound(hostPackage, intent, ready.params, entry) ?: intent
+    }
 
     /**
      * Wraps the `IContentProvider` handed back by `getContentProvider`.

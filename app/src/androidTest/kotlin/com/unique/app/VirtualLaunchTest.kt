@@ -268,9 +268,13 @@ class VirtualLaunchTest {
             processName = probePackage,
             slot = slotOf(victim.vuid),
         )
+        // CLEAR_TASK matters. With NEW_TASK alone the system finds the existing task for
+        // this affinity and recreates its top activity from the *stored* intent, so the
+        // extra below never arrives and the app never crashes - which is what made the
+        // first version of this test wait for a death that was never requested.
         val intent = VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
             .putExtra("probe.crash", true)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         context.startActivity(intent)
 
         // The probe records its observations before it throws, so this confirms the extra
@@ -293,6 +297,65 @@ class VirtualLaunchTest {
         val survivorAfter = readResult(survivor)
         assertThat(survivorAfter["launchCount"]).isEqualTo(survivorBefore["launchCount"])
         assertThat(survivorAfter["filesDir"]).isEqualTo(survivorBefore["filesDir"])
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: the guest's own Service, started by the guest itself.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t07_theGuestsOwnServiceRuns() = runBlocking {
+        val instance = requireInstance()
+        val serviceResult = File(model.filesDir(instance.vuid, probePackage), "probe-service.properties")
+        serviceResult.delete()
+        clearResult(instance)
+
+        // Started and bound in one launch: they take different paths through
+        // ActivityThread (SERVICE_ARGS vs BIND_SERVICE) and a layer can get one right and
+        // the other wrong.
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.startService", true)
+                .putExtra("probe.bindService", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        val activity = awaitResult(instance)
+        val service = awaitFile(serviceResult)
+
+        // The guest's own Service class ran, believing it is itself.
+        assertThat(service["className"]).isEqualTo("$probePackage.ProbeService")
+        assertThat(service["packageName"]).isEqualTo(probePackage)
+
+        // In the guest's own directory, in the guest's own process.
+        assertThat(service["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+        assertThat(service["pid"]).isEqualTo(activity["pid"])
+
+        // Both entry points were exercised.
+        assertThat(service["startCount"]!!.toInt()).isAtLeast(1)
+        assertThat(service["bindCount"]!!.toInt()).isAtLeast(1)
+    }
+
+    private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (file.isFile && file.length() > 0) {
+                Thread.sleep(250)
+                return file.readLines()
+                    .filter { it.contains('=') }
+                    .associate { it.substringBefore('=') to it.substringAfter('=') }
+            }
+            Thread.sleep(500)
+        }
+        throw AssertionError("nothing appeared at ${file.path} within ${timeoutMillis}ms")
     }
 
     /**

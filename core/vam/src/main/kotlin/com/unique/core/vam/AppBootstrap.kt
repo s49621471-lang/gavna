@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
+import android.content.pm.ServiceInfo
 import android.os.Process
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.apk.ComponentEntry
@@ -158,6 +159,8 @@ object AppBootstrap {
         }
 
         Reflect.set(activityThreadClass, "mInitialApplication", activityThread, application)
+
+        VirtualServiceRouter.bindSlot(params.slot)
 
         val ready = Result.Ready(params, manifest, application, appInfo)
 
@@ -443,6 +446,28 @@ object AppBootstrap {
             // resize behaviour is inherited from it; per-activity fidelity for those is
             // phase 3 work and is recorded as such rather than silently approximated.
             softInputMode = 0
+        }
+    }
+
+    /**
+     * Builds the `ServiceInfo` the platform will instantiate a service from.
+     *
+     * Same idea as [activityInfoFor]: `handleCreateService` resolves the `LoadedApk` from
+     * `info.applicationInfo` and instantiates `info.name`, so substituting this makes the
+     * guest's own Service class run with the guest's class loader and data directory.
+     */
+    fun serviceInfoFor(ready: Result.Ready, className: String): ServiceInfo? {
+        val entry = ready.manifest.components.firstOrNull {
+            it.kind == ComponentKind.SERVICE && it.className == className
+        } ?: return null
+        return ServiceInfo().apply {
+            name = entry.className
+            packageName = ready.params.packageName
+            processName = ready.params.processName
+            applicationInfo = ready.applicationInfo
+            exported = entry.exported
+            enabled = entry.enabled
+            permission = entry.permission
         }
     }
 
