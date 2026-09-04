@@ -1,110 +1,114 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-void main() => runApp(const MyApp());
+import 'screens/home_screen.dart';
+import 'state/app_state.dart';
+import 'theme/unique_theme.dart';
+import 'widgets/common.dart';
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  runApp(const UniqueApp());
+}
 
-  // This widget is the root of your application.
+class UniqueApp extends StatefulWidget {
+  const UniqueApp({super.key});
+
+  @override
+  State<UniqueApp> createState() => _UniqueAppState();
+}
+
+class _UniqueAppState extends State<UniqueApp> {
+  final _state = AppState();
+
+  @override
+  void initState() {
+    super.initState();
+    _state.load();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or press Run > Flutter Hot Reload in a Flutter IDE). Notice that the
-        // counter didn't reset back to zero; the application is not restarted.
-        primarySwatch: Colors.blue,
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+    return AnimatedBuilder(
+      animation: _state,
+      builder: (context, _) {
+        // Material You: the wallpaper accent arrives through the platform's own dynamic
+        // scheme when the device provides one. No package needed for a single colour.
+        final seed = _state.dynamicColor ? null : UniqueColors.accent;
+        return MaterialApp(
+          title: 'Unique',
+          debugShowCheckedModeBanner: false,
+          themeMode: ThemeMode.dark,
+          theme: UniqueTheme.light(dynamicSeed: seed),
+          darkTheme: UniqueTheme.dark(dynamicSeed: seed),
+          home: _Root(state: _state),
+        );
+      },
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+/// Decides between the brief startup state and Home.
+///
+/// There is no decorative splash: the Android window already shows the mark until
+/// Flutter's first frame, and adding another one would be time the user waits for
+/// nothing. This shows a progress state only if the engine query is genuinely slow.
+class _Root extends StatelessWidget {
+  const _Root({required this.state});
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+  final AppState state;
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+    return AnimatedSwitcher(
+      duration: UniqueMotion.medium,
+      switchInCurve: UniqueMotion.emphasized,
+      child: switch (state.status) {
+        LoadState.idle || LoadState.loading => const _Starting(),
+        LoadState.failed => _StartupFailed(state: state),
+        LoadState.ready => HomeScreen(key: const ValueKey('home'), state: state),
+      },
+    );
+  }
+}
+
+class _Starting extends StatelessWidget {
+  const _Starting();
+
+  @override
+  Widget build(BuildContext context) => const Scaffold(
+        key: ValueKey('starting'),
+        body: Center(child: UniqueMark(size: 56)),
+      );
+}
+
+class _StartupFailed extends StatelessWidget {
+  const _StartupFailed({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        key: const ValueKey('failed'),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(UniqueSpace.lg),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                NoticeBanner(
+                  tone: NoticeTone.error,
+                  title: 'UNIQUE could not start',
+                  message: state.error ?? 'The engine did not respond.',
+                  action: FilledButton(
+                    onPressed: state.load,
+                    child: const Text('Try again'),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
-    );
-  }
+      );
 }
