@@ -74,8 +74,14 @@ class StubRouterTest {
     }
 
     @Test fun `stub service, provider and job names follow the generated ones`() {
-        assertThat(StubRouter.stubService(7)).isEqualTo("com.unique.stub.ServiceStub_p7")
+        assertThat(StubRouter.stubService(7, 3)).isEqualTo("com.unique.stub.ServiceStub_p7_s3")
         assertThat(StubRouter.stubProvider(7)).isEqualTo("com.unique.stub.ProviderStub_p7")
         assertThat(StubRouter.stubJobService(7)).isEqualTo("com.unique.stub.JobStub_p7")
+    }
+
+    @Test fun `a stub service name round-trips back to its slot and index`() {
+        assertThat(StubRouter.parseStubService(StubRouter.stubService(2, 5))).isEqualTo(2 to 5)
+        assertThat(StubRouter.parseStubService("com.unique.stub.ActivityStub_p2_m0_a0")).isNull()
+        assertThat(StubRouter.parseStubService("com.example.NotOurs")).isNull()
     }
 }

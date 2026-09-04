@@ -102,7 +102,18 @@ object VirtualActivityManagerHook {
         // one needs both halves: the outbound package rewrite *and* a wrapped provider.
         shim("getContentProvider") {
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
-            rewriteResult { holder -> wrapProviderHolder(holder, hostSource) }
+            replaceWith { call ->
+                // A guest authority is answered here: ActivityManagerService resolves
+                // authorities against installed packages and would return null.
+                val authority = call.args.filterIsInstance<String>()
+                    .firstOrNull { VirtualProviderRegistry.owns(it) }
+                val ready = AppBootstrap.current
+                if (authority != null && ready != null) {
+                    VirtualProviderRegistry.holderFor(authority, ready) ?: call.proceed()
+                } else {
+                    wrapProviderHolder(call.proceed(), hostSource)
+                }
+            }
         },
 
         // Service starts and binds have to be routed onto a stub the host declares:

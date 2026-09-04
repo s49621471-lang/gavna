@@ -164,6 +164,15 @@ object AppBootstrap {
 
         val ready = Result.Ready(params, manifest, application, appInfo)
 
+        // Providers first: the platform creates a process's providers before any other
+        // component and apps rely on that ordering.
+        runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         // Registered after the application exists, because the guest's own Context is
         // what its receivers must run with.
         runCatching { VirtualReceiverRegistry.install(ready) }.onFailure {
