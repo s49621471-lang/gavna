@@ -35,6 +35,16 @@ class VirtualPathModel(private val hostFilesRoot: String) {
     fun nativeLibraryDir(packageName: String, versionCode: Long, abiDirName: String = "arm64-v8a"): String =
         "${apkDir(packageName, versionCode)}/lib/$abiDirName"
 
+    /**
+     * The parent of the per-ABI library directories.
+     *
+     * A virtual process picks its own ABI from what is actually on disk rather than being
+     * told, for the same reason it reads the manifest itself: no round trip to `:server`
+     * on the launch path.
+     */
+    fun nativeLibraryRoot(packageName: String, versionCode: Long): String =
+        "${apkDir(packageName, versionCode)}/lib"
+
     // ---- per-instance, writable -----------------------------------------------------
 
     fun userRoot(vuid: Int): String = "$root/users/$vuid"

@@ -4,11 +4,19 @@ import java.io.File
 import java.util.Locale
 
 /** Every ABI Android knows about, plus which of them UNIQUE will execute. */
+/**
+ * @param supported whether UNIQUE will run a virtual app on this ABI.
+ *
+ * 64-bit only, and no CPU emulation: a guest executes the device's own instruction set or
+ * it does not run. `arm64-v8a` is the product target; `x86_64` is supported because that
+ * is what an emulator and a Chromebook are, and refusing it would mean the native path
+ * could never be exercised anywhere but a phone.
+ */
 enum class Abi(val dirName: String, val is64Bit: Boolean, val supported: Boolean) {
     ARM64_V8A("arm64-v8a", true, true),
     ARMEABI_V7A("armeabi-v7a", false, false),
     ARMEABI("armeabi", false, false),
-    X86_64("x86_64", true, false),
+    X86_64("x86_64", true, true),
     X86("x86", false, false),
     RISCV64("riscv64", true, false);
 
@@ -17,6 +25,28 @@ enum class Abi(val dirName: String, val is64Bit: Boolean, val supported: Boolean
 
     companion object {
         fun fromDirName(name: String): Abi? = entries.firstOrNull { it.dirName == name }
+
+        /**
+         * The ABI to extract, given what the device runs and what the APK carries.
+         *
+         * `Build.SUPPORTED_ABIS` is in the platform's own preference order, so the first
+         * entry that is both supported here and present in the APK is the same choice the
+         * platform would make for an installed app. Hard-coding `arm64-v8a` instead meant
+         * a device that is not ARM64 extracted nothing at all and the native path could
+         * not be exercised there — which is the emulator, and therefore every test.
+         *
+         * Returns null when the APK carries no ABI this device can execute. That is a
+         * refusal, not a fallback: running ARM code on x86 would need an emulator UNIQUE
+         * deliberately does not have.
+         */
+        fun preferred(deviceAbis: List<String>, apkAbis: Collection<String>): Abi? {
+            val available = apkAbis.mapNotNull { fromDirName(it) }.toSet()
+            for (name in deviceAbis) {
+                val abi = fromDirName(name) ?: continue
+                if (abi.supported && abi in available) return abi
+            }
+            return null
+        }
         fun fromSplitToken(token: String): Abi? = entries.firstOrNull { it.splitToken == token }
         val supportedSet: List<Abi> get() = entries.filter { it.supported }
     }

@@ -3,7 +3,7 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0, 1 and 2 complete. Phase 3: all four component types run.**
+**Phases 0-3 complete. Phase 4 begun: a guest runs its own native code.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
 launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
@@ -63,8 +63,8 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-103331-15155`, Android 14 x86_64, probe **not installed on the device**.
-Full output in `docs/evidence/phase3-components-instrumentation.txt`.
+Run `20260904-104904-21384`, Android 14 x86_64, probe **not installed on the device**.
+Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
 |---|---|
@@ -84,9 +84,10 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t14` app ops accept the guest's identity | **PASS** |
 | `t15` the guest's notification is posted, and two instances do not collide | **PASS** |
 | `t16` the guest's foreground service starts | **PASS** |
+| `t17` the guest loads and runs its own native library | **PASS** |
 
 What the guest's non-Activity components reported
-(`docs/evidence/phase3-components-engine.log`):
+(`docs/evidence/phase4-native-engine.log`):
 
 ```
 Service.onCreate       package=com.unique.probe process=13624
@@ -104,6 +105,14 @@ rowCount               = 3
 provider.packageName   = com.unique.probe
 provider.filesDir      = …/virtual/users/0/data/com.unique.probe/files
 provider.pid           = 13624   (the same process as the Activity)
+
+PACKAGE_IMPORTED       package=com.unique.probe versionCode=22 libs=1 abi=x86_64
+loaded                 = true
+arch                   = x86_64      (the device's own instruction set; nothing emulated)
+nativePid              = 17583       (= the Activity's pid)
+echo                   = native:hello
+nativeLibraryDir       = …/virtual/apk/com.unique.probe/22/lib/x86_64
+libcWrite              = ok:…/virtual/users/0/data/com.unique.probe/files/probe-libc.txt
 ```
 
 What the guest itself reported (`docs/evidence/phase2-first-launch-engine.log`):
@@ -189,12 +198,14 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
+1. Phase 4: libc IO redirection, so native code that builds its own absolute paths lands
+   in the instance's directory rather than UNIQUE's. The table is implemented and tested;
+   the ~30 interception points are not.
+2. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
    filters), URI permissions and `FileProvider` sharing, `JobScheduler`, `AlarmManager`,
    the clipboard.
-2. Give `onServiceConnected` the guest's own `ComponentName`.
-3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
-   anything.
+3. Give `onServiceConnected` the guest's own `ComponentName`.
+4. ARM64 itself, which only the physical device can answer.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Process
+import com.unique.core.common.apk.Abi
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
@@ -250,6 +252,23 @@ object AppBootstrap {
      * because the host's own storage is already credential-protected and splitting them
      * would create a directory that survives differently from the rest of an instance.
      */
+    /**
+     * The extracted-library directory this device can actually execute.
+     *
+     * Read from disk rather than passed in, like the manifest: no round trip to `:server`
+     * on the launch path. The importer extracted one ABI - the best one the device
+     * supports - and picking it here by the same rule keeps the two from disagreeing,
+     * which would surface as `UnsatisfiedLinkError` from inside the guest with the
+     * directory looking perfectly correct in the diagnostics.
+     */
+    private fun nativeLibraryDirFor(model: VirtualPathModel, params: VirtualLaunchParams): String {
+        val root = File(model.nativeLibraryRoot(params.packageName, params.versionCode))
+        val present = root.listFiles()?.filter { it.isDirectory }?.map { it.name }.orEmpty()
+        val chosen = Abi.preferred(Build.SUPPORTED_ABIS.orEmpty().toList(), present)
+        return if (chosen != null) File(root, chosen.dirName).absolutePath
+        else model.nativeLibraryDir(params.packageName, params.versionCode)
+    }
+
     private fun buildApplicationInfo(
         model: VirtualPathModel,
         manifest: ApkManifest,
@@ -277,7 +296,7 @@ object AppBootstrap {
                 splitSourceDirs = splits.map { it.absolutePath }.toTypedArray()
                 splitPublicSourceDirs = splitSourceDirs
             }
-            nativeLibraryDir = model.nativeLibraryDir(params.packageName, params.versionCode)
+            nativeLibraryDir = nativeLibraryDirFor(model, params)
 
             this.dataDir = dataDir
             deviceProtectedDataDir = dataDir

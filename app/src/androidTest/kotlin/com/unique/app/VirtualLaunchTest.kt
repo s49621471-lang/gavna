@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.service.notification.StatusBarNotification
+import android.os.Build
 import android.os.Process
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -855,6 +856,66 @@ class VirtualLaunchTest {
             .getRunningServices(200)
             .filter { it.service.packageName == context.packageName }
         assertThat(running.any { it.foreground }).isTrue()
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 4: the guest's own native library, out of an APK the system never installed.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t17_theGuestLoadsItsOwnNativeLibrary() = runBlocking {
+        val instance = requireInstance()
+        val result = File(model.filesDir(instance.vuid, probePackage), "probe-native.properties")
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.native", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        val activity = awaitResult(instance)
+        val observed = awaitFile(result)
+
+        // System.loadLibrary resolves through the ClassLoader's library search path, which
+        // the platform builds from ApplicationInfo.nativeLibraryDir. It fails unless the
+        // graft got that directory right *and* the importer extracted an ABI this device
+        // can execute.
+        assertThat(observed["error"]).isNull()
+        assertThat(observed["loaded"]).isEqualTo("true")
+
+        // The library runs in the guest's process, not somewhere else.
+        assertThat(observed["nativePid"]).isEqualTo(observed["javaPid"])
+        assertThat(observed["nativePid"]).isEqualTo(activity["pid"])
+
+        // Compiled for this machine and executed directly: no CPU emulation anywhere.
+        assertThat(observed["arch"]).isEqualTo(Build.SUPPORTED_ABIS.first())
+        assertThat(observed["nativeLibraryDir"])
+            .endsWith("/lib/${Build.SUPPORTED_ABIS.first()}")
+
+        // JNI works in both directions, not just outward.
+        assertThat(observed["echo"]).isEqualTo("native:hello")
+
+        // The page size the loader is actually running with. 4096 on this emulator; a
+        // 16 KB Android 15 device is what docs/PHYSICAL_DEVICE_TEST.md exists to cover.
+        assertThat(observed["pageSize"]!!.toLong()).isAtLeast(4096L)
+
+        // libc file IO from native code. Redirection is not implemented yet, so this
+        // succeeds only because the guest passed an already-redirected absolute path -
+        // which is exactly the gap phase 4's interception closes.
+        assertThat(observed["libcWrite"]).startsWith("ok:")
+        assertThat(observed["libcFileExists"]).isEqualTo("true")
+        assertThat(observed["libcWrite"])
+            .contains(model.filesDir(instance.vuid, probePackage))
     }
 
     /**

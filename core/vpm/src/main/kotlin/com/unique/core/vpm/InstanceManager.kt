@@ -1,7 +1,11 @@
 package com.unique.core.vpm
 
 import android.content.Context
+import android.content.res.Resources
+import android.os.Build
+import com.unique.core.common.apk.Abi
 import com.unique.core.common.apk.ApkManifest
+import com.unique.core.common.apk.DeviceSpec
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.path.VirtualPathModel
@@ -16,6 +20,7 @@ import com.unique.core.vpm.db.UniqueDatabase
 import com.unique.core.vstorage.VirtualStorage
 import java.io.File
 import kotlinx.coroutines.flow.first
+import java.util.Locale
 import java.util.UUID
 
 /** A virtual instance as the rest of the system uses it. */
@@ -55,7 +60,7 @@ class InstanceManager(
      * @param files base APK, plus any splits.
      */
     suspend fun importAndCreate(files: List<File>, displayName: String? = null): CreateResult {
-        val installer = PackageInstaller(model, UniqueNative.pageSize())
+        val installer = PackageInstaller(model, UniqueNative.pageSize(), deviceSpec())
         return when (val result = installer.import(files)) {
             is ImportResult.Rejected -> CreateResult.Rejected(result.reason.message)
             is ImportResult.Installed -> {
@@ -64,6 +69,20 @@ class InstanceManager(
             }
         }
     }
+
+    /**
+     * What this device actually is, rather than what the product targets.
+     *
+     * `Build.SUPPORTED_ABIS` is in the platform's own preference order and drives both
+     * split selection and which `lib/<abi>/` is extracted. Leaving it at the ARM64 default
+     * meant an x86_64 device picked the wrong ABI split and extracted no native code at
+     * all - so the native path could not be exercised anywhere but a phone.
+     */
+    private fun deviceSpec(): DeviceSpec = DeviceSpec(
+        abis = Build.SUPPORTED_ABIS.orEmpty().mapNotNull { Abi.fromDirName(it) },
+        densityDpi = Resources.getSystem().displayMetrics.densityDpi,
+        languages = listOf(Locale.getDefault().language),
+    )
 
     private suspend fun registerPackage(
         manifest: ApkManifest,

@@ -818,6 +818,27 @@ ARM64-v8a only. On import, `VPM` selects `lib/arm64-v8a/**` and the
 `config.arm64_v8a` split. An APK with no arm64 slice is refused at import time with a clear
 reason, not at first launch.
 
+**Implemented; `t17` covers loading.** The ABI is the *device's*, chosen from
+`Build.SUPPORTED_ABIS` in the platform's own preference order and intersected with what
+the APK carries — the same choice the platform makes for an installed app. The importer
+extracts exactly that one `lib/<abi>/`, and the graft picks the same directory by reading
+what is on disk, so the two cannot disagree; a disagreement would surface as
+`UnsatisfiedLinkError` inside the guest with the directory looking perfectly correct in
+the diagnostics.
+
+Hard-coding `arm64-v8a` was wrong for a reason worth recording: it meant a device that is
+not ARM64 extracted nothing at all, so the native path could not be exercised on any
+emulator, and therefore not in any automated test. `x86_64` is supported for that reason
+and because a Chromebook is one. 32-bit is not, and an APK carrying no ABI this device can
+execute is **refused at import** rather than started and left to fail at `dlopen` —
+UNIQUE has no CPU emulation and will not pretend otherwise.
+
+What `t17` proves and does not: a guest loads a library out of an APK the system has never
+installed, the library runs in the guest's own process, and JNI works in both directions.
+It proves that **on x86_64**. The mechanism is architecture-independent — it is
+`ApplicationInfo.nativeLibraryDir` and a class loader — but the ARM64 answer is a physical
+device's to give.
+
 ### 8.2 W^X applies to the APK, not only to `.so` files
 
 Android 10+ refuses to load code from a writable file for apps targeting API 29+. The

@@ -9,6 +9,7 @@ import com.unique.core.common.apk.DeviceSpec
 import com.unique.core.common.compat.CompatFlag
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.elf.ElfInspector
+import com.unique.core.common.elf.ElfMachine
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.diagnostics.Diagnostics
 import java.io.File
@@ -90,10 +91,30 @@ class PackageInstaller(
         }
 
         // Native libraries: extract, validate, then lock down.
-        val libStaging = File(staging, "lib/${Abi.ARM64_V8A.dirName}")
-        val extraction = extractNativeLibraries(copied.map { it.second }, libStaging, progress)
+        //
+        // The ABI is the device's, not a constant. Build.SUPPORTED_ABIS is in the
+        // platform's own preference order, so this makes the same choice the platform
+        // would for an installed app - and hard-coding arm64-v8a meant a device that is
+        // not ARM64 extracted nothing at all, which is every emulator and therefore every
+        // automated test of the native path.
+        val apkAbis = nativeAbisIn(copied.map { it.second })
+        val chosenAbi = Abi.preferred(device.abis.map { it.dirName }, apkAbis)
+        val libStaging = File(staging, "lib/${(chosenAbi ?: Abi.ARM64_V8A).dirName}")
+        val extraction =
+            if (chosenAbi == null) Extraction(0, apkAbis.isNotEmpty(), emptyMap())
+            else extractNativeLibraries(copied.map { it.second }, chosenAbi, libStaging, progress)
 
         if (extraction.foundAnyNativeCode && extraction.extracted == 0) {
+            // No CPU emulation, by design: an app whose native code this device cannot
+            // execute is refused rather than started and left to crash at dlopen.
+            Diagnostics.warn(
+                DiagChannel.NATIVE, "NATIVE_ABI_UNAVAILABLE",
+                mapOf(
+                    "package" to m.packageName,
+                    "apkAbis" to apkAbis.sorted().joinToString(","),
+                    "deviceAbis" to device.abis.joinToString(",") { it.dirName },
+                ),
+            )
             staging.deleteRecursively()
             return ImportResult.Rejected(ImportRejection.NoArm64())
         }
@@ -141,7 +162,7 @@ class PackageInstaller(
         // the Application and looks nothing like a permissions problem. Every APK and
         // every extracted library is therefore made read-only before first launch.
         val locked = lockDownApks(targetDir)
-        val libDir = File(targetDir, "lib/${Abi.ARM64_V8A.dirName}")
+        val libDir = File(targetDir, "lib/${(chosenAbi ?: Abi.ARM64_V8A).dirName}")
         if (libDir.isDirectory) lockDown(libDir)
 
         Diagnostics.info(
@@ -151,6 +172,7 @@ class PackageInstaller(
                 "versionCode" to m.versionCode.toString(),
                 "splits" to selection.keep.size.toString(),
                 "libs" to extraction.extracted.toString(),
+                "abi" to (chosenAbi?.dirName ?: "-"),
                 "bytes" to written.toString(),
                 "readOnlyApks" to locked.toString(),
             ),
@@ -174,10 +196,27 @@ class PackageInstaller(
             alignments.filterValues { it < pageSize }.keys.sorted()
     }
 
+    /** Every ABI directory any of these APKs carries, whether or not we can use it. */
+    private fun nativeAbisIn(apks: List<File>): Set<String> {
+        val abis = LinkedHashSet<String>()
+        for (apk in apks) {
+            runCatching {
+                ZipFile(apk).use { zip ->
+                    zip.entries().asSequence()
+                        .filter { !it.isDirectory && it.name.startsWith("lib/") }
+                        .forEach { entry ->
+                            entry.name.split('/').getOrNull(1)?.let { abis += it }
+                        }
+                }
+            }
+        }
+        return abis
+    }
+
     private fun extractNativeLibraries(
-        apks: List<File>, destDir: File, progress: ImportProgress?,
+        apks: List<File>, abi: Abi, destDir: File, progress: ImportProgress?,
     ): Extraction {
-        val prefix = "lib/${Abi.ARM64_V8A.dirName}/"
+        val prefix = "lib/${abi.dirName}/"
         var extracted = 0
         var sawNative = false
         val alignments = HashMap<String, Long>()
@@ -199,11 +238,22 @@ class PackageInstaller(
                     runCatching { ElfInspector.inspect(dest.readBytes()) }
                         .onSuccess { info ->
                             alignments[name] = info.maxPageSize
-                            if (!info.isArm64) {
-                                // A mislabelled library would fail at dlopen; drop it now.
+                            // A library in lib/<abi>/ whose ELF machine says otherwise is
+                            // mislabelled and would fail at dlopen; drop it now, where the
+                            // reason can be reported.
+                            val matches = when (abi) {
+                                Abi.ARM64_V8A -> info.isArm64
+                                Abi.X86_64 -> info.machine == ElfMachine.X86_64
+                                else -> false
+                            }
+                            if (!matches) {
                                 Diagnostics.warn(
                                     DiagChannel.NATIVE, "NATIVE_ABI_MISMATCH",
-                                    mapOf("library" to name, "machine" to info.machine.name),
+                                    mapOf(
+                                        "library" to name,
+                                        "expected" to abi.dirName,
+                                        "machine" to info.machine.name,
+                                    ),
                                 )
                                 dest.delete()
                                 return@onSuccess

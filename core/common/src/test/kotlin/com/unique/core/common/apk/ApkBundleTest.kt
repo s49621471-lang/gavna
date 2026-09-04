@@ -58,7 +58,25 @@ class ApkBundleTest {
         assertThat(Abi.ARM64_V8A.splitToken).isEqualTo("arm64_v8a")
         assertThat(Abi.fromSplitToken("arm64_v8a")).isEqualTo(Abi.ARM64_V8A)
         assertThat(Abi.fromDirName("arm64-v8a")).isEqualTo(Abi.ARM64_V8A)
-        assertThat(Abi.supportedSet).containsExactly(Abi.ARM64_V8A)
+        // 64-bit only, and no CPU emulation. x86_64 is here because that is what an
+        // emulator and a Chromebook are; refusing it would mean the native path could
+        // never be exercised anywhere but a phone.
+        assertThat(Abi.supportedSet).containsExactly(Abi.ARM64_V8A, Abi.X86_64)
+    }
+
+    @Test fun `the device's own preference order chooses the abi`() {
+        // Exactly what the platform does for an installed app: first entry of
+        // Build.SUPPORTED_ABIS that the APK also carries.
+        assertThat(Abi.preferred(listOf("arm64-v8a", "armeabi-v7a"), setOf("arm64-v8a", "x86_64")))
+            .isEqualTo(Abi.ARM64_V8A)
+        assertThat(Abi.preferred(listOf("x86_64", "x86"), setOf("arm64-v8a", "x86_64")))
+            .isEqualTo(Abi.X86_64)
+        // A 64-bit device whose only match is a 32-bit library: refused, not emulated.
+        assertThat(Abi.preferred(listOf("arm64-v8a", "armeabi-v7a"), setOf("armeabi-v7a")))
+            .isNull()
+        // Nothing in common at all.
+        assertThat(Abi.preferred(listOf("arm64-v8a"), setOf("x86_64"))).isNull()
+        assertThat(Abi.preferred(listOf("arm64-v8a"), emptySet())).isNull()
     }
 
     @Test fun `density selection picks the smallest bucket at or above the device`() {

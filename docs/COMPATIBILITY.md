@@ -56,8 +56,11 @@ never tried" is the difference between a fact and a guess.
 | Runtime permissions — rationale | `PARTIAL` | `NOT_TESTED` | `shouldShowRequestPermissionRationale` follows the instance's record. The false cases are asserted; the true case needs a recorded denial, so a dialog, and is `NOT_TESTED` |
 | Runtime permissions — persistence | `SUPPORTED` | `NOT_TESTED` | Written under `runtime/permissions/<vuid>/`, restored at bootstrap; `PERMISSIONS_BOUND … restored=1` after a kill (`t13`) |
 | AppOps | `PARTIAL` | `NOT_TESTED` | `checkPackage` and the op checks accept the guest's identity (`t14`). Ops are *attributed* to UNIQUE, because the uid is UNIQUE's — per-instance denial happens at the permission check instead |
-| Native ARM64 / JNI | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 4); the emulator is x86_64 and could not prove it anyway |
-| Native IO redirection | `NOT_TESTED` | `NOT_TESTED` | Table implemented and unit-tested; libc interception not implemented |
+| Native library loading (JNI) | `SUPPORTED` | `NOT_TESTED` | `System.loadLibrary` from an APK the system never installed; the library runs in the guest's process and JNI works both directions (`t17`). **On x86_64** — the mechanism is architecture-independent, the ARM64 answer is not |
+| Native ABI selection | `SUPPORTED` | `NOT_TESTED` | The device's own `SUPPORTED_ABIS` order, as the platform does; an APK with no executable ABI is refused rather than started (`PACKAGE_IMPORTED … abi=x86_64`) |
+| Native ARM64 specifically | `NOT_TESTED` | `NOT_TESTED` | This emulator is x86_64. `docs/PHYSICAL_DEVICE_TEST.md` exists for exactly this |
+| 16 KB page size | `NOT_TESTED` | `NOT_TESTED` | Checked at import and at build time (`tools/check-abi.sh`), but this emulator reports 4096 so the large-page path is unexercised |
+| Native IO redirection | `BROKEN` | `NOT_TESTED` | Table implemented and unit-tested; the libc interception is not. `t17` writes through libc successfully only because the guest passed an already-redirected absolute path — native code that builds `/data/data/<pkg>/…` itself would land outside the instance |
 | Surface / OpenGL / Vulkan | `NOT_TESTED` | `NOT_TESTED` | Phase 5 |
 | Google flows | `NOT_TESTED` | `NOT_TESTED` | Interfaces only, no implementations |
 | Notifications — post | `SUPPORTED` | `NOT_TESTED` | Posted as UNIQUE with the guest's title and text; the icon is rendered from the guest's resources and travels as a bitmap (`t15`) |

@@ -98,6 +98,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "posting own notification");
             postNotification();
         }
+        if (request != null && request.getBooleanExtra("probe.native", false)) {
+            Log.i(TAG, "loading own native library");
+            exerciseNative();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -444,5 +448,35 @@ public class ProbeActivity extends Activity {
             Log.e(TAG, "notification failed", t);
         }
         writeMap("probe-notification.properties", out);
+    }
+
+    /**
+     * Loads the app's own JNI library and calls into it.
+     *
+     * `System.loadLibrary` resolves through the ClassLoader's library search path, which
+     * the platform builds from ApplicationInfo.nativeLibraryDir - so this fails unless
+     * the graft got that directory right *and* the importer extracted an ABI this device
+     * can execute.
+     */
+    private void exerciseNative() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            System.loadLibrary("probenative");
+            out.put("loaded", "true");
+            out.put("arch", ProbeNative.arch());
+            out.put("pageSize", String.valueOf(ProbeNative.pageSize()));
+            out.put("nativePid", String.valueOf(ProbeNative.pid()));
+            out.put("javaPid", String.valueOf(android.os.Process.myPid()));
+            out.put("echo", ProbeNative.echo("hello"));
+            out.put("nativeLibraryDir", getApplicationInfo().nativeLibraryDir);
+            java.io.File target = new java.io.File(getFilesDir(), "probe-libc.txt");
+            out.put("libcWrite", ProbeNative.writeThroughLibc(target.getAbsolutePath()));
+            out.put("libcFileExists", String.valueOf(target.isFile()));
+        } catch (Throwable t) {
+            out.put("loaded", "false");
+            out.put("error", t.toString());
+            Log.e(TAG, "native library failed", t);
+        }
+        writeMap("probe-native.properties", out);
     }
 }
