@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A feature split of the UNIQUE probe.
+
+  isFeatureSplit plus a split name is what makes the platform treat this as part of
+  com.unique.probe rather than a package of its own. It carries one class and nothing
+  else: the question it answers is whether a class that lives in a split is reachable from
+  the base, which requires the class loader to have been given splitSourceDirs.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.unique.probe"
+    android:isFeatureSplit="true"
+    split="feature_extra">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <application android:hasCode="true" />
+</manifest>

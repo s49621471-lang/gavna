@@ -14,6 +14,7 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -131,7 +132,7 @@ interface UniqueDao {
     @Query("SELECT * FROM spaces ORDER BY createdAtMillis")
     fun spaces(): Flow<List<SpaceEntity>>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsertSpace(space: SpaceEntity)
 
     @Query("SELECT * FROM packages ORDER BY label")
@@ -140,7 +141,17 @@ interface UniqueDao {
     @Query("SELECT * FROM packages WHERE packageName = :packageName")
     suspend fun packageOf(packageName: String): PackageEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * Update-or-insert, and emphatically *not* `@Insert(onConflict = REPLACE)`.
+     *
+     * SQLite implements REPLACE as DELETE followed by INSERT, and `instances` has
+     * `ON DELETE CASCADE` on this table's primary key. So re-importing a package - which
+     * an update does, and which importing an already-imported app also does - silently
+     * deleted every instance of it, along with the user's profiles and their data
+     * directories' database rows. `@Upsert` issues an UPDATE and never a DELETE, so the
+     * children are untouched.
+     */
+    @Upsert
     suspend fun upsertPackage(entity: PackageEntity)
 
     @Query("DELETE FROM packages WHERE packageName = :packageName")
@@ -155,7 +166,7 @@ interface UniqueDao {
     @Query("SELECT * FROM instances WHERE vuid = :vuid")
     suspend fun instance(vuid: Int): InstanceEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsertInstance(entity: InstanceEntity)
 
     @Update
@@ -180,7 +191,10 @@ interface UniqueDao {
     @Query("SELECT * FROM permissions WHERE vuid = :vuid")
     suspend fun permissions(vuid: Int): List<PermissionEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    // @Upsert here too. This table has no children, so REPLACE would be harmless - but
+    // the pattern is the trap, and a table gaining a child later is exactly when nobody
+    // re-reads the annotation.
+    @Upsert
     suspend fun upsertPermission(entity: PermissionEntity)
 
     @Transaction

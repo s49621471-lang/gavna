@@ -171,6 +171,10 @@ val stageProbeApk by tasks.registering {
         .withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.file(rootProject.file("tools/testapp/AndroidManifest.xml"))
     inputs.file(rootProject.file("tools/testapp/build.sh"))
+    inputs.file(rootProject.file("tools/testapp/build-split.sh"))
+    inputs.file(rootProject.file("tools/testapp/build-next.sh"))
+    inputs.dir(rootProject.file("tools/testapp/split"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     outputs.dir(stagedProbeDir)
 
     doLast {
@@ -179,6 +183,15 @@ val stageProbeApk by tasks.registering {
         providers.exec {
             commandLine("bash", rootProject.file("tools/testapp/build.sh").absolutePath)
         }.result.get().assertNormalExitValue()
+        // The feature split, and the bumped-version base the update test needs. Separate
+        // script because they are separate artefacts with their own manifests, not a
+        // renamed copy of the base.
+        providers.exec {
+            commandLine("bash", rootProject.file("tools/testapp/build-split.sh").absolutePath)
+        }.result.get().assertNormalExitValue()
+        providers.exec {
+            commandLine("bash", rootProject.file("tools/testapp/build-next.sh").absolutePath)
+        }.result.get().assertNormalExitValue()
 
         val source = probeApk.asFile
         require(source.isFile) {
@@ -186,7 +199,12 @@ val stageProbeApk by tasks.registering {
         }
         val dest = stagedProbeDir.get().asFile.apply { mkdirs() }
         source.copyTo(File(dest, "probe.apk"), overwrite = true)
-        logger.lifecycle("stageProbeApk: ${source.length()} bytes")
+        for (extra in listOf("split_feature.apk", "probe-next.apk")) {
+            val file = File(source.parentFile, extra)
+            require(file.isFile) { "tools/testapp/build/$extra is missing." }
+            file.copyTo(File(dest, extra), overwrite = true)
+        }
+        logger.lifecycle("stageProbeApk: ${source.length()} bytes + split + next")
     }
 }
 

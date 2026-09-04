@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-143510-18967`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-152728-26118`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -90,6 +90,8 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t20` the guest renders with OpenGL, and the pixel reads back | **PASS** |
 | `t21` the guest reads its own signature, and the truth about the Google stack | **PASS** |
 | `t22` two instances have different device identities | **PASS** |
+| `t23` an update keeps the instance's data | **PASS** |
+| `t24` an update signed by someone else is refused | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
@@ -165,6 +167,8 @@ visible to unit tests:
 | `SecurityException: Writable dex file … is not allowed` (W^X on the APK) | fixed |
 | `SecurityException: Given calling package … does not match caller's uid` | fixed (outbound identity rewrite) |
 | `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed |
+| **Re-importing a package deleted every instance of it.** `@Insert(onConflict = REPLACE)` is DELETE-then-INSERT in SQLite, and `instances` cascades on `packages.packageName` | fixed (`@Upsert`, which never issues a DELETE) |
+| An update deleted the old APK while a task still named that version, so an updated app could not be reopened from Recents | fixed (the launch falls back to the version on disk; superseded APKs are reclaimed at launch instead) |
 | The permission layer answered once and then stopped: since Android 12 both routes answer from a `PropertyInvalidatedCache` **inside the app's own process**, so later checks never crossed Binder and never reached the shim | fixed (the platform's own per-process cache disables, called at bind) |
 | `awaitFile` returned the first non-empty version of a file the probe writes several times per launch, so a test could assert on state that was not finished yet | fixed (`awaitFileWhere`, which waits for a named stage) |
 | `t06` passed vacuously: `/proc` is `hidepid=invisible`, so the pid check saw nothing | fixed (`ActivityManager.getRunningAppProcesses`) |
@@ -207,9 +211,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
    filters), URI permissions and `FileProvider` sharing.
-2. Split APK and update support: ABI/density/language splits, and preserving instance
-   data across an update.
-3. Waking a dead guest on a broadcast, and cross-process providers — both need `:server`.
+2. Waking a dead guest on a broadcast, and cross-process providers — both need `:server`.
+3. Vulkan, which needs a probe that creates a real device and queue.
 4. Give `onServiceConnected` the guest's own `ComponentName`.
 5. ARM64 itself, which only the physical device can answer.
 

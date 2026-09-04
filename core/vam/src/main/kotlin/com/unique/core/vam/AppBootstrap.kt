@@ -96,10 +96,21 @@ object AppBootstrap {
         val started = System.nanoTime()
         val model = VirtualPathModel(hostContext.filesDir.absolutePath)
 
-        val baseApk = File(model.baseApk(params.packageName, params.versionCode))
-        if (!baseApk.isFile) {
-            return Result.Failed("APK_MISSING", "${baseApk.path} does not exist.")
+        // The version in the launch intent can be stale, and legitimately so.
+        //
+        // Killing a virtual process leaves its *task* behind, and the system relaunches
+        // the activity from the intent it stored - which still names the version that was
+        // current when the task was created. After an update that version's directory is
+        // gone, and refusing the launch would mean a user who updates an app can never
+        // reopen it from Recents. The version actually on disk is the right answer.
+        val requested = File(model.baseApk(params.packageName, params.versionCode))
+        val baseApk = if (requested.isFile) requested else substituteVersion(model, params)
+        if (baseApk == null || !baseApk.isFile) {
+            return Result.Failed("APK_MISSING", "${requested.path} does not exist.")
         }
+        val effectiveVersion = baseApk.parentFile?.name?.toLongOrNull() ?: params.versionCode
+        val effective = if (effectiveVersion == params.versionCode) params
+        else params.copy(versionCode = effectiveVersion)
 
         // The manifest is read here rather than passed in, so a virtual process needs no
         // round trip to :server before it can start. It costs a few milliseconds.
@@ -107,7 +118,7 @@ object AppBootstrap {
             return Result.Failed("MANIFEST_UNREADABLE", it.toString(), it)
         }
 
-        val appInfo = buildApplicationInfo(model, manifest, params)
+        val appInfo = buildApplicationInfo(model, manifest, effective)
 
         val activityThreadClass = Reflect.findClass("android.app.ActivityThread")
             ?: return Result.Failed("NO_ACTIVITY_THREAD", "android.app.ActivityThread not found")
@@ -125,14 +136,14 @@ object AppBootstrap {
         // Without it every instance of every app reports the same ANDROID_ID and the same
         // Build fields, so anything that fingerprints the device sees two clones as one
         // installation - and separate identity is the point of a second instance.
-        bindDeviceProfile(hostContext, params)
+        bindDeviceProfile(hostContext, effective)
 
         // Bound before the permission shims are installed and before the guest's
         // Application exists: an app that checks a permission in Application.onCreate -
         // and plenty do - must already get its instance's answer, not the host's.
         VirtualPermissions.bind(
-            vuid = params.vuid,
-            packageName = params.packageName,
+            vuid = effective.vuid,
+            packageName = effective.packageName,
             declared = manifest.usesPermissions,
             context = hostContext,
         )
@@ -197,7 +208,7 @@ object AppBootstrap {
 
         VirtualServiceRouter.bindSlot(params.slot)
 
-        val ready = Result.Ready(params, manifest, application, appInfo)
+        val ready = Result.Ready(effective, manifest, application, appInfo)
 
         // Native IO redirection, installed once the guest's Application exists.
         //
@@ -207,7 +218,7 @@ object AppBootstrap {
         // it is idempotent so a later re-run costs nothing. A library the guest loads
         // after this point is not covered until the next install; that limit is recorded
         // rather than papered over.
-        installIoRedirection(hostContext, params, appInfo)
+        installIoRedirection(hostContext, effective, appInfo)
 
         // Providers first: the platform creates a process's providers before any other
         // component and apps rely on that ordering.
@@ -370,6 +381,32 @@ object AppBootstrap {
         VirtualSettings.bind(profile)
         VirtualSettings.applyBuildOverrides(profile)
         DeviceProfileProvider.bind(profile)
+    }
+
+    /**
+     * The newest version of this package that is actually on disk.
+     *
+     * Returns null when the package is gone entirely, which is a real failure; a *stale*
+     * version is not.
+     */
+    private fun substituteVersion(model: VirtualPathModel, params: VirtualLaunchParams): File? {
+        val root = File(model.apkDir(params.packageName, 0L)).parentFile ?: return null
+        val newest = root.listFiles()
+            ?.mapNotNull { dir -> dir.name.toLongOrNull()?.let { it to dir } }
+            ?.maxByOrNull { it.first }
+            ?: return null
+        val candidate = File(model.baseApk(params.packageName, newest.first))
+        if (!candidate.isFile) return null
+        Diagnostics.warn(
+            DiagChannel.LAUNCH, "LAUNCH_VERSION_SUBSTITUTED",
+            mapOf(
+                "package" to params.packageName,
+                "requested" to params.versionCode.toString(),
+                "using" to newest.first.toString(),
+                "detail" to "the launch intent names a version that has been updated away",
+            ),
+        )
+        return candidate
     }
 
     /**

@@ -22,6 +22,7 @@ import com.unique.core.vam.VirtualLaunchIntent
 import com.unique.core.vam.VirtualLaunchParams
 import com.unique.core.vpm.CreateResult
 import com.unique.core.vpm.Instance
+import com.unique.core.vpm.UpdateResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.FixMethodOrder
@@ -68,8 +69,11 @@ class VirtualLaunchTest {
         // not depend on the shell being able to write into another app's storage.
         assertThat(isInstalledOnHost(probePackage)).isFalse()
         val apk = stageProbeApk()
+        // The feature split travels with the base. Importing them together is what an
+        // installed app looks like, and it is the only way the split path is exercised.
+        val split = stageAsset("split_feature.apk")
 
-        val instance = existingInstance() ?: when (val r = UniqueEngine.importFiles(listOf(apk))) {
+        val instance = existingInstance() ?: when (val r = UniqueEngine.importFiles(listOf(apk, split))) {
             is CreateResult.Created -> r.instance
             is CreateResult.Rejected -> throw AssertionError("import rejected: ${r.reason}")
         }
@@ -996,6 +1000,12 @@ class VirtualLaunchTest {
 
         // And the serial comes from the profile too.
         assertThat(observed["buildSerial"]).isEqualTo(instance.profile.serial)
+
+        // A class that exists only in the feature split. Reachable only because the graft
+        // populated ApplicationInfo.splitSourceDirs, so the split's dex reached the class
+        // loader — an app whose feature split is silently dropped fails at the first
+        // screen that needs it.
+        assertThat(observed["splitClass"]).isEqualTo("hello-from-split")
     }
 
     @Test
@@ -1051,6 +1061,71 @@ class VirtualLaunchTest {
         val bytes = info.signatures!!.first().toByteArray()
         return java.security.MessageDigest.getInstance("SHA-256")
             .digest(bytes).joinToString("") { "%02x".format(it) }
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 9: updating an imported package without losing the instance's data.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t23_anUpdateKeepsTheInstancesData() = runBlocking {
+        val instance = requireInstance()
+        val before = awaitResult(instance)
+        val launchesBefore = before["launchCount"]!!.toInt()
+        val versionBefore = instance.versionCode
+
+        // A genuinely different build: same code and same signing key, versionCode + 1.
+        val next = stageAsset("probe-next.apk")
+
+        when (val result = UniqueEngine.update(context, listOf(next))) {
+            is UpdateResult.Updated -> {
+                assertThat(result.fromVersionCode).isEqualTo(versionBefore)
+                assertThat(result.toVersionCode).isGreaterThan(versionBefore)
+                assertThat(result.instances).isAtLeast(1)
+            }
+            is UpdateResult.Unchanged ->
+                throw AssertionError("the staged update has the same version as the import")
+            is UpdateResult.Rejected -> throw AssertionError("update rejected: ${result.reason}")
+        }
+
+        // The package row now points at the new version, and every instance reads its
+        // version from that row rather than carrying one of its own.
+        val updated = requireInstance()
+        assertThat(updated.vuid).isEqualTo(instance.vuid)
+        assertThat(updated.versionCode).isGreaterThan(versionBefore)
+
+        // The identity is the same instance's, so nothing was recreated underneath it.
+        assertThat(updated.profile.androidId).isEqualTo(instance.profile.androidId)
+
+        clearResult(updated)
+        assertThat(UniqueEngine.launch(context, updated.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val after = awaitResult(updated)
+
+        // The point of the whole exercise: the app's own data continued across the
+        // update. launchCount lives in the instance's SharedPreferences, which is keyed
+        // by vuid and package and never by version.
+        assertThat(after["launchCount"]!!.toInt()).isEqualTo(launchesBefore + 1)
+        assertThat(after["filesDir"]).isEqualTo(before["filesDir"])
+        assertThat(after["packageCodePath"]).isNotEqualTo(before["packageCodePath"])
+    }
+
+    @Test
+    fun t24_anUpdateSignedBySomeoneElseIsRefused() = runBlocking {
+        requireInstance()
+        // The instrumentation APK is a different package signed by a different key. It is
+        // the closest thing to hand to a hostile update, and the check that matters is
+        // that a different signer cannot inherit an instance's data.
+        val foreign = File(
+            InstrumentationRegistry.getInstrumentation().context.applicationInfo.sourceDir
+        )
+        assertThat(foreign.isFile).isTrue()
+
+        val result = UniqueEngine.update(context, listOf(foreign))
+        assertThat(result).isInstanceOf(UpdateResult.Rejected::class.java)
+
+        // And the instance is untouched.
+        assertThat(requireInstance().packageName).isEqualTo(probePackage)
     }
 
     // -----------------------------------------------------------------------------
@@ -1313,13 +1388,15 @@ class VirtualLaunchTest {
         checkNotNull(existingInstance()) { "no probe instance; t01 must run first" }
 
     /** Copies the probe out of the test APK's assets into a place the engine can read. */
-    private fun stageProbeApk(): File {
-        val dest = File(context.cacheDir, "probe-under-test.apk")
+    private fun stageProbeApk(): File = stageAsset("probe.apk")
+
+    private fun stageAsset(name: String): File {
+        val dest = File(context.cacheDir, "staged-$name")
         if (dest.isFile && dest.length() > 0) return dest
-        InstrumentationRegistry.getInstrumentation().context.assets.open("probe.apk").use { input ->
+        InstrumentationRegistry.getInstrumentation().context.assets.open(name).use { input ->
             dest.outputStream().use { output -> input.copyTo(output) }
         }
-        check(dest.length() > 0) { "probe.apk asset was empty" }
+        check(dest.length() > 0) { "$name asset was empty" }
         return dest
     }
 

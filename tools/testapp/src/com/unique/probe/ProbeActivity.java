@@ -769,7 +769,29 @@ public class ProbeActivity extends Activity {
         out.put("buildFingerprint", String.valueOf(android.os.Build.FINGERPRINT));
         out.put("buildSerial", String.valueOf(android.os.Build.SERIAL));
 
+        // A class that exists only in the feature split. Reachable only if the split's
+        // dex reached the class loader, which needs ApplicationInfo.splitSourceDirs.
+        try {
+            Class<?> split = Class.forName("com.unique.probe.split.SplitFeature");
+            Object greeting = split.getMethod("greeting").invoke(null);
+            out.put("splitClass", String.valueOf(greeting));
+        } catch (Throwable t) {
+            out.put("splitClass", "unavailable:" + t.getClass().getSimpleName());
+        }
+        out.put("versionCode", String.valueOf(versionCodeOfSelf()));
+
         out.put("packageName", getPackageName());
         writeMap("probe-identity.properties", out);
+    }
+
+    private long versionCodeOfSelf() {
+        try {
+            android.content.pm.PackageInfo info =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            return android.os.Build.VERSION.SDK_INT >= 28
+                    ? info.getLongVersionCode() : info.versionCode;
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 }
