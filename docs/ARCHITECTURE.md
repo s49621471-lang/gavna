@@ -197,7 +197,7 @@ that cannot bind logs a structured `HOOK_BIND_FAILED` diagnostic instead of thro
 | Binder | `ServiceManager.sCache` + `sServiceManager` | `activity`, `package`, `window`, `notification`, `appops`, `alarm`, `jobscheduler`, `content`, `permissionmgr`, `telephony`, `wifi`, `media_session`, `clipboard`, `account`, `device_policy` |
 | Binder | Cached singletons (`ActivityManager.IActivityManagerSingleton`, `ActivityTaskManager.IActivityTaskManagerSingleton`, `AppGlobals.sPackageManager`, `ContentResolver` provider cache, …) | The framework caches the *unwrapped* interface; a `ServiceManager`-only hook is not enough. A sweep re-wraps every known singleton after `ServiceManager` patching. |
 | ART | `Instrumentation`, `ActivityThread.mAppThread`, `ClientTransactionHandler` | Activity/Service lifecycle (§6.1) |
-| ART (LSPlant) | `Settings.Secure.getString`, `Build` accessors, `System.loadLibrary`, `Runtime.loadLibrary0` | Device profile + native loading, where a Binder hook cannot reach |
+| ART (LSPlant) | `Build` accessors, `System.loadLibrary`, `Runtime.loadLibrary0` | Reserved for phase 4/6: only for call sites genuinely unreachable through the Binder layer. `Settings.Secure.getString` is *not* one of them — it routes through `IContentProvider`, which the Binder shims already cover — so LSPlant is not yet a dependency. |
 | Native (ShadowHook) | `open/openat/openat2, stat/lstat/fstatat, access/faccessat, mkdir/mkdirat, unlink/unlinkat, rename/renameat/renameat2, chmod/chown, link/symlink/readlink, opendir, statfs/statvfs, execve, dlopen/android_dlopen_ext, __system_property_get/find/read_callback` | IO redirection + property virtualization (§7.3, §11.4) |
 
 ---

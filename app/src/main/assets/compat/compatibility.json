@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "UNIQUE compatibility database.",
+    "Every package-specific behaviour in the engine enters through this file; the code",
+    "itself contains no package-name comparisons (ARCHITECTURE.md section 20).",
+    "Entries here are architectural facts, not measured results: nothing has been run on",
+    "a device yet, so no package is claimed as SUPPORTED. Phase 7 fills this in from the",
+    "test matrix."
+  ],
+  "version": 1,
+  "profiles": [
+    {
+      "package": "com.google.android.gms",
+      "support": "PARTIAL",
+      "note": "Imported from the device, never bundled. In-space GMS has no privileged permissions and no attestation; sign-in flows can work, Play Integrity cannot.",
+      "flags": ["FORCE_VIRTUAL_GMS"]
+    },
+    {
+      "package": "com.google.android.gsf",
+      "support": "PARTIAL",
+      "note": "Google Services Framework, imported alongside GMS for Mode A.",
+      "flags": ["FORCE_VIRTUAL_GMS"]
+    },
+    {
+      "package": "com.android.vending",
+      "support": "UNSUPPORTED",
+      "note": "Play Store requires an attested, installed identity. Not achievable in app-level virtualization.",
+      "flags": ["REQUIRES_ATTESTATION"]
+    }
+  ]
+}

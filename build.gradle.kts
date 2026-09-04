@@ -58,6 +58,13 @@ subprojects {
             lint {
                 abortOnError = false
             }
+            testOptions {
+                // Engine logic under test calls into Diagnostics, which calls
+                // android.util.Log. Returning defaults instead of throwing keeps the
+                // logic testable on the JVM without dragging Robolectric into modules
+                // that have no other need for it.
+                unitTests.isReturnDefaultValues = true
+            }
         }
     }
     plugins.withId("org.jetbrains.kotlin.android") {
