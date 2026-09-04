@@ -49,14 +49,29 @@ Every device claim below names the environment. Nothing is marked working on rea
 | `LaunchActivityItem` located and its shape understood | No `LAUNCH_ITEM_SHAPE_UNKNOWN`; sibling transactions correctly ignored |
 | Virtual `PackageManager` installed | `SERVICE_HOOKED service=package cache=true singletons=1` — 7 methods bound |
 | Native library loads in the virtual process | `libunique_native loaded (page size 4096)` |
+| `LoadedApk` graft completes | `BOOTSTRAP_OK … applicationClass=com.unique.probe.ProbeApplication` |
+| Launch transaction rewritten to the guest's own component | `TRANSACTION_REWRITTEN activity=com.unique.probe.ProbeActivity` |
+| **The guest's own `Application` subclass runs** | `UniqueProbe: Application.onCreate package=com.unique.probe class=com.unique.probe.ProbeApplication filesDir=…/virtual/users/0/…` |
+| The platform launches the guest's real Activity | `Unable to start activity ComponentInfo{com.unique.probe/com.unique.probe.ProbeActivity}` — the component is the guest's, not a stub |
+| Outbound identity accepted by system_server | `VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique` |
 | A crashing virtual process leaves a diagnostic | `CRASH UNCAUGHT_EXCEPTION` recorded by `CrashGuard` |
 
 ## On device (EMU34): not yet passing
 
-`t02` — the activity hand-off — is the current work. The graft reaches application
-creation; the last observed failure was the W^X one above, now fixed and awaiting a
-re-run. Until `t02` passes, **no virtual application has rendered**, and the remaining
-acceptance tests (`t03`–`t06`) have not been exercised.
+`t02` — the activity hand-off — is the current work, and each run has moved the failure
+further down the launch path:
+
+| Blocker | Status |
+|---|---|
+| `hostContext` null during `attachBaseContext` → silent return | fixed |
+| `makeApplication` failure reason swallowed | fixed (chain now reported) |
+| `SecurityException: Writable dex file … is not allowed` (W^X on the APK) | fixed |
+| `SecurityException: Given calling package … does not match caller's uid` | fixed (outbound identity rewrite) |
+| `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed, awaiting re-run |
+
+The guest's `Application` runs and the platform launches the guest's real Activity, but
+**no virtual application has rendered yet**: the failures above all occur inside
+`Activity.attach`. The remaining acceptance tests (`t03`–`t06`) have not been exercised.
 
 ## Deliberately not implemented
 
