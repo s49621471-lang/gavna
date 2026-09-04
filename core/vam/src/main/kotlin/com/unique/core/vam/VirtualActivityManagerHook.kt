@@ -1,11 +1,15 @@
 package com.unique.core.vam
 
+import android.content.AttributionSource
+import android.content.Context
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.shim.MethodShim
 import com.unique.core.common.shim.shim
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.SystemServiceHook
+import com.unique.core.hook.Reflect
 import java.lang.reflect.Method
+import java.lang.reflect.Proxy
 
 /**
  * Presents the host's identity to system services on the guest's behalf.
@@ -58,11 +62,15 @@ object VirtualActivityManagerHook {
     val boundPackage: String? get() = installedFor
 
     @Synchronized
-    fun install(virtualPackage: String, hostPackage: String): Boolean {
+    fun install(virtualPackage: String, hostContext: Context): Boolean {
         if (installedFor == virtualPackage) return true
 
+        val hostPackage = hostContext.packageName
         val target = SystemServiceHook.TARGETS.first { it.serviceName == "activity" }
-        val report = SystemServiceHook.install(target, shims(virtualPackage, hostPackage))
+        val report = SystemServiceHook.install(
+            target,
+            shims(virtualPackage, hostPackage, hostContext.attributionSource),
+        )
         if (!report.installed) {
             Diagnostics.error(
                 DiagChannel.LAUNCH, "VAM_HOOK_FAILED",
@@ -82,12 +90,71 @@ object VirtualActivityManagerHook {
         return true
     }
 
-    private fun shims(virtualPackage: String, hostPackage: String): List<MethodShim> = listOf(
+    private fun shims(
+        virtualPackage: String,
+        hostPackage: String,
+        hostSource: AttributionSource,
+    ): List<MethodShim> = listOf(
+
+        // Registered first, because the first shim that binds to a method wins and this
+        // one needs both halves: the outbound package rewrite *and* a wrapped provider.
+        shim("getContentProvider") {
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteResult { holder -> wrapProviderHolder(holder, hostSource) }
+        },
+
         shim("callerIdentity") {
             matchMethods { method -> carriesCallerIdentity(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
         },
     )
+
+    /**
+     * Wraps the `IContentProvider` handed back by `getContentProvider`.
+     *
+     * Acquiring the provider is only half the problem. Every call *through* it carries an
+     * `AttributionSource`, built from the guest `Context` and therefore naming the virtual
+     * package, and the provider side checks it against the caller's uid:
+     *
+     * ```
+     * SecurityException: Package com.unique.probe does not belong to 10109
+     * ```
+     *
+     * The host's own `AttributionSource` is substituted rather than a rewritten copy of
+     * the guest's: an `AttributionSource` carries a token the system registered for it,
+     * and editing the package on a tokened source would produce something the platform
+     * has every right to reject. The host's is already valid for the host's uid.
+     */
+    private fun wrapProviderHolder(holder: Any?, hostSource: AttributionSource): Any? {
+        if (holder == null) return null
+        val providerField = runCatching {
+            holder.javaClass.getField("provider")
+        }.getOrElse {
+            Diagnostics.warn(
+                DiagChannel.LAUNCH, "PROVIDER_HOLDER_SHAPE_UNKNOWN",
+                mapOf("class" to holder.javaClass.name),
+            )
+            return holder
+        }
+        val provider = runCatching { providerField.get(holder) }.getOrNull() ?: return holder
+        if (Proxy.isProxyClass(provider.javaClass)) return holder // already wrapped
+
+        val iface = Reflect.findClass("android.content.IContentProvider") ?: return holder
+        val wrapped = Proxy.newProxyInstance(
+            iface.classLoader, arrayOf(iface),
+        ) { _, method, args ->
+            val rewritten = args?.map { arg ->
+                if (arg is AttributionSource) hostSource else arg
+            }?.toTypedArray()
+            try {
+                method.invoke(provider, *(rewritten ?: emptyArray()))
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw e.targetException
+            }
+        }
+        runCatching { providerField.set(holder, wrapped) }
+        return holder
+    }
 
     internal fun carriesCallerIdentity(method: Method): Boolean {
         if (method.name in IDENTITY_METHODS) return true

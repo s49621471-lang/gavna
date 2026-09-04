@@ -140,7 +140,7 @@ object AppBootstrap {
         // name outward, and system_server checks that against UNIQUE's real uid. Without
         // this, the very first call fails - PhoneWindow's constructor reads a setting,
         // which acquires a content provider, which is rejected.
-        if (!VirtualActivityManagerHook.install(params.packageName, hostContext.packageName)) {
+        if (!VirtualActivityManagerHook.install(params.packageName, hostContext)) {
             return Result.Failed(
                 "VAM_HOOK_FAILED",
                 "could not virtualize ActivityManager; every framework call from " +
