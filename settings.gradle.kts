@@ -26,4 +26,16 @@ dependencyResolutionManagement {
 
 rootProject.name = "unique"
 
+include(":app")
 include(":core:common")
+include(":core:hook")
+include(":core:compat")
+include(":core:diagnostics")
+include(":core:vprofile")
+include(":core:vstorage")
+include(":core:vpm")
+include(":core:vam")
+include(":core:vprocess")
+include(":core:vpermission")
+include(":core:google")
+include(":core:native")
