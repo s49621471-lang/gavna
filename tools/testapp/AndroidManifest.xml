@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  UNIQUE probe application.
+
+  Deliberately ordinary: a plain Application subclass, one Activity, SharedPreferences, a
+  file and a SQLite database. Nothing about it knows it is being virtualized, which is the
+  point - it reports what the platform tells it, and the verification suite checks those
+  answers against what UNIQUE intended.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.unique.probe"
+    android:versionCode="7"
+    android:versionName="1.0.7">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+
+    <application
+        android:name="com.unique.probe.ProbeApplication"
+        android:label="UNIQUE Probe"
+        android:allowBackup="false">
+
+        <activity
+            android:name="com.unique.probe.ProbeActivity"
+            android:exported="true"
+            android:label="UNIQUE Probe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

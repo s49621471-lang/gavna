@@ -22,7 +22,15 @@ extra["targetSdk"] = 36
 extra["minSdk"] = 31
 
 // ARM64 only, per ARCHITECTURE.md section 2.
-extra["abis"] = setOf("arm64-v8a")
+//
+// Overridable with -Punique.abis=... for one purpose: running the on-device
+// verification suite on an x86_64 emulator, which is the only Android runtime available
+// in CI. The engine's bootstrap is pure Java and ABI-independent, so that exercises it
+// faithfully; anything ABI-specific still needs real ARM64 hardware. The product default
+// is unchanged and release builds are arm64-v8a only unless the property is passed.
+extra["abis"] = (findProperty("unique.abis") as String?)
+    ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+    ?: setOf("arm64-v8a")
 
 extra["uniqueVersionCode"] = 1
 extra["uniqueVersionName"] = "0.1.0-phase1"

@@ -9,7 +9,8 @@ import com.unique.core.diagnostics.CrashGuard
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
-import kotlin.system.exitProcess
+import com.unique.app.engine.UniqueEngine
+import com.unique.core.vam.LaunchInterceptor
 
 /** Which of UNIQUE's processes this code is running in. */
 enum class UniqueProcess {
@@ -97,6 +98,16 @@ class UniqueApplication : Application() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        // Engine initialisation happens here rather than in attachBaseContext: it opens
+        // the state database, and doing that before the Application is fully attached is
+        // both unnecessary and, as an earlier crash showed, unsafe.
+        if (processKind == UniqueProcess.CORE) {
+            UniqueEngine.init(this)
+        }
+    }
+
     private fun initServer() {
         CompatDatabase.load(this)
         UniqueNative.load()
@@ -106,27 +117,37 @@ class UniqueApplication : Application() {
     }
 
     /**
-     * TODO(phase-2): bind the virtual app.
+     * Prepares a virtual app process.
      *
-     * The full sequence is: read the launch parameters handed over by `:server`, bind the
-     * DeviceProfile, publish the redirection table, install the system-service shims,
-     * graft a `LoadedApk` for the virtual package, and only then let ActivityThread
-     * proceed. None of that is implemented yet.
+     * No package is bound yet: which instance this slot serves is decided by the launch
+     * transaction, and binding here would mean guessing. [LaunchInterceptor] performs the
+     * bootstrap synchronously on the main thread when the transaction arrives, which is
+     * also what guarantees `Application.onCreate` runs before the first Activity.
      *
-     * Until it is, a `:vappN` process refuses to continue rather than starting up as a
-     * half-configured host process. A half-configured virtual process is the worst
-     * possible state: the app would run with UNIQUE's identity and write to UNIQUE's own
-     * data directory, which is exactly the data corruption this project must never cause.
+     * If the interceptor cannot be installed, the process stays a plain host process and
+     * the stub activity reports and finishes - a visible failure rather than an app
+     * running under UNIQUE's identity in UNIQUE's own data directory.
      */
     private fun initVirtualApp() {
-        Diagnostics.error(
-            DiagChannel.LAUNCH, "VAPP_BOOTSTRAP_NOT_IMPLEMENTED",
-            mapOf(
-                "slot" to vappIndex.toString(),
-                "detail" to "Virtual app bootstrap lands in phase 2; refusing to start a half-configured process.",
-            ),
+        if (HiddenApi.ensure() != HiddenApi.State.GRANTED) {
+            Diagnostics.error(
+                DiagChannel.LAUNCH, "VAPP_HIDDEN_API_DENIED",
+                mapOf("slot" to vappIndex.toString(), "detail" to HiddenApi.failureDetail.orEmpty()),
+            )
+            return
+        }
+        UniqueNative.load()
+        if (!LaunchInterceptor.install(this)) {
+            Diagnostics.error(
+                DiagChannel.LAUNCH, "VAPP_INTERCEPTOR_UNAVAILABLE",
+                mapOf("slot" to vappIndex.toString()),
+            )
+            return
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "VAPP_READY",
+            mapOf("slot" to vappIndex.toString()),
         )
-        exitProcess(0)
     }
 
     /**

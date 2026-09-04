@@ -171,7 +171,10 @@ interface UniqueDao {
      * letting it grow without bound turns the users/ tree into a sparse mess after a user
      * has added and removed a few hundred instances.
      */
-    @Query("SELECT COALESCE(MIN(t.vuid + 1), 0) FROM instances t WHERE NOT EXISTS (SELECT 1 FROM instances u WHERE u.vuid = t.vuid + 1)")
+    @Query(
+        "SELECT MIN(v) FROM (SELECT 0 AS v UNION SELECT vuid + 1 FROM instances) " +
+            "WHERE v NOT IN (SELECT vuid FROM instances)"
+    )
     suspend fun nextVuid(): Int
 
     @Query("SELECT * FROM permissions WHERE vuid = :vuid")

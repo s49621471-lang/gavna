@@ -74,12 +74,27 @@ internal class BoundRule(private val rule: ArgRule, private val positions: IntAr
     }
 }
 
-/** The call being intercepted, handed to a full replacement handler. */
+/**
+ * The call being intercepted, handed to a full replacement handler.
+ *
+ * [proceed] exists because most interesting interception is *conditional*: a virtual
+ * PackageManager answers for the virtual package and must hand every other package to the
+ * real one. Without it, a replacement handler has to choose between answering everything
+ * or nothing, and the usual workaround - reaching around the shim to call the target
+ * directly - loses the argument rewriting the shim already applied.
+ */
 class ShimCall(
     val method: Method,
     val args: Array<Any?>,
     val target: Any?,
-)
+    private val original: (Array<Any?>) -> Any?,
+) {
+    /** Invokes the real implementation with the current (possibly rewritten) arguments. */
+    fun proceed(): Any? = original(args)
+
+    /** The first argument of type [T], or null. Convenience for signature-agnostic handlers. */
+    inline fun <reified T : Any> firstArgOf(): T? = args.filterIsInstance<T>().firstOrNull()
+}
 
 /**
  * One rewrite rule.
@@ -223,7 +238,8 @@ class ShimRegistry(private val apiLevel: Int) {
             if (plan == null) {
                 invokeTarget(target, method, args)
             } else {
-                plan.apply(ShimCall(method, args, target)) { a -> invokeTarget(target, method, a) }
+                val invoke: (Array<Any?>) -> Any? = { a -> invokeTarget(target, method, a) }
+                plan.apply(ShimCall(method, args, target, invoke), invoke)
             }
         }
 

@@ -8,11 +8,14 @@ android {
 }
 
 dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
     api(project(":core:common"))
     implementation(libs.androidx.annotation)
     implementation(libs.kotlinx.coroutines.core)
     implementation(project(":core:hook"))
     implementation(project(":core:vpm"))
+    implementation(project(":core:vstorage"))
     implementation(project(":core:vprocess"))
     implementation(project(":core:vpermission"))
     implementation(project(":core:diagnostics"))

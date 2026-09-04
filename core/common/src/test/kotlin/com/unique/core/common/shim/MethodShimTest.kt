@@ -183,6 +183,35 @@ class MethodShimTest {
         assertThat(real.seenUserId).isEqualTo(0)
     }
 
+    @Test fun `a replacement can answer some calls and delegate the rest`() {
+        // This is the shape every virtual system service needs: answer for the virtual
+        // package, hand everything else to the real implementation.
+        val real = RecordingV33()
+        val s = shim("getPackageForToken") {
+            replaceWith { call ->
+                if (call.firstArgOf<String>() == "virtual") "com.example.virtual" else call.proceed()
+            }
+        }
+        val (proxy, _) = ShimRegistry(33).register(s)
+            .wrap<ActivityManagerV33>(real, ActivityManagerV33::class.java)
+
+        assertThat(proxy.getPackageForToken("virtual")).isEqualTo("com.example.virtual")
+        assertThat(proxy.getPackageForToken("other")).isEqualTo("com.unique")
+    }
+
+    @Test fun `proceed sees arguments already rewritten by the rules`() {
+        val real = RecordingV33()
+        val s = shim("startActivity") {
+            rewriteAll<String>(matching = { it == "com.example.virtual" }) { "com.unique" }
+            replaceWith { call -> call.proceed() }
+        }
+        val (proxy, _) = ShimRegistry(33).register(s)
+            .wrap<ActivityManagerV33>(real, ActivityManagerV33::class.java)
+
+        proxy.startActivity(null, "com.example.virtual", FakeIntent("A"), 0)
+        assertThat(real.seenPackage).isEqualTo("com.unique")
+    }
+
     @Test fun `exceptions from the real implementation propagate unwrapped`() {
         val throwing = object : ActivityManagerV33 {
             override fun startActivity(c: Any?, p: String, i: FakeIntent, u: Int): Int =

@@ -23,14 +23,16 @@
     <!--
       Stub activity theme.
 
-      A stub is replaced by the virtual activity's own theme before onCreate, so what
-      matters here is that the window is transparent and has no animation of its own -
-      otherwise the user sees a flash of UNIQUE's background before the app's first frame.
+      Opaque, and deliberately so. The window is created by the system from the *stub's*
+      manifest attributes before any UNIQUE code runs in the target process; the virtual
+      activity's own theme is applied client-side afterwards. A translucent stub therefore
+      makes an ordinary opaque app render see-through, which is far worse than the brief
+      flash a translucent stub was meant to avoid.
+
+      DeviceDefault rather than Material: it is what an app with no theme of its own gets
+      on the device, so the fallback matches the platform instead of matching UNIQUE.
     -->
-    <style name="Theme.Unique.StubTransparent" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:windowContentOverlay">@null</item>
+    <style name="Theme.Unique.Stub" parent="@android:style/Theme.DeviceDefault.NoActionBar">
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:windowDisablePreview">true</item>
     </style>

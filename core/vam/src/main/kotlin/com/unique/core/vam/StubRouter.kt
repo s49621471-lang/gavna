@@ -1,9 +1,6 @@
 package com.unique.core.vam
 
-import android.content.ComponentName
-import android.content.Intent
 import android.os.Bundle
-import com.unique.core.common.apk.ComponentEntry
 
 /**
  * Translates between a virtual app's real components and the host's stub components.
@@ -19,11 +16,11 @@ import com.unique.core.common.apk.ComponentEntry
  */
 object StubRouter {
 
-    const val EXTRA_INTENT = "_unique_intent"
+    // Launch parameters are carried by VirtualLaunchParams, which is the single
+    // marshalling contract for them. These two remain because notification routing is a
+    // different problem with a different lifetime - a tap arrives long after the launch.
     const val EXTRA_VUID = "_unique_vuid"
     const val EXTRA_COMPONENT = "_unique_component"
-    const val EXTRA_PROCESS = "_unique_process"
-    const val EXTRA_THEME = "_unique_theme"
 
     /** Stub activity naming, generated to match; see tools/stubgen. */
     fun stubActivity(processIndex: Int, launchMode: Int, affinityIndex: Int): String =
@@ -48,57 +45,6 @@ object StubRouter {
 
     fun virtualJobId(hostJobId: Int): Int = hostJobId and 0xFFFFF
     fun jobOwner(hostJobId: Int): Int = (hostJobId ushr 20) and 0x7FF
-
-    /**
-     * Wraps a virtual intent into one the system will accept.
-     *
-     * The original intent is carried as a parcelled extra rather than being mutated, so
-     * that [unwrap] returns an object indistinguishable from what the app passed in —
-     * including its flags, categories, clip data and selector.
-     */
-    fun wrap(
-        hostPackage: String,
-        stubClassName: String,
-        vuid: Int,
-        target: ComponentEntry,
-        original: Intent,
-    ): Intent = Intent().apply {
-        component = ComponentName(hostPackage, stubClassName)
-        // Task identity must come from the stub, or the system groups every virtual app
-        // into one task. The affinity is chosen by the caller when it picks the stub.
-        flags = original.flags
-        putExtra(EXTRA_INTENT, Intent(original))
-        putExtra(EXTRA_VUID, vuid)
-        putExtra(EXTRA_COMPONENT, target.className)
-        putExtra(EXTRA_PROCESS, target.processName)
-        if (target.theme != 0) putExtra(EXTRA_THEME, target.theme)
-    }
-
-    /** Recovers what the virtual app originally asked for. Null when this is not ours. */
-    fun unwrap(stubIntent: Intent?): Unwrapped? {
-        val intent = stubIntent ?: return null
-        if (!intent.hasExtra(EXTRA_INTENT)) return null
-        @Suppress("DEPRECATION")
-        val original = intent.getParcelableExtra<Intent>(EXTRA_INTENT) ?: return null
-        val vuid = intent.getIntExtra(EXTRA_VUID, -1)
-        val component = intent.getStringExtra(EXTRA_COMPONENT) ?: return null
-        if (vuid < 0) return null
-        return Unwrapped(
-            vuid = vuid,
-            className = component,
-            processName = intent.getStringExtra(EXTRA_PROCESS),
-            theme = intent.getIntExtra(EXTRA_THEME, 0),
-            intent = original,
-        )
-    }
-
-    data class Unwrapped(
-        val vuid: Int,
-        val className: String,
-        val processName: String?,
-        val theme: Int,
-        val intent: Intent,
-    )
 
     /**
      * Extras used to route a notification tap back to the instance that posted it.

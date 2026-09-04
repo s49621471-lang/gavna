@@ -74,7 +74,7 @@ val generateStubs by tasks.registering {
                         |            android:launchMode="${launchModes[mIdx]}"
                         |            android:taskAffinity="${'$'}{applicationId}.vapp$p.a$a"
                         |            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|layoutDirection|density|fontScale|fontWeightAdjustment"
-                        |            android:theme="@style/Theme.Unique.StubTransparent"
+                        |            android:theme="@style/Theme.Unique.Stub"
                         |            android:windowSoftInputMode="adjustResize"
                         |            android:resizeableActivity="true" />
                         |
@@ -142,6 +142,7 @@ android {
         targetSdk = rootProject.extra["targetSdk"] as Int
         versionCode = rootProject.extra["uniqueVersionCode"] as Int
         versionName = rootProject.extra["uniqueVersionName"] as String
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     sourceSets {
@@ -149,6 +150,7 @@ android {
             manifest.srcFile(generatedManifestDir.map { it.file("AndroidManifest.xml") })
             kotlin.srcDir(generatedSourceDir)
         }
+        getByName("androidTest") { kotlin.srcDir("src/androidTest/kotlin") }
     }
 
     buildTypes {
@@ -197,4 +199,13 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.startup)
     implementation(libs.kotlinx.coroutines.android)
+
+    // The on-device verification suite. It drives UniqueEngine, the same entry point the
+    // interface uses, so the test cannot pass through a path the product does not take.
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.truth)
+    androidTestImplementation(libs.kotlinx.coroutines.android)
 }

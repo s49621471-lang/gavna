@@ -27,3 +27,6 @@ Thumbs.db
 
 # Scratch
 /scratch/
+
+# Probe signing key: generated locally, never shared.
+tools/testapp/.keystore/

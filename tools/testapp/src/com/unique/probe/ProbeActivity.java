@@ -1,0 +1,138 @@
+package com.unique.probe;
+
+import android.app.Activity;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.graphics.Color;
+import android.os.Bundle;
+import android.util.Log;
+import android.widget.TextView;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class ProbeActivity extends Activity {
+    private static final String TAG = ProbeApplication.TAG;
+    public static final String RESULT_FILE = "probe-result.properties";
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        TextView view = new TextView(this);
+        view.setTextColor(Color.WHITE);
+        view.setBackgroundColor(Color.BLACK);
+        view.setPadding(32, 96, 32, 32);
+        setContentView(view);
+
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            collect(out);
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "probe failed", t);
+        }
+        writeResult(out);
+
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<String, String> e : out.entrySet()) {
+            Log.i(TAG, e.getKey() + "=" + e.getValue());
+            text.append(e.getKey()).append(" = ").append(e.getValue()).append('\n');
+        }
+        view.setText(text.toString());
+
+        if (getIntent() != null && getIntent().getBooleanExtra("probe.crash", false)) {
+            Log.w(TAG, "crashing on request");
+            throw new IllegalStateException("Deliberate probe crash");
+        }
+    }
+
+    private void collect(Map<String, String> out) throws Exception {
+        out.put("packageName", getPackageName());
+        out.put("applicationClass", getApplication().getClass().getName());
+        out.put("applicationOnCreateRan",
+                String.valueOf(ProbeApplication.applicationOnCreateAt != 0L));
+        out.put("applicationBeforeActivity",
+                String.valueOf(ProbeApplication.applicationOnCreateAt != 0L
+                        && ProbeApplication.applicationOnCreateAt < System.nanoTime()));
+        out.put("activityClass", getClass().getName());
+        out.put("componentName", getComponentName().flattenToString());
+        out.put("pid", String.valueOf(android.os.Process.myPid()));
+        out.put("uid", String.valueOf(android.os.Process.myUid()));
+        out.put("dataDir", getDataDir().getAbsolutePath());
+        out.put("filesDir", getFilesDir().getAbsolutePath());
+        out.put("cacheDir", getCacheDir().getAbsolutePath());
+        out.put("codeCacheDir", getCodeCacheDir().getAbsolutePath());
+        out.put("packageCodePath", getPackageCodePath());
+        out.put("packageResourcePath", getPackageResourcePath());
+        out.put("appInfoDataDir", getApplicationInfo().dataDir);
+        out.put("appInfoSourceDir", getApplicationInfo().sourceDir);
+        out.put("appInfoNativeLibraryDir", String.valueOf(getApplicationInfo().nativeLibraryDir));
+        out.put("targetSdk", String.valueOf(getApplicationInfo().targetSdkVersion));
+
+        // SharedPreferences: the counter is the persistence proof across restarts.
+        SharedPreferences prefs = getSharedPreferences("probe", MODE_PRIVATE);
+        int launchCount = prefs.getInt("launchCount", 0) + 1;
+        prefs.edit().putInt("launchCount", launchCount).commit();
+        out.put("launchCount", String.valueOf(launchCount));
+        out.put("sharedPrefsFile",
+                new File(new File(getDataDir(), "shared_prefs"), "probe.xml").getAbsolutePath());
+
+        // A plain file, appended once per launch.
+        File log = new File(getFilesDir(), "launches.log");
+        FileOutputStream fos = new FileOutputStream(log, true);
+        fos.write((System.currentTimeMillis() + "\n").getBytes(StandardCharsets.UTF_8));
+        fos.close();
+        out.put("fileLineCount", String.valueOf(countLines(log)));
+        out.put("filePath", log.getAbsolutePath());
+
+        // SQLite, through the platform's own path resolution.
+        SQLiteDatabase db = openOrCreateDatabase("probe.db", MODE_PRIVATE, null);
+        db.execSQL("CREATE TABLE IF NOT EXISTS launches (id INTEGER PRIMARY KEY, at INTEGER)");
+        db.execSQL("INSERT INTO launches (at) VALUES (" + System.currentTimeMillis() + ")");
+        Cursor c = db.rawQuery("SELECT COUNT(*) FROM launches", null);
+        c.moveToFirst();
+        out.put("dbRowCount", String.valueOf(c.getInt(0)));
+        c.close();
+        out.put("dbPath", getDatabasePath("probe.db").getAbsolutePath());
+        db.close();
+    }
+
+    private int countLines(File f) throws IOException {
+        byte[] data = new byte[(int) f.length()];
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        int read = in.read(data);
+        in.close();
+        int lines = 0;
+        for (int i = 0; i < read; i++) if (data[i] == '\n') lines++;
+        return lines;
+    }
+
+    /**
+     * Writes the observations where the verification suite can read them.
+     *
+     * The suite runs in UNIQUE's own process and reads this file from the instance's
+     * directory - which also proves the file landed where UNIQUE intended it to.
+     */
+    private void writeResult(Map<String, String> out) {
+        try {
+            File f = new File(getFilesDir(), RESULT_FILE);
+            OutputStreamWriter w = new OutputStreamWriter(
+                    new FileOutputStream(f, false), StandardCharsets.UTF_8);
+            for (Map.Entry<String, String> e : out.entrySet()) {
+                w.write(e.getKey() + "=" + e.getValue() + "\n");
+            }
+            w.flush();
+            w.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write result file", t);
+        }
+    }
+}

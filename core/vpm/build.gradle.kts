@@ -20,6 +20,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(project(":core:hook"))
     implementation(project(":core:vstorage"))
+    implementation(project(":core:native"))
     implementation(project(":core:diagnostics"))
     api(libs.room.runtime)
     implementation(libs.room.ktx)

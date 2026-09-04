@@ -13,7 +13,8 @@ import android.os.Bundle
 import android.os.IBinder
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
-import com.unique.core.vam.StubRouter
+import com.unique.core.vam.LaunchInterceptor
+import com.unique.core.vam.VirtualLaunchParams
 
 /**
  * Base classes for the generated stub components.
@@ -29,7 +30,7 @@ import com.unique.core.vam.StubRouter
 abstract class StubActivityBase(private val slot: Int) : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val routed = StubRouter.unwrap(intent)
+        val routed = VirtualLaunchParams.from(intent)
         if (routed == null) {
             // Reached without routing information. This happens if the system restores a
             // stub from a saved task after UNIQUE was killed. Finishing immediately is
@@ -43,26 +44,23 @@ abstract class StubActivityBase(private val slot: Int) : Activity() {
             return
         }
 
-        // The virtual activity's theme has to be applied before super.onCreate, or the
-        // window is created with the stub's attributes. From Android 15 that also decides
-        // edge-to-edge insets, so getting it late is visible, not just cosmetic.
-        if (routed.theme != 0) {
-            runCatching { setTheme(routed.theme) }
-        }
-
-        // TODO(phase-3): hand off to the virtual activity.
+        // Reaching here means the hand-off did not happen.
         //
-        // The real implementation replaces the LaunchActivityItem's intent and
-        // ActivityInfo inside the ClientTransaction before ActivityThread instantiates
-        // anything, so the app's own Activity class is created and never learns a stub
-        // existed. That interception is not in place yet, so this reports and finishes
-        // rather than showing an empty window that looks like the app failed to draw.
+        // On the normal path LaunchInterceptor rewrites the ClientTransaction before
+        // ActivityThread instantiates anything, so the app's own Activity class is
+        // created and this stub class is never constructed at all. If this code runs, the
+        // interceptor was not installed or the transaction shape was not recognised -
+        // both of which are reported separately on the LAUNCH channel.
+        //
+        // Finishing is the right response: an empty stub window would look to the user
+        // like the app itself failed to draw.
         Diagnostics.error(
-            DiagChannel.LAUNCH, "ACTIVITY_HANDOFF_NOT_IMPLEMENTED",
+            DiagChannel.LAUNCH, "ACTIVITY_HANDOFF_DID_NOT_HAPPEN",
             mapOf(
                 "slot" to slot.toString(),
                 "vuid" to routed.vuid.toString(),
-                "component" to routed.className,
+                "component" to (routed.targetActivity ?: "<launcher>"),
+                "interceptorInstalled" to LaunchInterceptor.isInstalled.toString(),
             ),
         )
         super.onCreate(savedInstanceState)
@@ -98,7 +96,7 @@ abstract class StubJobServiceBase(private val slot: Int) : JobService() {
             mapOf(
                 "slot" to slot.toString(),
                 "jobId" to (params?.jobId?.toString() ?: "?"),
-                "vuid" to (params?.jobId?.let { StubRouter.jobOwner(it).toString() } ?: "?"),
+                "vuid" to (params?.jobId?.let { com.unique.core.vam.StubRouter.jobOwner(it).toString() } ?: "?"),
             ),
         )
         return false
