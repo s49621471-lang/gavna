@@ -492,6 +492,50 @@ class VirtualLaunchTest {
         assertThat(second["taskId"]).isEqualTo(first["taskId"])
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: a PendingIntent the guest builds for itself.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t11_aPendingIntentTheGuestBuiltFiresIntoTheGuest() = runBlocking {
+        val instance = requireInstance()
+        val dir = model.filesDir(instance.vuid, probePackage)
+        val secondResult = File(dir, "probe-second.properties")
+        val pendingResult = File(dir, "probe-pending.properties")
+        secondResult.delete()
+        pendingResult.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.pendingIntent", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val pending = awaitFile(pendingResult)
+        assertThat(pending["error"]).isNull()
+        assertThat(pending["created"]).isEqualTo("true")
+        assertThat(pending["sent"]).isEqualTo("true")
+
+        // system_server assembles a PendingIntent at creation time and fires it later,
+        // with nothing of the app's still running to fix up the component. So the stub
+        // has to be baked in at creation, and the inbound rewrite has to recover the
+        // guest's activity from it.
+        val second = awaitFile(secondResult)
+        assertThat(second["activityClass"]).isEqualTo("$probePackage.ProbeSecondActivity")
+        assertThat(second["extra"]).isEqualTo("via-pending-intent")
+        assertThat(second["filesDir"]).isEqualTo(dir)
+    }
+
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {

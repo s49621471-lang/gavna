@@ -224,6 +224,7 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_KIND)
             removeExtra(VirtualLaunchParams.KEY_PROCESS)
             removeExtra(VirtualLaunchParams.KEY_SLOT)
+            removeExtra(VirtualLaunchIntent.KEY_GUEST_IDENTIFIER)
         }
     }
 
@@ -326,6 +327,8 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_COMPONENT)
             removeExtra(VirtualLaunchParams.KEY_PROCESS)
             removeExtra(VirtualLaunchParams.KEY_SLOT)
+            // UNIQUE's stub identity comes off here; the guest gets its own back.
+            VirtualLaunchIntent.restoreGuestIdentity(this, stubIntent)
         }
 
         intentField.set(item, realIntent)

@@ -87,6 +87,9 @@ data class VirtualLaunchParams(
 /** Builds the intent that starts a virtual app on a given stub slot. */
 object VirtualLaunchIntent {
 
+    /** Where a guest intent's own identifier is parked while the stub carries UNIQUE's. */
+    const val KEY_GUEST_IDENTIFIER = "unique.identifier"
+
     /**
      * The stub the system will actually launch.
      *
@@ -106,6 +109,44 @@ object VirtualLaunchIntent {
             component = ComponentName(hostPackage, stub)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             params.writeTo(this)
+            stampIdentity(this, guest = null, params = params)
         }
+    }
+
+    /**
+     * Makes a stub intent distinguishable from every other stub intent in its slot.
+     *
+     * Every activity of a virtual process shares a pool of eight stub classes, so to the
+     * task system two different guest activities look like the *same component*. With
+     * `FLAG_ACTIVITY_NEW_TASK` that is not a cosmetic difference: `ActivityStarter`
+     * compares the incoming intent against the tasks it already has with
+     * `Intent.filterEquals`, finds a match, and delivers `onNewIntent` to the activity
+     * already on top instead of starting the one that was asked for —
+     *
+     * ```
+     * START u0 {flg=0x10000000 cmp=com.unique/.stub.ActivityStub_p0_m0_a0} … result code=3
+     * ```
+     *
+     * `START_DELIVERED_TO_TOP`. The same collision makes two `PendingIntent`s for two
+     * different guest screens compare equal, so `FLAG_UPDATE_CURRENT` silently overwrites
+     * one with the other — which is exactly how a notification opens the wrong screen.
+     *
+     * `Intent.setIdentifier` exists for this and is part of `filterEquals` since API 29:
+     * it gives the intent an identity without touching action, data or categories, none of
+     * which are UNIQUE's to invent. Two stub intents for the same guest component still
+     * compare equal, so genuine `singleTop` and "deliver to top" behaviour is preserved.
+     *
+     * The guest's own identifier is parked in an extra and restored by
+     * [restoreGuestIdentity], because it is the guest's, not UNIQUE's.
+     */
+    fun stampIdentity(stub: Intent, guest: Intent?, params: VirtualLaunchParams) {
+        stub.putExtra(KEY_GUEST_IDENTIFIER, guest?.identifier)
+        stub.identifier = "u${params.vuid}/${params.targetComponent ?: "<launcher>"}"
+    }
+
+    /** Gives [real] back the identifier the guest set, if any, and removes UNIQUE's key. */
+    fun restoreGuestIdentity(real: Intent, stub: Intent) {
+        real.identifier = stub.getStringExtra(KEY_GUEST_IDENTIFIER)
+        real.removeExtra(KEY_GUEST_IDENTIFIER)
     }
 }

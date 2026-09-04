@@ -136,12 +136,14 @@ object VirtualActivityTaskManagerHook {
             return intent
         }
 
+        val stubParams = ready.params.copy(
+            targetComponent = entry.className,
+            kind = VirtualComponentKind.ACTIVITY,
+        )
         val stubIntent = Intent(intent).apply {
             setPackage(null)
-            ready.params.copy(
-                targetComponent = entry.className,
-                kind = VirtualComponentKind.ACTIVITY,
-            ).writeTo(this)
+            stubParams.writeTo(this)
+            VirtualLaunchIntent.stampIdentity(this, guest = intent, params = stubParams)
         }
         stubIntent.component = android.content.ComponentName(
             hostPackage,

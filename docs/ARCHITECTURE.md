@@ -497,6 +497,35 @@ faked.
 
 `FileProvider`, `DocumentsProvider` and URI permission grants are handled in §7.4.
 
+### 6.4.1 Stub intents need an identity of their own
+
+Every activity of a virtual process shares a pool of eight stub classes, so to the task
+system two different guest activities are the **same component**. That is not cosmetic.
+`ActivityStarter` compares an incoming intent against the tasks it already has using
+`Intent.filterEquals`; with `FLAG_ACTIVITY_NEW_TASK` it finds a match and delivers
+`onNewIntent` to whatever is already on top:
+
+```
+START u0 {flg=0x10000000 cmp=com.unique/.stub.ActivityStub_p0_m0_a0} … result code=3
+```
+
+`START_DELIVERED_TO_TOP` — the requested screen never starts. The same collision makes two
+`PendingIntent`s for two different guest screens compare equal, so `FLAG_UPDATE_CURRENT`
+silently overwrites one with the other, which is precisely how a notification opens the
+wrong screen.
+
+`Intent.setIdentifier` exists for this and has been part of `filterEquals` since API 29.
+UNIQUE stamps every stub activity intent with `u<vuid>/<guest component>`: it gives the
+intent an identity without touching action, data or categories, none of which are UNIQUE's
+to invent, and two stub intents for the *same* guest component still compare equal, so
+genuine `singleTop` and deliver-to-top behaviour is preserved. The guest's own identifier
+is parked in an extra and restored when the intent is unwrapped. A pleasant side effect is
+that `ActivityTaskManager`'s own logs then name the guest's activity:
+
+```
+START u0 {id=u0/com.unique.probe.ProbeSecondActivity cmp=…ActivityStub_p0_m0_a0} … result code=0
+```
+
 ### 6.5 Jobs, alarms, clipboard
 
 - **JobScheduler**: virtual job ids are namespaced (`vuid << 20 | jobId`) onto host stub

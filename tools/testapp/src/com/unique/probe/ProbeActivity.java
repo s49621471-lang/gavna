@@ -77,6 +77,10 @@ public class ProbeActivity extends Activity {
             startActivity(new Intent(this, ProbeSecondActivity.class)
                     .putExtra("probe.second.extra", "carried-through"));
         }
+        if (request != null && request.getBooleanExtra("probe.pendingIntent", false)) {
+            Log.i(TAG, "firing own PendingIntent");
+            firePendingIntent();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -233,6 +237,48 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "wrote " + f.getAbsolutePath());
         } catch (Throwable t) {
             Log.e(TAG, "could not write provider result", t);
+        }
+    }
+
+    /**
+     * Builds a PendingIntent for the app's own second Activity and fires it.
+     *
+     * A PendingIntent is assembled by system_server at *creation* time and fired later by
+     * whoever holds it, so the component inside has to survive the round trip through the
+     * system with nothing of the app's still running to fix it up.
+     */
+    private void firePendingIntent() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            Intent target = new Intent(this, ProbeSecondActivity.class)
+                    .putExtra("probe.second.extra", "via-pending-intent")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(
+                    this, 0, target,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                            | android.app.PendingIntent.FLAG_IMMUTABLE);
+            out.put("created", String.valueOf(pi != null));
+            if (pi != null) {
+                out.put("creatorPackage", String.valueOf(pi.getCreatorPackage()));
+                pi.send();
+                out.put("sent", "true");
+            }
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "pending intent failed", t);
+        }
+        try {
+            File f = new File(getFilesDir(), "probe-pending.properties");
+            FileOutputStream fos = new FileOutputStream(f, false);
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> e : out.entrySet()) {
+                Log.i(TAG, e.getKey() + "=" + e.getValue());
+                body.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+            }
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write pending intent result", t);
         }
     }
 }

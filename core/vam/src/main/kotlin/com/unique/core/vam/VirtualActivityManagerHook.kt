@@ -94,6 +94,16 @@ object VirtualActivityManagerHook {
         return method.name.contains("Service") || method.name == "unbindFinished"
     }
 
+    /**
+     * Every method that builds a `PendingIntent`, matched on the `Intent[]` it carries.
+     *
+     * `getIntentSender` gained a `getIntentSenderWithFeature` sibling in Android 11 and
+     * the platform calls whichever exists, so neither name can be relied on alone.
+     */
+    internal fun buildsIntentSender(method: Method): Boolean =
+        method.name.startsWith("getIntentSender") &&
+            method.parameterTypes.any { it == Array<Intent>::class.java }
+
     @Volatile private var installedFor: String? = null
 
     val boundPackage: String? get() = installedFor
@@ -154,6 +164,19 @@ object VirtualActivityManagerHook {
             }
         },
 
+        // A PendingIntent is built by system_server from the Intent it is handed and
+        // then fired *later*, by whoever holds it - a notification tap, an alarm, a
+        // widget. So the Intent inside has to be a stub Intent at creation time, or the
+        // eventual fire names a component the system cannot resolve, long after any
+        // UNIQUE code could intervene.
+        shim("intentSender") {
+            matchMethods { method -> buildsIntentSender(method) }
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteAll<Array<Intent>> { intents ->
+                Array(intents.size) { routePendingIntent(hostPackage, intents[it]) }
+            }
+        },
+
         // Service starts and binds have to be routed onto a stub the host declares:
         // system_server will not start a component of a package it has never installed.
         shim("serviceDispatch") {
@@ -178,7 +201,7 @@ object VirtualActivityManagerHook {
      * the guest's intent filters, which is provider/receiver work; silently starting the
      * wrong service would be far worse than a start that visibly does nothing.
      */
-    private fun routeService(hostPackage: String, intent: Intent): Intent {
+    internal fun routeService(hostPackage: String, intent: Intent): Intent {
         val ready = AppBootstrap.current ?: return intent
         val component = intent.component
         if (component == null) {
@@ -211,6 +234,46 @@ object VirtualActivityManagerHook {
             ),
         )
         return routed
+    }
+
+    /**
+     * Routes one Intent inside a `PendingIntent`, by what the component *is*.
+     *
+     * Dispatching on the guest's own manifest rather than on the framework's
+     * `INTENT_SENDER_*` constant keeps this signature-agnostic: the constant is an `int`
+     * among several `int` arguments and could only be found by position, while the
+     * component's kind is a fact about the app.
+     */
+    private fun routePendingIntent(hostPackage: String, intent: Intent): Intent {
+        val ready = AppBootstrap.current ?: return intent
+        val component = intent.component ?: return intent
+        if (component.packageName != ready.params.packageName) return intent
+
+        val entry = ready.manifest.components.firstOrNull { it.className == component.className }
+            ?: return intent
+        return when (entry.kind) {
+            ComponentKind.ACTIVITY, ComponentKind.ACTIVITY_ALIAS ->
+                VirtualActivityTaskManagerHook.routeActivity(hostPackage, intent)
+            ComponentKind.SERVICE -> routeService(hostPackage, intent)
+            ComponentKind.RECEIVER -> {
+                // A guest's manifest receiver exists only as a *dynamic* registration
+                // inside the live process (§6.3), and a dynamic receiver is matched by
+                // filter, never by component - so an explicit broadcast PendingIntent
+                // aimed at one has nothing to be rewritten onto. It needs a host stub
+                // receiver that re-dispatches, which is the same :server work waking a
+                // dead guest needs. Left untouched and reported rather than pointed at a
+                // component that will fail to resolve when it eventually fires.
+                Diagnostics.warn(
+                    DiagChannel.LAUNCH, "PENDING_INTENT_RECEIVER_UNSUPPORTED",
+                    mapOf(
+                        "receiver" to component.className,
+                        "package" to ready.params.packageName,
+                    ),
+                )
+                intent
+            }
+            ComponentKind.PROVIDER -> intent
+        }
     }
 
     /**
