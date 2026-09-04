@@ -29,6 +29,15 @@ class MethodShim internal constructor(
     private val rules: List<ArgRule>,
     private val resultRewriter: ((Any?) -> Any?)?,
     private val replacement: ((ShimCall) -> Any?)?,
+    /**
+     * Selects the methods this shim applies to. Null means "the one called [methodName]".
+     *
+     * A predicate exists because some rewrites are properties of a *kind* of call rather
+     * than of one method: every `IActivityManager` call that an app makes on its own
+     * behalf carries a calling-package argument, and enumerating them by name would be a
+     * list that goes stale every release.
+     */
+    private val methodMatcher: ((Method) -> Boolean)?,
 ) {
     fun appliesToApi(api: Int): Boolean = api in minApi..maxApi
 
@@ -38,7 +47,8 @@ class MethodShim internal constructor(
      * and the method is invoked untouched.
      */
     internal fun bind(method: Method): BoundShim? {
-        if (method.name != methodName) return null
+        val matches = methodMatcher?.invoke(method) ?: (method.name == methodName)
+        if (!matches) return null
         val types = method.parameterTypes
         val plans = ArrayList<BoundRule>(rules.size)
         for (rule in rules) {
@@ -143,6 +153,7 @@ class ShimBuilder(private val methodName: String) {
     private val rules = ArrayList<ArgRule>()
     private var resultRewriter: ((Any?) -> Any?)? = null
     private var replacement: ((ShimCall) -> Any?)? = null
+    private var methodMatcher: ((Method) -> Boolean)? = null
 
     /** Rewrites every argument of type [T] that satisfies [matching]. */
     inline fun <reified T : Any> rewriteAll(
@@ -183,7 +194,16 @@ class ShimBuilder(private val methodName: String) {
     /** Replaces the call entirely; the real method is never invoked. */
     fun replaceWith(block: (ShimCall) -> Any?) { replacement = block }
 
-    internal fun build() = MethodShim(methodName, minApi, maxApi, rules, resultRewriter, replacement)
+    /**
+     * Applies this shim to every method the predicate accepts, instead of to one name.
+     *
+     * Register such a shim *after* the name-based ones: the first shim that binds to a
+     * method wins, so a broad matcher must not shadow a specific rewrite.
+     */
+    fun matchMethods(predicate: (Method) -> Boolean) { methodMatcher = predicate }
+
+    internal fun build() =
+        MethodShim(methodName, minApi, maxApi, rules, resultRewriter, replacement, methodMatcher)
 }
 
 /** Declares a shim for every method named [methodName] on an interface. */

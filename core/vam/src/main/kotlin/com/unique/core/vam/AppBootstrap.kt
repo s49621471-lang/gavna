@@ -136,6 +136,18 @@ object AppBootstrap {
             )
         }
 
+        // Also a prerequisite: every framework call the guest makes carries its package
+        // name outward, and system_server checks that against UNIQUE's real uid. Without
+        // this, the very first call fails - PhoneWindow's constructor reads a setting,
+        // which acquires a content provider, which is rejected.
+        if (!VirtualActivityManagerHook.install(params.packageName, hostContext.packageName)) {
+            return Result.Failed(
+                "VAM_HOOK_FAILED",
+                "could not virtualize ActivityManager; every framework call from " +
+                    "${params.packageName} would be rejected as a package/uid mismatch",
+            )
+        }
+
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {
             return Result.Failed(
