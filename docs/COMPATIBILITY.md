@@ -32,12 +32,13 @@ never tried" is the difference between a fact and a guess.
 | Hidden-API access | `SUPPORTED` | `NOT_TESTED` | via `HiddenApiBypass` |
 | Transaction interception | `SUPPORTED` | `NOT_TESTED` | `LaunchActivityItem` found and rewritten |
 | Virtual `PackageManager` | `SUPPORTED` | `NOT_TESTED` | 7 methods bound; required for uninstalled packages |
-| `LoadedApk` graft | see STATUS | `NOT_TESTED` | |
-| Activity launch and render | see STATUS | `NOT_TESTED` | |
-| Instance data isolation | see STATUS | `NOT_TESTED` | |
-| Persistence across restart | see STATUS | `NOT_TESTED` | |
-| Multiple instances | see STATUS | `NOT_TESTED` | |
-| Crash isolation | see STATUS | `NOT_TESTED` | |
+| Outbound identity to system services | `SUPPORTED` | `NOT_TESTED` | Calling package and `AttributionSource` rewritten to the host |
+| `LoadedApk` graft | `SUPPORTED` | `NOT_TESTED` | Guest's own Application instantiated, `onCreate` before the Activity |
+| Activity launch | `SUPPORTED` | `NOT_TESTED` | Guest's real Activity class, correct `componentName` |
+| Instance data isolation | `SUPPORTED` | `NOT_TESTED` | Every accessor resolves under `users/<vuid>/`; nothing leaks into UNIQUE's own dirs |
+| Persistence across restart | `SUPPORTED` | `NOT_TESTED` | SharedPreferences, file and SQLite all continued after a process kill |
+| Multiple instances | `NOT_TESTED` | `NOT_TESTED` | `t05` written, not yet run |
+| Crash isolation | `NOT_TESTED` | `NOT_TESTED` | `t06` written, not yet run |
 | Services | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
 | Broadcast receivers | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
 | Content providers | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
@@ -52,7 +53,7 @@ never tried" is the difference between a fact and a guess.
 
 | Application | Kind | EMU34 | ARM64 | Notes |
 |---|---|---|---|---|
-| `com.unique.probe` | Plain Java, one Activity, SharedPreferences + file + SQLite | see STATUS | `NOT_TESTED` | `tools/testapp`, built by the acceptance run |
+| `com.unique.probe` | Plain Java, one Activity, SharedPreferences + file + SQLite | `SUPPORTED` | `NOT_TESTED` | `tools/testapp`. Rendering not asserted — the suite reads the app's observations, it does not look at the screen |
 | Multi-activity sample | Task/back-stack | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
 | Foreground-service sample | FGS types | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
 | Receiver sample | Manifest + context receivers | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |

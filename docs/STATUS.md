@@ -3,7 +3,11 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0 and 1 complete. Phase 2 in progress.**
+**Phases 0 and 1 complete. Phase 2: a virtual application launches, runs and persists.**
+
+A real APK — not installed on the device — is imported, registered, given an instance, and
+launched into a `:vappN` process where it believes it is itself. Evidence is checked in
+under `docs/evidence/`.
 
 ## What each environment can prove
 
@@ -56,10 +60,54 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Outbound identity accepted by system_server | `VAM_HOOK_INSTALLED package=com.unique.probe host=com.unique` |
 | A crashing virtual process leaves a diagnostic | `CRASH UNCAUGHT_EXCEPTION` recorded by `CrashGuard` |
 
-## On device (EMU34): not yet passing
+## On device (EMU34): the acceptance suite
 
-`t02` — the activity hand-off — is the current work, and each run has moved the failure
-further down the launch path:
+Run `20260904-071253-7364`, Android 14 x86_64, probe **not installed on the device**:
+
+| Test | Result |
+|---|---|
+| `t01` import, register, create an instance | **PASS** |
+| `t02` launch, and the app sees its own identity | **PASS** |
+| `t03` the app writes nothing into UNIQUE's own directories | **PASS** |
+| `t04` data survives a full process kill and relaunch | **PASS** |
+
+What the guest itself reported (`docs/evidence/phase2-first-launch-engine.log`):
+
+```
+packageName            = com.unique.probe
+applicationClass       = com.unique.probe.ProbeApplication
+applicationOnCreateRan = true
+applicationBeforeActivity = true
+activityClass          = com.unique.probe.ProbeActivity
+componentName          = com.unique.probe/com.unique.probe.ProbeActivity
+dataDir                = …/virtual/users/0/data/com.unique.probe
+filesDir               = …/virtual/users/0/data/com.unique.probe/files
+codeCacheDir           = …/virtual/users/0/data/com.unique.probe/code_cache
+packageCodePath        = …/virtual/apk/com.unique.probe/7/base.apk
+appInfoNativeLibraryDir= …/virtual/apk/com.unique.probe/7/lib/arm64-v8a
+targetSdk              = 34
+uid                    = 10109   (UNIQUE's own — see below)
+```
+
+Three things are worth reading carefully:
+
+- **`applicationBeforeActivity = true`.** The guest's `Application.onCreate` ran before its
+  `Activity`, which is the ordering apps depend on and the reason the graft happens at the
+  launch transaction rather than at process start.
+- **`packageCodePath` is the shared read-only APK** while every writable path is under
+  `users/0/`. That split is what makes a second instance cheap.
+- **`uid` is UNIQUE's.** This is correct and permanent: UNIQUE is not a privilege
+  boundary. The guest's *package identity* is virtual; its *Linux identity* is the host's.
+
+### Still to run
+
+`t05` (a second instance is fully independent) and `t06` (a crashing instance kills
+neither UNIQUE nor its sibling) are written and have not yet been executed.
+
+## Previously blocking, now fixed
+
+Each device run moved the failure further down the launch path. None of these were
+visible to unit tests:
 
 | Blocker | Status |
 |---|---|
@@ -67,11 +115,11 @@ further down the launch path:
 | `makeApplication` failure reason swallowed | fixed (chain now reported) |
 | `SecurityException: Writable dex file … is not allowed` (W^X on the APK) | fixed |
 | `SecurityException: Given calling package … does not match caller's uid` | fixed (outbound identity rewrite) |
-| `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed, awaiting re-run |
+| `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed |
 
-The guest's `Application` runs and the platform launches the guest's real Activity, but
-**no virtual application has rendered yet**: the failures above all occur inside
-`Activity.attach`. The remaining acceptance tests (`t03`–`t06`) have not been exercised.
+**Caveat on rendering.** The suite asserts the activity ran and produced its observations;
+it does not look at the screen. Confirming that pixels appear is a two-minute manual step
+in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Deliberately not implemented
 
