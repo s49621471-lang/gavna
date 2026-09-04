@@ -193,12 +193,12 @@ object LaunchInterceptor {
             }
         }
 
-        val entry = AppBootstrap.resolveActivity(ready.manifest, params.targetActivity) ?: run {
+        val entry = AppBootstrap.resolveActivity(ready.manifest, params.targetComponent) ?: run {
             Diagnostics.error(
                 DiagChannel.LAUNCH, "ACTIVITY_NOT_FOUND",
                 mapOf(
                     "package" to params.packageName,
-                    "requested" to (params.targetActivity ?: "<launcher>"),
+                    "requested" to (params.targetComponent ?: "<launcher>"),
                 ),
             )
             return
@@ -214,7 +214,7 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_VUID)
             removeExtra(VirtualLaunchParams.KEY_PACKAGE)
             removeExtra(VirtualLaunchParams.KEY_VERSION_CODE)
-            removeExtra(VirtualLaunchParams.KEY_ACTIVITY)
+            removeExtra(VirtualLaunchParams.KEY_COMPONENT)
             removeExtra(VirtualLaunchParams.KEY_PROCESS)
             removeExtra(VirtualLaunchParams.KEY_SLOT)
         }

@@ -59,7 +59,7 @@ abstract class StubActivityBase(private val slot: Int) : Activity() {
             mapOf(
                 "slot" to slot.toString(),
                 "vuid" to routed.vuid.toString(),
-                "component" to (routed.targetActivity ?: "<launcher>"),
+                "component" to (routed.targetComponent ?: "<launcher>"),
                 "interceptorInstalled" to LaunchInterceptor.isInstalled.toString(),
             ),
         )

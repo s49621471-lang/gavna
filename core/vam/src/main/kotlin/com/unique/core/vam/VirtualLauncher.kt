@@ -59,7 +59,7 @@ class VirtualLauncher(
             vuid = vuid,
             packageName = packageName,
             versionCode = versionCode,
-            targetActivity = entry.className,
+            targetComponent = entry.className,
             processName = entry.processName,
             slot = slot.index,
         )

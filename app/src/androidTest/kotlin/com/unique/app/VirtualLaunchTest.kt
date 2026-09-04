@@ -258,7 +258,7 @@ class VirtualLaunchTest {
             vuid = victim.vuid,
             packageName = probePackage,
             versionCode = victim.versionCode,
-            targetActivity = "$probePackage.ProbeActivity",
+            targetComponent = "$probePackage.ProbeActivity",
             processName = probePackage,
             slot = slotOf(victim.vuid),
         )
