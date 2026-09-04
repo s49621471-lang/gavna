@@ -3,6 +3,7 @@ package com.unique.app
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Process
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -534,6 +535,82 @@ class VirtualLaunchTest {
         assertThat(second["activityClass"]).isEqualTo("$probePackage.ProbeSecondActivity")
         assertThat(second["extra"]).isEqualTo("via-pending-intent")
         assertThat(second["filesDir"]).isEqualTo(dir)
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: runtime permissions belong to the instance, not to UNIQUE.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t12_aRuntimePermissionBelongsToTheInstance() = runBlocking {
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-permissions.properties")
+        result.delete()
+        clearResult(instance)
+
+        // The host must hold CAMERA outright for this test to mean anything: if the guest
+        // simply saw the host's grants it would read GRANTED before ever asking. `install
+        // -g` does grant it, but the suite's `pm clear` revokes it again, so it is granted
+        // here — where the precondition is stated rather than assumed.
+        //
+        // CAMERA is also chosen because the platform answers a request for a permission
+        // the caller already holds without showing a dialog, which keeps the test
+        // deterministic on a headless emulator. The other direction — a guest asking for
+        // something the *host* does not hold — needs that dialog and is NOT_TESTED.
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(context.packageName, "android.permission.CAMERA")
+        assertThat(context.checkSelfPermission("android.permission.CAMERA"))
+            .isEqualTo(PackageManager.PERMISSION_GRANTED)
+        assertThat(context.checkSelfPermission("android.permission.RECORD_AUDIO"))
+            .isEqualTo(PackageManager.PERMISSION_DENIED)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.permissions", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(result)
+        assertThat(observed["error"]).isNull()
+
+        // Before asking: denied, through both routes the platform offers, even though
+        // UNIQUE itself holds it.
+        assertThat(observed["cameraBefore"]).isEqualTo("DENIED")
+        assertThat(observed["cameraViaPm"]).isEqualTo("DENIED")
+        assertThat(observed["micBefore"]).isEqualTo("DENIED")
+
+        // The app asked, the platform answered for UNIQUE, and UNIQUE recorded the grant
+        // against this instance.
+        assertThat(observed["requestCode"]).isEqualTo("4242")
+        assertThat(observed["result.android.permission.CAMERA"]).isEqualTo("GRANTED")
+        assertThat(observed["cameraAfter"]).isEqualTo("GRANTED")
+
+        // And through PackageManager, which reaches a different system service than
+        // Context.checkSelfPermission. Before the grant both said DENIED, which the
+        // unhooked platform would also say for a package it has never installed — so it
+        // is this assertion, after the grant, that shows the route is actually answered.
+        assertThat(observed["cameraViaPmAfter"]).isEqualTo("GRANTED")
+
+        // "Explain yourself before asking again" is a question about this instance's
+        // history: false before the first request and false after a grant. The true case
+        // needs a recorded denial, which needs the system dialog, and is NOT_TESTED.
+        assertThat(observed["cameraRationaleBefore"]).isEqualTo("false")
+        assertThat(observed["cameraRationaleAfter"]).isEqualTo("false")
+
+        // A permission the app declared and never asked for stays denied: the grant is
+        // per permission, not a blanket switch to the host's state. RECORD_AUDIO is also
+        // one the host does not hold, so both reasons agree here.
+        assertThat(observed["micAfter"]).isEqualTo("DENIED")
     }
 
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {

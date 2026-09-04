@@ -117,14 +117,19 @@ object VirtualPackageManagerHook {
             }
         },
 
-        // Permissions can only ever be narrowed to what the host actually holds, so the
-        // query is redirected to the host package rather than answered locally. A local
-        // "granted" would be a lie the platform would then refuse to honour.
-        shim("checkPermission") {
+        // Permissions are answered from the *instance's* state, narrowed by what the host
+        // actually holds - see VirtualPermissions. The package name is still rewritten,
+        // because a query UNIQUE does not recognise falls through to the platform and must
+        // arrive there naming a package the platform knows.
+        shim("permissionCheck") {
+            matchMethods { method -> VirtualPermissions.isPermissionCheck(method) }
             rewriteAll<String>(matching = { it == packageName }) { hostPackageName }
-        },
-        shim("checkUidPermission") {
-            rewriteAll<String>(matching = { it == packageName }) { hostPackageName }
+            replaceWith { call ->
+                val permission = VirtualPermissions.permissionArgOf(call.args)
+                if (permission == null) call.proceed()
+                else VirtualPermissions.check(permission)
+                    .also { VirtualPermissions.reportAnswer(permission, it) }
+            }
         },
     )
 

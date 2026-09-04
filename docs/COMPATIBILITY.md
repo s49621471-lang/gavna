@@ -50,7 +50,11 @@ never tried" is the difference between a fact and a guess.
 | Broadcast receivers — waking a dead guest | `BROKEN` | `NOT_TESTED` | A dynamic registration dies with the process. Needs `:server` to hold the registration |
 | Content providers — same virtual process | `SUPPORTED` | `NOT_TESTED` | Acquired through `ContentResolver`, answered by UNIQUE; `onCreate` before any other component; correct package, storage and pid (`t09`) |
 | Content providers — cross-process | `BROKEN` | `NOT_TESTED` | Resolves to nothing outside the owning virtual process. Needs the `:server` authority table |
-| Runtime permissions | `NOT_TESTED` | `NOT_TESTED` | Store exists, not wired to the guest |
+| Runtime permissions — check | `SUPPORTED` | `NOT_TESTED` | Answered from the instance's state through both routes the platform offers (`Context.checkSelfPermission` → `IActivityManager`, `PackageManager.checkPermission` → `IPackageManager`); host grant ∧ instance grant (`t12`) |
+| Runtime permissions — request | `PARTIAL` | `NOT_TESTED` | The guest's request result is read from the activity-result transaction and recorded against the instance (`t12`). Proven for a permission the host already holds, which needs no dialog; a request the *host* does not hold needs the system dialog and is `NOT_TESTED` |
+| Runtime permissions — rationale | `PARTIAL` | `NOT_TESTED` | `shouldShowRequestPermissionRationale` follows the instance's record. The false cases are asserted; the true case needs a recorded denial, so a dialog, and is `NOT_TESTED` |
+| Runtime permissions — persistence | `BROKEN` | `NOT_TESTED` | The per-instance state lives in the virtual process's memory and is lost when it dies. Needs the state database |
+| AppOps | `NOT_TESTED` | `NOT_TESTED` | `IAppOpsService` is a declared hook target and is not installed |
 | Native ARM64 / JNI | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 4); the emulator is x86_64 and could not prove it anyway |
 | Native IO redirection | `NOT_TESTED` | `NOT_TESTED` | Table implemented and unit-tested; libc interception not implemented |
 | Surface / OpenGL / Vulkan | `NOT_TESTED` | `NOT_TESTED` | Phase 5 |

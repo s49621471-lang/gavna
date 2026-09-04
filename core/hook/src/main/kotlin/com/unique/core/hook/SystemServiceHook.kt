@@ -124,6 +124,21 @@ object SystemServiceHook {
                 ),
             )
         }
+        if (bindResult.bound.isEmpty()) {
+            // Nothing matched at all, which is a different problem from "one shim missed":
+            // either the release renamed everything, or UNIQUE is looking at the wrong
+            // interface. Listing what the interface actually offers turns that from a
+            // mystery inside the guest into a fact in the log.
+            Diagnostics.warn(
+                DiagChannel.HOOK, "HOOK_MATCHED_NOTHING",
+                mapOf(
+                    "service" to target.serviceName,
+                    "interface" to ifaceClass.name,
+                    "methods" to ifaceClass.methods.joinToString(",") { it.name }
+                        .let { it.substring(0, minOf(it.length, 900)) },
+                ),
+            )
+        }
 
         // 1. ServiceManager cache: hand out a Binder that yields the shimmed interface.
         val binderProxy = Proxy.newProxyInstance(

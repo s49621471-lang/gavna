@@ -9,10 +9,16 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="13"
+    android:versionCode="17"
     android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+
+    <!-- Runtime permissions the probe asks about. CAMERA is the one the suite drives;
+         RECORD_AUDIO is declared and never requested, so "declared but not granted"
+         is distinguishable from "never mentioned". -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name="com.unique.probe.ProbeApplication"

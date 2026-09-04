@@ -164,6 +164,20 @@ object VirtualActivityManagerHook {
             }
         },
 
+        // ContextImpl.checkSelfPermission reaches ActivityManagerService, so the same
+        // answer has to be given here as on IPackageManager - a guest that gets DENIED
+        // from one and GRANTED from the other is worse than either alone.
+        shim("permissionCheck") {
+            matchMethods { method -> VirtualPermissions.isPermissionCheck(method) }
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            replaceWith { call ->
+                val permission = VirtualPermissions.permissionArgOf(call.args)
+                if (permission == null) call.proceed()
+                else VirtualPermissions.check(permission)
+                    .also { VirtualPermissions.reportAnswer(permission, it) }
+            }
+        },
+
         // A PendingIntent is built by system_server from the Intent it is handed and
         // then fired *later*, by whoever holds it - a notification tap, an alarm, a
         // widget. So the Intent inside has to be a stub Intent at creation time, or the

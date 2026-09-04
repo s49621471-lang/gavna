@@ -119,6 +119,9 @@ object LaunchInterceptor {
                         report("TRANSACTION_REWRITE_FAILED",
                             mapOf("error" to it.toString(), "seen" to transactionsSeen.toString()))
                     }
+                    runCatching { observePermissionResult(msg) }.onFailure {
+                        report("PERMISSION_RESULT_READ_FAILED", mapOf("error" to it.toString()))
+                    }
                 }
                 createService -> runCatching { rewriteCreateService(msg) }.onFailure {
                     report("CREATE_SERVICE_REWRITE_FAILED", mapOf("error" to it.toString()))
@@ -225,6 +228,97 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_PROCESS)
             removeExtra(VirtualLaunchParams.KEY_SLOT)
             removeExtra(VirtualLaunchIntent.KEY_GUEST_IDENTIFIER)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Runtime permission results
+    // ---------------------------------------------------------------------------------
+
+    private const val EXTRA_PERMISSION_NAMES =
+        "android.content.pm.extra.REQUEST_PERMISSIONS_NAMES"
+    private const val EXTRA_PERMISSION_RESULTS =
+        "android.content.pm.extra.REQUEST_PERMISSIONS_RESULTS"
+
+    /**
+     * Records the outcome of a permission request the *guest* made.
+     *
+     * `Activity.requestPermissions` is a `startActivityForResult` at heart: the platform
+     * shows its dialog for the caller — which under virtualization is UNIQUE, correctly,
+     * because UNIQUE is the process the kernel will check — and hands the answer back as
+     * an ordinary activity result carrying two parallel arrays.
+     *
+     * Reading it here is what lets a grant belong to *one instance*. UNIQUE never widens:
+     * the recorded grant is intersected with the host's own at every check, so this can
+     * only ever turn an instance's DENIED into GRANTED once the platform has already said
+     * yes to UNIQUE.
+     *
+     * Observed, never rewritten: the result still reaches the guest exactly as the
+     * platform sent it, so `onRequestPermissionsResult` sees the truth.
+     */
+    private fun observePermissionResult(msg: Message) {
+        val transaction = msg.obj ?: return
+        if (AppBootstrap.current == null) return
+        for (intent in resultIntents(transaction)) {
+            val names = intent.getStringArrayExtra(EXTRA_PERMISSION_NAMES) ?: continue
+            val results = intent.getIntArrayExtra(EXTRA_PERMISSION_RESULTS) ?: continue
+            if (names.size != results.size) {
+                report(
+                    "PERMISSION_RESULT_MALFORMED",
+                    mapOf("names" to names.size.toString(), "results" to results.size.toString()),
+                )
+                continue
+            }
+            names.forEachIndexed { i, permission ->
+                VirtualPermissions.recordGrant(
+                    permission,
+                    results[i] == android.content.pm.PackageManager.PERMISSION_GRANTED,
+                )
+            }
+        }
+    }
+
+    /**
+     * Every `Intent` carried by a `ResultInfo` in this transaction.
+     *
+     * Found by type rather than by field name, for the reason `LaunchActivityItem` is:
+     * `ActivityResultItem` holds its results in a list whose field name has changed, and
+     * `ResultInfo`'s `Intent` field has not changed type.
+     */
+    private fun resultIntents(transaction: Any): List<Intent> {
+        val out = ArrayList<Intent>(1)
+        forEachNestedList(transaction) { element ->
+            if (element.javaClass.simpleName == "ResultInfo") {
+                fieldOfType(element.javaClass, Intent::class.java)
+                    ?.let { it.get(element) as? Intent }
+                    ?.let(out::add)
+            }
+        }
+        return out
+    }
+
+    /** Visits every element of every list-valued field, one level of nesting deep. */
+    private inline fun forEachNestedList(root: Any, visit: (Any) -> Unit) {
+        val queue = ArrayDeque<Any>()
+        queue.add(root)
+        var seen = 0
+        while (queue.isNotEmpty() && seen < 64) {
+            val node = queue.removeFirst()
+            seen++
+            var clazz: Class<*>? = node.javaClass
+            while (clazz != null && clazz != Any::class.java) {
+                for (field in clazz.declaredFields) {
+                    field.isAccessible = true
+                    val value = runCatching { field.get(node) }.getOrNull() ?: continue
+                    if (value is List<*>) {
+                        for (element in value) if (element != null) {
+                            visit(element)
+                            queue.add(element)
+                        }
+                    }
+                }
+                clazz = clazz.superclass
+            }
         }
     }
 

@@ -25,6 +25,9 @@ public class ProbeActivity extends Activity {
     private static final String TAG = ProbeApplication.TAG;
     public static final String RESULT_FILE = "probe-result.properties";
 
+    /** Permission answers seen before the request and in the callback, written once. */
+    private final Map<String, String> mPermissionObservations = new LinkedHashMap<String, String>();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -80,6 +83,10 @@ public class ProbeActivity extends Activity {
         if (request != null && request.getBooleanExtra("probe.pendingIntent", false)) {
             Log.i(TAG, "firing own PendingIntent");
             firePendingIntent();
+        }
+        if (request != null && request.getBooleanExtra("probe.permissions", false)) {
+            Log.i(TAG, "exercising runtime permissions");
+            exercisePermissions();
         }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
@@ -279,6 +286,80 @@ public class ProbeActivity extends Activity {
             fos.close();
         } catch (Throwable t) {
             Log.e(TAG, "could not write pending intent result", t);
+        }
+    }
+
+    /**
+     * Checks, requests and re-checks a runtime permission, recording every answer.
+     *
+     * Written the way an ordinary app writes it. Nothing here knows about UNIQUE; the
+     * suite compares these answers against what the instance was configured to allow.
+     */
+    private void exercisePermissions() {
+        final String camera = android.Manifest.permission.CAMERA;
+        final String mic = android.Manifest.permission.RECORD_AUDIO;
+        try {
+            // Observations accumulate across the callback, which arrives later on the
+            // main thread: writing them in two passes would leave the file holding only
+            // whichever pass ran last.
+            mPermissionObservations.put("cameraBefore", named(checkSelfPermission(camera)));
+            mPermissionObservations.put("micBefore", named(checkSelfPermission(mic)));
+            mPermissionObservations.put("cameraViaPm", named(getPackageManager()
+                    .checkPermission(camera, getPackageName())));
+            mPermissionObservations.put("cameraRationaleBefore",
+                    String.valueOf(shouldShowRequestPermissionRationale(camera)));
+
+            requestPermissions(new String[]{camera}, 4242);
+        } catch (Throwable t) {
+            mPermissionObservations.put("error", t.toString());
+            Log.e(TAG, "permission exercise failed", t);
+            writeMap("probe-permissions.properties", mPermissionObservations);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        mPermissionObservations.put("requestCode", String.valueOf(requestCode));
+        for (int i = 0; i < permissions.length; i++) {
+            mPermissionObservations.put("result." + permissions[i], named(grantResults[i]));
+        }
+        // The re-check is the point: a grant recorded for this instance has to be visible
+        // through the ordinary API immediately afterwards.
+        mPermissionObservations.put("cameraAfter",
+                named(checkSelfPermission(android.Manifest.permission.CAMERA)));
+        mPermissionObservations.put("micAfter",
+                named(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)));
+        // Through PackageManager as well, which reaches a different system service. A
+        // guest that gets GRANTED from one route and DENIED from the other is worse than
+        // one that is consistently denied, so both are recorded before and after.
+        mPermissionObservations.put("cameraViaPmAfter", named(getPackageManager()
+                .checkPermission(android.Manifest.permission.CAMERA, getPackageName())));
+        mPermissionObservations.put("cameraRationaleAfter", String.valueOf(
+                shouldShowRequestPermissionRationale(android.Manifest.permission.CAMERA)));
+        writeMap("probe-permissions.properties", mPermissionObservations);
+    }
+
+    private static String named(int result) {
+        return result == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ? "GRANTED" : "DENIED";
+    }
+
+    private void writeMap(String fileName, Map<String, String> values) {
+        try {
+            File f = new File(getFilesDir(), fileName);
+            FileOutputStream fos = new FileOutputStream(f, false);
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> e : values.entrySet()) {
+                Log.i(TAG, e.getKey() + "=" + e.getValue());
+                body.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+            }
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write " + fileName, t);
         }
     }
 }

@@ -115,6 +115,16 @@ object AppBootstrap {
         installLoadedApk(activityThreadClass, activityThread, params.packageName, loadedApk)
         rebindBoundApplication(activityThread, appInfo, loadedApk, params.processName)
 
+        // Bound before the permission shims are installed and before the guest's
+        // Application exists: an app that checks a permission in Application.onCreate -
+        // and plenty do - must already get its instance's answer, not the host's.
+        VirtualPermissions.bind(
+            vuid = params.vuid,
+            packageName = params.packageName,
+            declared = manifest.usesPermissions,
+            context = hostContext,
+        )
+
         // Must precede makeApplication: LoadedApk.initializeJavaContextClassLoader() asks
         // the real PackageManagerService for this package and throws when it is not
         // installed - which, for an app UNIQUE imported rather than installed, it is not.
@@ -157,6 +167,7 @@ object AppBootstrap {
         // regardless, so a failure here degrades to "the guest cannot open a second
         // screen" with a diagnostic, rather than refusing the launch outright.
         VirtualActivityTaskManagerHook.install(params.packageName, hostContext)
+        VirtualPermissions.installManagerHook(params.packageName, hostContext.packageName)
 
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {

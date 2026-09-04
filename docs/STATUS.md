@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-083950-29449`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-091645-3060`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -79,6 +79,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t09` the guest's ContentProvider answers its own authority | **PASS** |
 | `t10` the guest starts its own second Activity | **PASS** |
 | `t11` a `PendingIntent` the guest built fires into the guest | **PASS** |
+| `t12` a runtime permission belongs to the instance, not to UNIQUE | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -92,6 +93,9 @@ Receiver.onReceive     action=com.unique.probe.PING package=com.unique.probe
 Provider.onCreate      package=com.unique.probe
 ACTIVITY_INTENT_ROUTED activity=…ProbeSecondActivity stub=…ActivityStub_p0_m0_a0
 TRANSACTION_REWRITTEN  activity=com.unique.probe.ProbeSecondActivity
+PERMISSION_CHECK       permission=android.permission.CAMERA result=DENIED
+PERMISSION_RESULT_RECORDED permission=…CAMERA granted=true blockedByHost=false
+cameraAfter            = GRANTED   (the host held it all along; the instance did not)
 rowCount               = 3
 provider.packageName   = com.unique.probe
 provider.filesDir      = …/virtual/users/0/data/com.unique.probe/files
@@ -159,6 +163,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
 | Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
+| Per-instance permission state across a restart | 3 | Held in the virtual process's memory; a guest that is killed loses its grants and must ask again. Needs the state database |
+| AppOps | 3 | `IAppOpsService` is a declared hook target and is not installed, so a guest's app-op checks answer for UNIQUE |
 | Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`; the table is complete and tested, the ~30 hooks are not |
@@ -179,10 +185,11 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
-   filters), `startActivityForResult`, foreground services and their Android 14 type
-   intersection, `PendingIntent`, URI permissions, runtime permissions and AppOps,
-   `JobScheduler`, `AlarmManager`, the clipboard, the notification bridge.
+1. Remaining Phase 3: AppOps (`IAppOpsService`), implicit activity starts (resolving
+   against the guest's own intent filters), foreground services and their Android 14 type
+   intersection, URI permissions, `JobScheduler`, `AlarmManager`, the clipboard, the
+   notification bridge. Per-instance permission state is in memory only and does not yet
+   survive a process restart.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
    anything.

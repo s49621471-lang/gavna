@@ -537,6 +537,71 @@ START u0 {id=u0/com.unique.probe.ProbeSecondActivity cmp=…ActivityStub_p0_m0_a
 - **Clipboard**: `IClipboard` shim rewrites the calling package; Android 12+ clipboard
   access toasts will name UNIQUE, not the virtual app — documented, not hidden.
 
+### 6.6 Runtime permissions
+
+**Implemented; `t12` covers the check, the request and the rationale.** The rule in one
+line: **the guest sees `host grant AND instance grant`.** UNIQUE narrows, never widens. A
+stored grant for a permission the host lacks stays denied and is reported as blocked by the
+host, because a local "granted" would be a lie the platform refuses to honour at the first
+real call — and would show up as a `SecurityException` deep inside the app rather than as a
+permission prompt.
+
+Two consequences that are easy to get wrong:
+
+- **UNIQUE must declare every runtime permission it is willing to forward.** A guest can
+  never hold what the host has not asked the user for, so `AndroidManifest.template.xml`
+  carries the union of `PermissionGroup`'s permissions, the same shape as the foreground
+  service type superset.
+- **The dialog says "UNIQUE".** That is correct, not a defect: the kernel checks the host's
+  uid, so the host is the package the grant must land on. UNIQUE additionally records the
+  grant against the instance, which is what lets two instances of one app differ.
+
+#### 6.6.1 Which argument is the permission
+
+This is the one place where argument identification is genuinely hard, because the platform
+is not self-consistent: `IPackageManager.checkPermission` takes `(permission, package,
+userId)` while `IPermissionManager.checkPermission` took `(package, permission, …)` — the
+same two strings in the opposite order. Position is therefore unusable and so is "the first
+String".
+
+The permission is identified **semantically**: among the string arguments, the one the
+guest declares in its own manifest, and only when there is exactly one such argument.
+Anything else falls through to the platform, which is the safe direction — an unrecognised
+query is answered exactly as it would have been without UNIQUE.
+
+Asking the host whether it holds a permission goes through `Context.checkSelfPermission`,
+which reaches `ActivityManagerService` through this very shim, so a thread-local guard
+makes that one call fall through. Without it the class calls itself forever.
+
+#### 6.6.2 Where the platform actually answers
+
+Settled by measurement rather than assumption, after a hook that bound nothing:
+
+| Question | Interface on API 34 |
+|---|---|
+| `Context.checkSelfPermission` | `IActivityManager.checkPermission` |
+| `PackageManager.checkPermission` | `IPackageManager.checkPermission` / `checkUidPermission` |
+| `shouldShowRequestPermissionRationale` | `IPermissionManager` |
+
+`IPermissionManager` declares **no** `checkPermission` at all on API 34; its members are
+grant/revoke, flags, allowlist and one-time sessions. `SystemServiceHook` now prints an
+interface's whole method list under `HOOK_MATCHED_NOTHING` when a hook matches nothing,
+which is how that was established — and is the general answer to "the hook installed but
+nothing happens".
+
+#### 6.6.3 Reading the request result
+
+`Activity.requestPermissions` is a `startActivityForResult` at heart, and the answer comes
+back as an ordinary activity result carrying two parallel arrays. `LaunchInterceptor`
+already sees every `ClientTransaction`, so it reads `ResultInfo`'s `Intent` — located by
+type, like everything else — and records the outcome against the instance. It is
+**observed, never rewritten**: the result still reaches the guest exactly as the platform
+sent it, so `onRequestPermissionsResult` sees the truth.
+
+**Not implemented:** the per-instance state lives in the virtual process's memory, so a
+guest that is killed loses its grants and must ask again. `IAppOpsService` is a declared
+hook target and is not installed, so a guest's app-op checks still answer for UNIQUE.
+
 ---
 
 ## 7. Virtual storage
