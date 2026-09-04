@@ -110,6 +110,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "exercising alarms and the clipboard");
             exerciseAlarmAndClipboard();
         }
+        if (request != null && request.getBooleanExtra("probe.graphics", false)) {
+            Log.i(TAG, "exercising graphics");
+            exerciseGraphics();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -586,5 +590,102 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-alarm-clip.properties", out);
+    }
+
+    /**
+     * Brings up EGL, renders one frame, and reads the pixel back.
+     *
+     * Self-verifying on purpose: clearing to a known colour and reading it with
+     * glReadPixels proves the whole path executed rather than merely that no call threw.
+     * A graphics stack that reports success and draws nothing is the usual failure, and
+     * an assertion on GL_VENDOR would not catch it.
+     *
+     * A pbuffer rather than the window surface, so the result does not depend on the
+     * window being visible - which on a headless emulator it never becomes.
+     */
+    private void exerciseGraphics() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        android.opengl.EGLDisplay display = android.opengl.EGL14.EGL_NO_DISPLAY;
+        android.opengl.EGLContext context = android.opengl.EGL14.EGL_NO_CONTEXT;
+        android.opengl.EGLSurface surface = android.opengl.EGL14.EGL_NO_SURFACE;
+        try {
+            display = android.opengl.EGL14.eglGetDisplay(android.opengl.EGL14.EGL_DEFAULT_DISPLAY);
+            int[] version = new int[2];
+            out.put("eglInitialised",
+                    String.valueOf(android.opengl.EGL14.eglInitialize(display, version, 0, version, 1)));
+            out.put("eglVersion", version[0] + "." + version[1]);
+
+            int[] attributes = {
+                    android.opengl.EGL14.EGL_RENDERABLE_TYPE, android.opengl.EGL14.EGL_OPENGL_ES2_BIT,
+                    android.opengl.EGL14.EGL_SURFACE_TYPE, android.opengl.EGL14.EGL_PBUFFER_BIT,
+                    android.opengl.EGL14.EGL_RED_SIZE, 8,
+                    android.opengl.EGL14.EGL_GREEN_SIZE, 8,
+                    android.opengl.EGL14.EGL_BLUE_SIZE, 8,
+                    android.opengl.EGL14.EGL_ALPHA_SIZE, 8,
+                    android.opengl.EGL14.EGL_NONE,
+            };
+            android.opengl.EGLConfig[] configs = new android.opengl.EGLConfig[1];
+            int[] found = new int[1];
+            android.opengl.EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, found, 0);
+            out.put("eglConfigs", String.valueOf(found[0]));
+            if (found[0] <= 0) {
+                out.put("error", "no EGL config");
+                writeMap("probe-graphics.properties", out);
+                return;
+            }
+
+            context = android.opengl.EGL14.eglCreateContext(display, configs[0],
+                    android.opengl.EGL14.EGL_NO_CONTEXT,
+                    new int[]{android.opengl.EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
+                            android.opengl.EGL14.EGL_NONE}, 0);
+            surface = android.opengl.EGL14.eglCreatePbufferSurface(display, configs[0],
+                    new int[]{android.opengl.EGL14.EGL_WIDTH, 16,
+                            android.opengl.EGL14.EGL_HEIGHT, 16,
+                            android.opengl.EGL14.EGL_NONE}, 0);
+            out.put("eglMadeCurrent", String.valueOf(
+                    android.opengl.EGL14.eglMakeCurrent(display, surface, surface, context)));
+
+            out.put("glVendor", String.valueOf(android.opengl.GLES20.glGetString(android.opengl.GLES20.GL_VENDOR)));
+            out.put("glRenderer", String.valueOf(android.opengl.GLES20.glGetString(android.opengl.GLES20.GL_RENDERER)));
+            out.put("glVersion", String.valueOf(android.opengl.GLES20.glGetString(android.opengl.GLES20.GL_VERSION)));
+
+            // Clear to a colour nothing else would produce, then read it back.
+            android.opengl.GLES20.glClearColor(0.25f, 0.5f, 0.75f, 1f);
+            android.opengl.GLES20.glClear(android.opengl.GLES20.GL_COLOR_BUFFER_BIT);
+            android.opengl.GLES20.glFinish();
+
+            java.nio.ByteBuffer pixel = java.nio.ByteBuffer.allocateDirect(4);
+            pixel.order(java.nio.ByteOrder.nativeOrder());
+            android.opengl.GLES20.glReadPixels(8, 8, 1, 1,
+                    android.opengl.GLES20.GL_RGBA, android.opengl.GLES20.GL_UNSIGNED_BYTE, pixel);
+            out.put("glError", String.valueOf(android.opengl.GLES20.glGetError()));
+            out.put("pixelR", String.valueOf(pixel.get(0) & 0xFF));
+            out.put("pixelG", String.valueOf(pixel.get(1) & 0xFF));
+            out.put("pixelB", String.valueOf(pixel.get(2) & 0xFF));
+            out.put("pixelA", String.valueOf(pixel.get(3) & 0xFF));
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "graphics failed", t);
+        } finally {
+            try {
+                if (display != android.opengl.EGL14.EGL_NO_DISPLAY) {
+                    android.opengl.EGL14.eglMakeCurrent(display,
+                            android.opengl.EGL14.EGL_NO_SURFACE,
+                            android.opengl.EGL14.EGL_NO_SURFACE,
+                            android.opengl.EGL14.EGL_NO_CONTEXT);
+                    if (surface != android.opengl.EGL14.EGL_NO_SURFACE) {
+                        android.opengl.EGL14.eglDestroySurface(display, surface);
+                    }
+                    if (context != android.opengl.EGL14.EGL_NO_CONTEXT) {
+                        android.opengl.EGL14.eglDestroyContext(display, context);
+                    }
+                    android.opengl.EGL14.eglTerminate(display);
+                }
+            } catch (Throwable ignored) {
+                // Teardown failure must not mask the result being reported.
+            }
+        }
+        out.put("packageName", getPackageName());
+        writeMap("probe-graphics.properties", out);
     }
 }

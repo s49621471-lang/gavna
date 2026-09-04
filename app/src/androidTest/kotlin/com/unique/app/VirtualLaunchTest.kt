@@ -926,6 +926,55 @@ class VirtualLaunchTest {
     }
 
     // -----------------------------------------------------------------------------
+    // Phase 5: graphics. EGL and GLES inside a virtualized process.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t20_theGuestRendersWithOpenGl() = runBlocking {
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-graphics.properties")
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.graphics", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(result)
+
+        assertThat(observed["error"]).isNull()
+        assertThat(observed["eglInitialised"]).isEqualTo("true")
+        assertThat(observed["eglMadeCurrent"]).isEqualTo("true")
+        assertThat(observed["eglConfigs"]!!.toInt()).isAtLeast(1)
+        assertThat(observed["glError"]).isEqualTo("0")
+
+        // The assertion that matters. A graphics stack that reports success and draws
+        // nothing is the usual failure, and GL_VENDOR would not catch it: this reads back
+        // the pixel that was actually rasterised. 0.25/0.5/0.75 in 8-bit, within one LSB
+        // of rounding.
+        assertThat(observed["pixelR"]!!.toInt()).isIn(63..65)
+        assertThat(observed["pixelG"]!!.toInt()).isIn(127..129)
+        assertThat(observed["pixelB"]!!.toInt()).isIn(190..192)
+        assertThat(observed["pixelA"]!!.toInt()).isEqualTo(255)
+
+        // Recorded for the physical-device run: this emulator rasterises in software, and
+        // a real GPU driver is a different code path entirely.
+        assertThat(observed).containsKey("glRenderer")
+    }
+
+    // -----------------------------------------------------------------------------
     // Phase 3: alarms and the clipboard — identity, and nothing but identity.
     // -----------------------------------------------------------------------------
 

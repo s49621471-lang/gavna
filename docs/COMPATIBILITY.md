@@ -69,7 +69,9 @@ never tried" is the difference between a fact and a guess.
 | 16 KB page size | `NOT_TESTED` | `NOT_TESTED` | Checked at import and at build time (`tools/check-abi.sh`), but this emulator reports 4096 so the large-page path is unexercised |
 | Native IO redirection | `PARTIAL` | `NOT_TESTED` | PLT/GOT hooking of the guest's own libraries. A path hard-coded as `/data/data/<pkg>/files/…` in native code lands inside the instance (`t17`). Limited to libraries loaded by the time the guest's `Application.onCreate` finishes, and to calls that cross a PLT — libc calling itself is invisible, correctly so |
 | Native IO redirection — late-loaded libraries | `BROKEN` | `NOT_TESTED` | A library the guest loads after bootstrap has its own GOT and is not hooked until the next `install()`, which nothing currently triggers |
-| Surface / OpenGL / Vulkan | `NOT_TESTED` | `NOT_TESTED` | Phase 5 |
+| OpenGL ES — EGL context and rendering | `SUPPORTED` | `NOT_TESTED` | EGL initialised, context made current and a frame rasterised inside the virtual process; the pixel is read back with `glReadPixels` and matches what was drawn (`t20`). **Software rasteriser** — a real GPU driver is a different code path |
+| OpenGL ES — window surface | `NOT_TESTED` | `NOT_TESTED` | `t20` uses a pbuffer, so it does not depend on a visible window. The window path is covered by the manual step in `docs/PHYSICAL_DEVICE_TEST.md` |
+| Vulkan | `NOT_TESTED` | `NOT_TESTED` | No sample yet |
 | Google flows | `NOT_TESTED` | `NOT_TESTED` | Interfaces only, no implementations |
 | Notifications — post | `SUPPORTED` | `NOT_TESTED` | Posted as UNIQUE with the guest's title and text; the icon is rendered from the guest's resources and travels as a bitmap (`t15`) |
 | Notifications — two instances | `SUPPORTED` | `NOT_TESTED` | Both instances post id 4711 and both survive, on separate channels the user can configure independently (`t15`) |

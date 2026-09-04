@@ -3,7 +3,7 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0-3 complete. Phase 4 begun: a guest runs its own native code.**
+**Phases 0-4 complete. Phase 5 begun: a guest renders with OpenGL.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
 launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-130607-5723`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-131923-8054`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -87,6 +87,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t17` the guest loads and runs its own native library | **PASS** |
 | `t18` the guest's job is scheduled, and the system runs it | **PASS** |
 | `t19` the guest sets alarms and uses the clipboard | **PASS** |
+| `t20` the guest renders with OpenGL, and the pixel reads back | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):

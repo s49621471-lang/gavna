@@ -1084,6 +1084,21 @@ Input, audio (`AudioTrack`/`AudioRecord`/`MediaPlayer`), camera (`camera2`) and
 host's permissions, gated by UNIQUE's per-instance permission state (§17). Virtualizing
 these would cost latency and gain nothing.
 
+
+**Status: EGL and GLES ES 3.0 verified inside a virtual process (`t20`).** Nothing had to
+be virtualized for it, which is the interesting part: the guest's Activity is a real
+Activity in a real process with a real window, so EGL, GLES and the driver see exactly
+what they would in an installed app. The graft is invisible below the framework.
+
+`t20` is deliberately self-verifying. It clears to 0.25/0.5/0.75 and reads the pixel back
+with `glReadPixels`, because a graphics stack that reports success and draws nothing is
+the usual failure and an assertion on `GL_VENDOR` would not catch it. It renders to a
+pbuffer rather than the window surface, so the result does not depend on a window becoming
+visible — which on a headless emulator it never does.
+
+What that does **not** cover, and is left `NOT_TESTED` rather than assumed: a real GPU
+driver (this rasterises in software), the window/`SurfaceView` path, and Vulkan.
+
 ---
 
 ## 11. Device Profile
