@@ -16,6 +16,23 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+      Exact alarms.
+
+      A virtual app's alarm is scheduled by UNIQUE, so the host's permission is what the
+      platform checks. SCHEDULE_EXACT_ALARM is user-grantable ("Alarms & reminders") and
+      is the one an ordinary app would hold; USE_EXACT_ALARM is deliberately not declared,
+      because it is reserved for alarm-clock and calendar apps and Play requires a policy
+      declaration for it.
+
+      When the user revokes it, a guest asking for an exact alarm gets the same
+      SecurityException it would get on a device where its own permission was revoked.
+      That is faithful, and UNIQUE reports it rather than silently downgrading the alarm
+      to inexact - an alarm that fires ten minutes late is worse than one that visibly
+      fails.
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!--
       Foreground service types.
 
       A virtual app's foreground service runs on one of UNIQUE's stub services, so the

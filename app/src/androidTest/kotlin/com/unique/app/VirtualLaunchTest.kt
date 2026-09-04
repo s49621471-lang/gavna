@@ -919,6 +919,63 @@ class VirtualLaunchTest {
     }
 
     // -----------------------------------------------------------------------------
+    // Phase 3: alarms and the clipboard — identity, and nothing but identity.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t19_theGuestSetsAlarmsAndUsesTheClipboard() = runBlocking {
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-alarm-clip.properties")
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.alarmClipboard", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(result)
+
+        // Both services check the calling package against the uid, so an unhandled
+        // identity layer shows up as a SecurityException from an API with nothing
+        // obviously to do with package names.
+        assertThat(observed["alarmError"]).isNull()
+        assertThat(observed["alarmSet"]).isEqualTo("true")
+        assertThat(observed["alarmCancelled"]).isEqualTo("true")
+
+        // Writing the clipboard is what UNIQUE is responsible for: an unrewritten package
+        // is rejected by the identity check. Reading it back is *not* asserted — Android
+        // 10 restricted getPrimaryClip to the app holding input focus, and this headless
+        // emulator never gives an activity focus, so the read is recorded rather than
+        // relied on. `hadFocus` says which case a given run was.
+        assertThat(observed["clipError"]).isNull()
+        assertThat(observed["clipSet"]).isEqualTo("true")
+        assertThat(observed).containsKey("clipRead")
+        if (observed["hadFocus"] == "true") {
+            assertThat(observed["clipRead"]).isEqualTo("clip-from-$probePackage")
+        }
+
+        // Exact alarms depend on the *host's* permission, which Android 14 denies by
+        // default for targetSdk 33+. Recorded, not asserted either way: what matters is
+        // that UNIQUE reports it rather than silently downgrading the alarm.
+        assertThat(observed).containsKey("canScheduleExact")
+
+        // And the app still believes it is itself.
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+    }
+
+    // -----------------------------------------------------------------------------
     // Phase 3: JobScheduler. The first path where the *system* starts the guest.
     // -----------------------------------------------------------------------------
 

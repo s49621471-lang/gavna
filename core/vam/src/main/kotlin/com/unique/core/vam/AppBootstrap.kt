@@ -196,6 +196,20 @@ object AppBootstrap {
             )
         }
 
+        // Alarms and the clipboard need nothing but the caller's identity: an alarm's
+        // PendingIntent was pointed at a stub when the guest built it, and a clip is data.
+        for (service in listOf("alarm", "clipboard")) {
+            runCatching {
+                VirtualIdentityHooks.install(service, params.packageName, hostContext.packageName)
+            }.onFailure {
+                Diagnostics.warn(
+                    DiagChannel.HOOK, "IDENTITY_HOOK_INSTALL_FAILED",
+                    mapOf("service" to service, "error" to it.toString()),
+                )
+            }
+        }
+        runCatching { VirtualIdentityHooks.reportAlarmCapability(hostContext) }
+
         runCatching { VirtualJobSchedulerHook.install(ready, hostContext) }.onFailure {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "JOB_HOOK_INSTALL_FAILED",

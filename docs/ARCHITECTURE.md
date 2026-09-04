@@ -574,12 +574,33 @@ START u0 {id=u0/com.unique.probe.ProbeSecondActivity cmp=…ActivityStub_p0_m0_a
   case — work finished synchronously — and is reported differently from "UNIQUE could not
   reach the guest". They are the same value to the platform and must not be the same event
   in the log.
-- **AlarmManager**: `PendingIntent`s are rewritten to host trampolines with explicit
-  mutability flags (mandatory since Android 12). Exact alarms require
-  `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM` at host level; if the host lacks it, the alarm
-  is downgraded to inexact **and a diagnostic is emitted**.
-- **Clipboard**: `IClipboard` shim rewrites the calling package; Android 12+ clipboard
-  access toasts will name UNIQUE, not the virtual app — documented, not hidden.
+- **AlarmManager** — **implemented; `t19` covers the inexact path.** The whole
+  interception is the identity rewrite: the alarm's `PendingIntent` was already pointed at
+  a stub when the guest built it (§6.4.1), so there is nothing left to route.
+
+  Exact alarms are the interesting part, and the design decision here has been **reversed**
+  from the original plan. UNIQUE declares `SCHEDULE_EXACT_ALARM` — user-grantable, and the
+  permission an ordinary app would hold — and deliberately not `USE_EXACT_ALARM`, which is
+  reserved for alarm-clock and calendar apps and needs a Play policy declaration. When the
+  host does not hold it, the guest gets the platform's own `SecurityException`, which is
+  exactly what it would get on a device where its own permission was revoked. The earlier
+  plan to **downgrade to inexact and log it** is wrong: an alarm that fires up to an hour
+  late looks like the app being broken, and the app has no way to find out. UNIQUE reports
+  the capability once at bootstrap (`ALARM_EXACT_AVAILABLE` / `ALARM_EXACT_UNAVAILABLE`)
+  rather than per alarm, because the answer is a property of the host's permission state.
+
+  Not handled: `setAlarmClock` shows in the status bar as UNIQUE's alarm rather than the
+  guest's.
+
+- **Clipboard** — **implemented; `t19` covers writing.** `IClipboard` gets the same
+  identity rewrite. Android 12+ clipboard access toasts name UNIQUE, not the virtual app —
+  documented, not hidden.
+
+  Reading is the platform's restriction, not UNIQUE's: since Android 10 `getPrimaryClip`
+  answers only for the app holding input focus. Under virtualization the focused window is
+  the stub's, which is UNIQUE's, and the read is checked against UNIQUE too — the two
+  agree, so a focused guest can read. A headless emulator never focuses an activity at
+  all, so that case is `NOT_TESTED` rather than claimed.
 
 ### 6.6 Runtime permissions
 

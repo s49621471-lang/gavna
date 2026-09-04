@@ -106,6 +106,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "scheduling own job");
             scheduleJob();
         }
+        if (request != null && request.getBooleanExtra("probe.alarmClipboard", false)) {
+            Log.i(TAG, "exercising alarms and the clipboard");
+            exerciseAlarmAndClipboard();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -517,5 +521,59 @@ public class ProbeActivity extends Activity {
             Log.e(TAG, "job scheduling failed", t);
         }
         writeMap("probe-job-schedule.properties", out);
+    }
+
+    /**
+     * Sets an alarm and uses the clipboard, the way an ordinary app does.
+     *
+     * Both reach system services that check the calling package against the uid, so an
+     * unhandled identity layer shows up as a SecurityException from an API that has
+     * nothing obviously to do with package names.
+     *
+     * The clipboard *read* is attempted but not relied on: Android 10 restricted
+     * getPrimaryClip to the app holding input focus, and a headless emulator never gives
+     * an activity focus at all. Whatever comes back is recorded rather than asserted, and
+     * hadFocus says which case this was.
+     */
+    private void exerciseAlarmAndClipboard() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            android.app.AlarmManager am =
+                    (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+            android.app.PendingIntent fire = android.app.PendingIntent.getBroadcast(
+                    this, 0, new Intent("com.unique.probe.PING"),
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                            | android.app.PendingIntent.FLAG_IMMUTABLE);
+            // Inexact and far out: the point is that scheduling is accepted, not that it
+            // fires during the test.
+            am.set(android.app.AlarmManager.RTC,
+                    System.currentTimeMillis() + 3600_000L, fire);
+            out.put("alarmSet", "true");
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                out.put("canScheduleExact", String.valueOf(am.canScheduleExactAlarms()));
+            }
+            am.cancel(fire);
+            out.put("alarmCancelled", "true");
+        } catch (Throwable t) {
+            out.put("alarmError", t.toString());
+            Log.e(TAG, "alarm failed", t);
+        }
+
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                    "probe", "clip-from-" + getPackageName()));
+            out.put("clipSet", "true");
+            android.content.ClipData back = cm.getPrimaryClip();
+            out.put("clipRead", back == null ? "null"
+                    : String.valueOf(back.getItemAt(0).getText()));
+            out.put("hadFocus", String.valueOf(hasWindowFocus()));
+        } catch (Throwable t) {
+            out.put("clipError", t.toString());
+            Log.e(TAG, "clipboard failed", t);
+        }
+        out.put("packageName", getPackageName());
+        writeMap("probe-alarm-clip.properties", out);
     }
 }
