@@ -1048,6 +1048,35 @@ host's app id, which varies by GMS version. It ships behind a flag, with the tes
 entry that proves or disproves it per device, and is reported as `Experimental` in the UI
 until a device passes the test. It is **not** claimed as working.
 
+### 9.6.1 Two prerequisites that are not Google-specific
+
+Both were missing, both break Google flows, and both break plenty of non-Google apps the
+same way — so they are stated here rather than inside a bridge that does not exist yet.
+
+**An app must be able to read its own signature.** `PackageInfo.signatures` and
+`signingInfo` were never populated, so a guest asking for its own certificate got null.
+Apps check this constantly: integrity checks, licence checks, and every Google API whose
+key is bound to a signing certificate. Null is not a missing nicety — the app concludes it
+has been tampered with and refuses to start, which looks like UNIQUE breaking it.
+
+UNIQUE asks the *real* `PackageManager` to parse the APK on disk
+(`getPackageArchiveInfo`) rather than parsing it itself. Signature verification is exactly
+the wrong place to have a second implementation: the platform's answer is by definition
+the one the app would have got if it were installed, including which of v1/v2/v3 it
+honours and how it treats rotation.
+
+Both forms are filled, always. From API 28 the archive parser populates `signingInfo` and
+leaves the deprecated `signatures` array null — but the real `PackageManager` still fills
+`signatures` for a caller that asked with `GET_SIGNATURES`, and a great many apps and
+libraries still ask that way. Populating only what the parser returned would leave them
+reading null, which is the same failure by a different route.
+
+**What the guest believes about the Google stack must be true.** A guest asking whether
+`com.google.android.gms` is installed gets the host's real answer, because an app told
+Play services is present when it is not fails later and somewhere less obvious. `t21`
+asserts the guest's answer equals the host's rather than asserting a fixed value, so the
+test stays meaningful on a device that *does* have it.
+
 ### 9.7 Not supported yet, and not yet investigated
 
 Play Integrity, SafetyNet, DroidGuard, Play Billing and Play Games all bind to an attested,

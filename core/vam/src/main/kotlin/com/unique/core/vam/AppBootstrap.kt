@@ -142,6 +142,8 @@ object AppBootstrap {
                     buildActivityInfo(manifest, appInfo, params, entry)
                 }
             },
+            hostContext = hostContext,
+            apkPath = baseApk.absolutePath,
         )
         if (!pmHooked) {
             return Result.Failed(

@@ -1,6 +1,7 @@
 package com.unique.core.vam
 
 import android.content.ComponentName
+import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -45,8 +46,25 @@ object VirtualPackageManagerHook {
         manifest: ApkManifest,
         applicationInfo: ApplicationInfo,
         activityInfoOf: (String) -> Any?,
+        hostContext: Context? = null,
+        apkPath: String? = null,
     ): Boolean {
         if (installedFor == packageName) return true
+
+        if (hostContext != null && apkPath != null) {
+            archiveSignatures = loadArchiveSignatures(hostContext, apkPath)
+            Diagnostics.info(
+                DiagChannel.LAUNCH, "SIGNATURES_LOADED",
+                mapOf(
+                    "package" to packageName,
+                    "signers" to signerCount(archiveSignatures).toString(),
+                    "hasSigningInfo" to (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                            archiveSignatures?.signingInfo != null
+                        ).toString(),
+                ),
+            )
+        }
 
         val target = SystemServiceHook.TARGETS.first { it.serviceName == "package" }
         val report = SystemServiceHook.install(
@@ -157,5 +175,81 @@ object VirtualPackageManagerHook {
         // REQUESTED_PERMISSION_REQUIRED is not in the SDK surface; its value (1) has been
         // stable since API 1 and the flags array must be the same length as the names.
         requestedPermissionsFlags = IntArray(manifest.usesPermissions.size) { 1 }
+
+        // Signatures, copied from what the platform's own parser makes of the APK.
+        //
+        // Apps check their own signature far more often than one would guess: integrity
+        // checks, licence checks, and every Google API whose key is bound to a signing
+        // certificate. A null here is not a missing nicety - it is an app that decides it
+        // has been tampered with and refuses to start, which looks like UNIQUE breaking it.
+        archiveSignatures?.let { archive ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                signingInfo = archive.signingInfo
+            }
+            // Both forms, always. From API 28 the archive parser fills `signingInfo` and
+            // leaves the deprecated `signatures` array null - but the *real*
+            // PackageManager still fills `signatures` for a caller that asked with
+            // GET_SIGNATURES, and plenty of apps and libraries still do. Populating only
+            // what the parser handed back would leave those reading null, which is
+            // exactly the "the app thinks it was tampered with" failure this exists to
+            // prevent.
+            @Suppress("DEPRECATION")
+            val fromArchive = archive.signatures
+            @Suppress("DEPRECATION")
+            signatures = when {
+                fromArchive != null && fromArchive.isNotEmpty() -> fromArchive
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ->
+                    archive.signingInfo?.let { info ->
+                        if (info.hasMultipleSigners()) info.apkContentsSigners
+                        else info.signingCertificateHistory
+                    }
+                else -> null
+            }
+        }
+    }
+
+    /**
+     * The signing information for the APK on disk, parsed once per process.
+     *
+     * Asked of the *real* `PackageManager` rather than parsed by UNIQUE. Signature
+     * verification is exactly the wrong place to have a second implementation: the
+     * platform's answer is by definition the one an app would have got if it were
+     * installed, including which of v1/v2/v3 it honours and how it handles rotation.
+     */
+    @Volatile private var archiveSignatures: PackageInfo? = null
+
+    /**
+     * How many signers the archive actually yielded, whichever form carried them.
+     *
+     * Counting only the deprecated array reported zero for every APK on API 28+, which
+     * made a working signature load look like a failed one.
+     */
+    private fun signerCount(info: PackageInfo?): Int {
+        if (info == null) return 0
+        @Suppress("DEPRECATION")
+        val legacy = info.signatures?.size ?: 0
+        if (legacy > 0) return legacy
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return 0
+        val signing = info.signingInfo ?: return 0
+        return if (signing.hasMultipleSigners()) signing.apkContentsSigners.size
+        else signing.signingCertificateHistory.size
+    }
+
+    private fun loadArchiveSignatures(hostContext: Context, apkPath: String): PackageInfo? {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+        return runCatching {
+            hostContext.packageManager.getPackageArchiveInfo(apkPath, flags)
+        }.getOrElse {
+            Diagnostics.warn(
+                DiagChannel.LAUNCH, "SIGNATURE_PARSE_FAILED",
+                mapOf("apk" to apkPath, "error" to it.toString()),
+            )
+            null
+        }
     }
 }

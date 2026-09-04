@@ -114,6 +114,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "exercising graphics");
             exerciseGraphics();
         }
+        if (request != null && request.getBooleanExtra("probe.identity", false)) {
+            Log.i(TAG, "checking own signature and the Google stack");
+            exercisePackageIdentity();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -687,5 +691,61 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-graphics.properties", out);
+    }
+
+    /**
+     * Reads the app's own signature and asks whether Google Play services exists.
+     *
+     * Both are things apps do constantly and both break silently under a naive
+     * virtualization layer: an app that cannot read its own certificate concludes it has
+     * been tampered with, and an app told Play services is present when it is not fails
+     * later, somewhere less obvious.
+     */
+    private void exercisePackageIdentity() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            int flags = android.os.Build.VERSION.SDK_INT >= 28
+                    ? android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+                    : android.content.pm.PackageManager.GET_SIGNATURES;
+            android.content.pm.PackageInfo self = pm.getPackageInfo(getPackageName(), flags);
+            // The deprecated array first, because that is what most apps and libraries
+            // still read, and it must not be null just because the platform is API 28+.
+            android.content.pm.Signature[] sigs = self.signatures;
+            out.put("legacyArrayCount", String.valueOf(sigs == null ? 0 : sigs.length));
+            if (sigs == null && android.os.Build.VERSION.SDK_INT >= 28
+                    && self.signingInfo != null) {
+                sigs = self.signingInfo.getApkContentsSigners();
+            }
+            out.put("signatureCount", String.valueOf(sigs == null ? 0 : sigs.length));
+            if (sigs != null && sigs.length > 0) {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] digest = md.digest(sigs[0].toByteArray());
+                StringBuilder hex = new StringBuilder();
+                for (byte b : digest) hex.append(String.format("%02x", b));
+                out.put("signatureSha256", hex.toString());
+            }
+            out.put("hasSigningInfo", String.valueOf(
+                    android.os.Build.VERSION.SDK_INT >= 28 && self.signingInfo != null));
+        } catch (Throwable t) {
+            out.put("signatureError", t.toString());
+            Log.e(TAG, "signature check failed", t);
+        }
+
+        // What the app believes about the Google stack. The answer must be the truth
+        // about this device, not a convenient fiction.
+        for (String pkg : new String[]{
+                "com.google.android.gms", "com.android.vending", "com.google.android.gsf"}) {
+            try {
+                getPackageManager().getPackageInfo(pkg, 0);
+                out.put("present." + pkg, "true");
+            } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+                out.put("present." + pkg, "false");
+            } catch (Throwable t) {
+                out.put("present." + pkg, "error:" + t.getClass().getSimpleName());
+            }
+        }
+        out.put("packageName", getPackageName());
+        writeMap("probe-identity.properties", out);
     }
 }

@@ -72,7 +72,9 @@ never tried" is the difference between a fact and a guess.
 | OpenGL ES — EGL context and rendering | `SUPPORTED` | `NOT_TESTED` | EGL initialised, context made current and a frame rasterised inside the virtual process; the pixel is read back with `glReadPixels` and matches what was drawn (`t20`). **Software rasteriser** — a real GPU driver is a different code path |
 | OpenGL ES — window surface | `NOT_TESTED` | `NOT_TESTED` | `t20` uses a pbuffer, so it does not depend on a visible window. The window path is covered by the manual step in `docs/PHYSICAL_DEVICE_TEST.md` |
 | Vulkan | `NOT_TESTED` | `NOT_TESTED` | No sample yet |
-| Google flows | `NOT_TESTED` | `NOT_TESTED` | Interfaces only, no implementations |
+| App reads its own signature | `SUPPORTED` | `NOT_TESTED` | Both `signingInfo` and the deprecated `signatures` array, parsed by the platform itself from the APK on disk (`t21`). Needed by integrity checks and by every Google API whose key is bound to a certificate |
+| Guest's view of installed packages | `SUPPORTED` | `NOT_TESTED` | Matches the host's, including the *absence* of Play services (`t21`). An app told GMS is present when it is not fails later, somewhere less obvious |
+| Google flows | `NOT_TESTED` | `NOT_TESTED` | Routing table implemented and unit-tested; no bridge has an implementation. **Unverifiable in this environment**: the emulator is `aosp_atd` and has no Google stack at all, so any claim would be speculation |
 | Notifications — post | `SUPPORTED` | `NOT_TESTED` | Posted as UNIQUE with the guest's title and text; the icon is rendered from the guest's resources and travels as a bitmap (`t15`) |
 | Notifications — two instances | `SUPPORTED` | `NOT_TESTED` | Both instances post id 4711 and both survive, on separate channels the user can configure independently (`t15`) |
 | Notifications — tap routing | `PARTIAL` | `NOT_TESTED` | The content `PendingIntent` is routed onto a stub at creation and carries the instance's vuid; the tap itself is not driven by the suite |

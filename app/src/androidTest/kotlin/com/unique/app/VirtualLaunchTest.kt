@@ -926,6 +926,73 @@ class VirtualLaunchTest {
     }
 
     // -----------------------------------------------------------------------------
+    // Phase 6: what the guest believes about itself and about the Google stack.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t21_theGuestReadsItsOwnSignatureAndTheTruthAboutGms() = runBlocking {
+        val instance = requireInstance()
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-identity.properties")
+        result.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.identity", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(result)
+
+        // An app that cannot read its own certificate concludes it has been tampered with
+        // and refuses to start — which looks like UNIQUE breaking it. Every Google API
+        // whose key is bound to a signing certificate needs this too.
+        assertThat(observed["signatureError"]).isNull()
+        assertThat(observed["signatureCount"]!!.toInt()).isAtLeast(1)
+
+        // The deprecated `signatures` array too, not only `signingInfo`. The real
+        // PackageManager still fills it on API 28+ and most apps and libraries still read
+        // it; the archive parser does not, so UNIQUE has to.
+        assertThat(observed["legacyArrayCount"]!!.toInt()).isAtLeast(1)
+        assertThat(observed["hasSigningInfo"]).isEqualTo("true")
+
+        // And it is the *probe's* certificate, not UNIQUE's. The probe is signed by
+        // tools/testapp/.keystore, which UNIQUE is not.
+        val hostSha = hostSignatureSha256()
+        assertThat(observed["signatureSha256"]).isNotNull()
+        assertThat(observed["signatureSha256"]).isNotEqualTo(hostSha)
+
+        // What the app believes about the Google stack must be the truth about this
+        // device. This emulator is aosp_atd and has none of it; an app told otherwise
+        // fails later, somewhere less obvious.
+        val gmsOnHost = isInstalledOnHost("com.google.android.gms")
+        assertThat(observed["present.com.google.android.gms"]).isEqualTo(gmsOnHost.toString())
+        assertThat(observed["present.com.android.vending"])
+            .isEqualTo(isInstalledOnHost("com.android.vending").toString())
+    }
+
+    private fun hostSignatureSha256(): String {
+        @Suppress("DEPRECATION")
+        val info = context.packageManager.getPackageInfo(
+            context.packageName, PackageManager.GET_SIGNATURES,
+        )
+        @Suppress("DEPRECATION")
+        val bytes = info.signatures!!.first().toByteArray()
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(bytes).joinToString("") { "%02x".format(it) }
+    }
+
+    // -----------------------------------------------------------------------------
     // Phase 5: graphics. EGL and GLES inside a virtualized process.
     // -----------------------------------------------------------------------------
 

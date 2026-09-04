@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-131923-8054`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-134218-10843`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -88,6 +88,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t18` the guest's job is scheduled, and the system runs it | **PASS** |
 | `t19` the guest sets alarms and uses the clipboard | **PASS** |
 | `t20` the guest renders with OpenGL, and the pixel reads back | **PASS** |
+| `t21` the guest reads its own signature, and the truth about the Google stack | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
