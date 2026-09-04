@@ -1,72 +1,94 @@
 # UNIQUE — status
 
-Generated against the tree at the time of writing; regenerate the second half with
-`tools/report-unimplemented.sh`. This file exists because ARCHITECTURE.md §18 rule 1
-forbids describing unfinished work as done, and a roadmap alone does not say which
-parts of it have actually landed.
+Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
+exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0 and 1 are complete. Phase 2 onwards is not started.** In particular:
-**no virtual application runs yet.**
+**Phases 0 and 1 complete. Phase 2 in progress.**
 
----
+## What each environment can prove
 
-## What is done and verified
-
-| Area | State | How it was verified |
+| Environment | Proves | Cannot prove |
 |---|---|---|
-| Architecture decision record | Done | `docs/ARCHITECTURE.md` |
-| Gradle build, 13 modules, ARM64-only, API 31–36 | Done | `./gradlew assembleRelease` |
-| Binary XML / manifest decoding | Done | 16 tests against real `aapt2` (build-tools 36.0.0) output |
-| APK bundle + split classification and selection | Done | 8 tests, incl. a case that caught a real de-duplication bug |
-| ELF inspection: ARM64 + 16 KB page alignment | Done | 7 tests against real NDK r27 `.so` files, 4 KB and 16 KB |
-| Virtual path contract | Done | 12 tests pinning every accessor and every alias |
-| Native redirect table (C++) | Done | 34 host-side checks, no device needed |
-| Signature-agnostic shim engine | Done | 10 tests, incl. the same shim bound to two different signatures |
-| Device profile model + generator | Done | 9 tests: shape, stability, regeneration, RFC 4122 |
-| Compatibility database + resolver | Done | 5 tests incl. local-override merging |
-| Diagnostics redactor | Done | 7 tests: JWTs, `ya29.`, bearer headers, emails, key names |
-| Google routing table | Done | 10 tests pinning every flow's decision |
-| Stub component generation | Done | Built APK contains 129 activities, 34 services, 17 providers |
-| State database (Room, v1, schema exported) | Done | Compiles; schema JSON checked in |
-| Application icon | Done | Adaptive + monochrome, safe-zone geometry checked |
-| Flutter interface | Done | `flutter analyze` clean, 8 tests |
-| 16 KB page-size compliance | Done | Every shipped `.so` ≥ 16 KB aligned; `zipalign -c -P 16` passes |
+| Build machine (JVM + host C++) | Parsers, path contract, ELF checks, shim engine, Google routing table, redactor | Anything about a running Android system |
+| **Android 14 x86_64 emulator** (`aosp_atd`, software rendering, no KVM) | The engine graft — it is pure Java and architecture-independent | ARM64 native code, real GPU paths, OEM framework forks, Android 15/16 behaviour, 16 KB pages |
+| ARM64 Android 15 phone | Everything above, for real | **Not yet run.** See `docs/PHYSICAL_DEVICE_TEST.md` |
 
-Totals: **84 JVM tests, 8 Dart tests, 34 native checks — all passing.**
-(`./gradlew test` reports 94 executions: `core:google`'s 10 tests run for both build variants.)
-Release APK: **17.8 MB**.
+Every device claim below names the environment. Nothing is marked working on reasoning.
 
-## What is deliberately not implemented
+## Off-device: done and tested
 
-Each of these reports itself at runtime rather than failing quietly.
-
-| Surface | Phase | Behaviour today |
+| Area | Tests | Notes |
 |---|---|---|
-| Virtual app process bootstrap | 2 | `:vappN` refuses to start and logs `VAPP_BOOTSTRAP_NOT_IMPLEMENTED`. Starting half-configured would run the app under UNIQUE's identity and write into UNIQUE's own data directory. |
-| VirtualCore server interface | 2 | `onBind` returns null; a caller fails immediately rather than on the first transaction. |
-| APK import from the picker | 2 | `PackageInstaller` is written and compiles; the picker is not wired, and the button is disabled rather than a no-op. |
-| Activity hand-off (`ClientTransaction` rewrite) | 3 | Stub finishes and logs `ACTIVITY_HANDOFF_NOT_IMPLEMENTED`. |
-| Service / job / provider forwarding | 3 | Stubs log and decline. |
-| Settings interception (ANDROID\_ID) | 3 | Shims are defined and unit-testable but not installed; `DeviceProfileStatus.settingsInterceptionActive` is false. A virtual app would read the host's real ANDROID\_ID. |
-| Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false`. |
-| libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`. The table is complete and tested; the ~30 libc hooks are not. |
-| Native property virtualization | 6 | `InstallStatus.NOT_IMPLEMENTED`. The store works; the interception does not. |
-| Every Google bridge implementation | 5 | Interfaces and the routing table exist and are tested. No bridge has a body. |
+| Binary XML / manifest decoding | 16 | Against real `aapt2` (build-tools 36) output |
+| APK bundle + split selection | 8 | Found a real de-duplication bug |
+| ELF: ARM64 + 16 KB alignment | 7 | Against real NDK r27 `.so`, 4 KB and 16 KB |
+| Virtual path contract | 12 | Every accessor and every alias pinned |
+| Native redirect table (C++) | 34 checks | Host-side binary, no device needed |
+| Signature-agnostic shim engine | 12 | Includes one shim bound to two different signatures, and conditional `proceed()` |
+| Device profile model | 9 | Shape, stability, regeneration, RFC 4122 |
+| Compatibility resolver | 5 | Local-override merging |
+| Diagnostics redactor | 7 | JWTs, `ya29.`, bearer headers, emails, key names |
+| Google routing table | 10 | Every flow's decision pinned |
+| Stub / job / channel namespacing | 8 | Two instances cannot collide |
+| Flutter UI | 8 | `flutter analyze` clean |
 
-## What is known to be impossible, not merely unfinished
+**92 JVM tests, 8 Dart tests, 34 native checks — all passing.**
 
-- **Play Integrity, SafetyNet, DroidGuard, Play Billing, Play Games.** These bind to an
-  attested, installed package identity. App-level virtualization cannot provide one and
-  UNIQUE does not try to defeat them.
-- **AOT compilation of virtual apps.** Since Android 10 an app cannot invoke `dex2oat`.
-  Virtual apps are JIT-only, so cold start will be measurably slower than an installed
-  app. This is a property of the platform, not a bug to fix.
-- **32-bit-only applications** on a 64-bit-only device.
+## On device (EMU34): verified working
 
-## Not yet measured
+| Step | Evidence |
+|---|---|
+| APK import from a file, package **not installed** on the host | `PACKAGE_IMPORTED package=com.unique.probe versionCode=7 bytes=12709` |
+| Imported APKs are read-only (W^X) | Asserted by the suite: `baseApk.canWrite()` is false |
+| Virtual package registered in the state database | `t01` passes |
+| Instance created with directories and a device profile | `INSTANCE_PREPARED created=13`, `INSTANCE_CREATED androidId=…` |
+| `:vappN` process starts and is identified | `PROCESS_START process=com.unique:vapp0 kind=VAPP` |
+| Hidden-API access obtained | `HIDDEN_API_GRANTED via=HiddenApiBypass` |
+| Launch interceptor installs on `ActivityThread.mH` | `INTERCEPTOR_INSTALLED executeTransaction=159` |
+| Launch transaction reaches the interceptor | `CALLBACK_ALIVE what=159 obj=…ClientTransaction` |
+| `LaunchActivityItem` located and its shape understood | No `LAUNCH_ITEM_SHAPE_UNKNOWN`; sibling transactions correctly ignored |
+| Virtual `PackageManager` installed | `SERVICE_HOOKED service=package cache=true singletons=1` — 7 methods bound |
+| Native library loads in the virtual process | `libunique_native loaded (page size 4096)` |
+| A crashing virtual process leaves a diagnostic | `CRASH UNCAUGHT_EXCEPTION` recorded by `CrashGuard` |
 
-Nothing in this repository has run on a physical device. Every claim above is from a
-build-machine test or an inspection of build output. In particular there are **no**
-benchmark numbers, **no** Google Sign-In matrix results, and **no** compatibility results
-for any real application — the compatibility database ships architectural facts only, and
-marks nothing as SUPPORTED.
+## On device (EMU34): not yet passing
+
+`t02` — the activity hand-off — is the current work. The graft reaches application
+creation; the last observed failure was the W^X one above, now fixed and awaiting a
+re-run. Until `t02` passes, **no virtual application has rendered**, and the remaining
+acceptance tests (`t03`–`t06`) have not been exercised.
+
+## Deliberately not implemented
+
+| Surface | Phase | What it does instead |
+|---|---|---|
+| Services, receivers, providers | 3 | Stubs log `*_NOT_IMPLEMENTED` and decline |
+| Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
+| Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
+| libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`; the table is complete and tested, the ~30 hooks are not |
+| Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
+| Every Google bridge body | 6 | Interfaces and routing exist and are tested; no bridge has an implementation |
+| Device profile regenerate | 7 | UI row says it is not available yet |
+| VirtualCore server interface | 3 | `onBind` returns null; the UI process owns the database for now |
+| APK file picker | 3 | Import from an installed app works; the picker is not wired |
+
+## Known limits that are not bugs
+
+- **No AOT.** Since Android 10 an app cannot invoke `dex2oat`, so virtual apps are
+  JIT-only and cold start is slower than an installed app. This is a platform property.
+- **Attestation.** Play Integrity, Play Games and Play Billing are expected not to work
+  and are recorded `UNSUPPORTED_FOR_NOW` — expected, not measured.
+- **32-bit-only apps** on a 64-bit-only device.
+- The Credential Manager route is the Google layer's **central hypothesis**, unverified.
+
+## Next steps, in order
+
+1. Re-run the acceptance suite with the W^X fix; get `t02` green — a virtual activity
+   rendering is the gate for everything after it.
+2. Run `t03`–`t06`: storage isolation, restart persistence, two independent instances,
+   crash isolation with a surviving sibling.
+3. Phase 3: services, receivers, providers, then permissions.
+4. Phase 4: ARM64 native, which needs the physical device to mean anything.
+
+See `docs/COMPATIBILITY.md` for the per-application matrix and
+`docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.
