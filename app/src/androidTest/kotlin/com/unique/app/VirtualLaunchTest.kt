@@ -309,6 +309,11 @@ class VirtualLaunchTest {
     private suspend fun requireInstance(): Instance =
         checkNotNull(existingInstance()) { "no probe instance; t01 must run first" }
 
+    private fun isInstalledOnHost(packageName: String): Boolean = runCatching {
+        context.packageManager.getPackageInfo(packageName, 0)
+        true
+    }.getOrDefault(false)
+
     private fun resultFile(instance: Instance) =
         File(model.filesDir(instance.vuid, probePackage), "probe-result.properties")
 

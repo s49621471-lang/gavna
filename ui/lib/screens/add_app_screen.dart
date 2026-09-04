@@ -203,11 +203,37 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
       );
 }
 
-class _InstalledRow extends StatelessWidget {
+class _InstalledRow extends StatefulWidget {
   const _InstalledRow({required this.app, required this.state});
 
   final InstalledApp app;
   final AppState state;
+
+  @override
+  State<_InstalledRow> createState() => _InstalledRowState();
+}
+
+class _InstalledRowState extends State<_InstalledRow> {
+  bool _busy = false;
+
+  InstalledApp get app => widget.app;
+  AppState get state => widget.state;
+
+  Future<void> _import(BuildContext context) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final result = await state.importInstalled(app.packageName);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    messenger.showSnackBar(SnackBar(
+      content: Text(result.ok
+          ? '${app.label} added'
+          : (result.message ?? 'Could not add ${app.label}.')),
+    ));
+    if (result.ok) navigator.pop();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -232,16 +258,14 @@ class _InstalledRow extends StatelessWidget {
             color: blocked == null ? null : UniqueColors.warning,
           ),
         ),
-        trailing: blocked == null
-            ? const Icon(Icons.add_circle_outline_rounded, size: 22)
-            : const Icon(Icons.block_rounded, size: 20),
-        onTap: blocked == null
-            ? () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Importing lands in the next milestone.'),
-                  ),
-                )
-            : null,
+        trailing: _busy
+            ? const SizedBox(
+                width: 18, height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : blocked == null
+                ? const Icon(Icons.add_circle_outline_rounded, size: 22)
+                : const Icon(Icons.block_rounded, size: 20),
+        onTap: blocked == null ? () => _import(context) : null,
       ),
     );
   }

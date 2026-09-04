@@ -36,6 +36,39 @@ class UniqueBridgeClient {
     return _method.invokeMethod<Uint8List>('appIcon', {'package': packageName});
   }
 
+  Future<List<VirtualApp>> listInstances() async {
+    final result = await _method.invokeListMethod<Object?>('listInstances');
+    return (result ?? const [])
+        .map((e) => VirtualApp.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  Future<EngineOutcome> importInstalled(String packageName) async =>
+      _outcome('importInstalled', {'package': packageName});
+
+  Future<EngineOutcome> importApk(List<String> paths) async =>
+      _outcome('importApk', {'paths': paths});
+
+  Future<EngineOutcome> cloneInstance(String packageName) async =>
+      _outcome('cloneInstance', {'package': packageName});
+
+  Future<EngineOutcome> launchInstance(int vuid) async =>
+      _outcome('launchInstance', {'vuid': vuid});
+
+  Future<EngineOutcome> removeInstance(int vuid) async =>
+      _outcome('removeInstance', {'vuid': vuid});
+
+  Future<EngineOutcome> clearCache(int vuid) async =>
+      _outcome('clearCache', {'vuid': vuid});
+
+  Future<EngineOutcome> clearData(int vuid) async =>
+      _outcome('clearData', {'vuid': vuid});
+
+  Future<EngineOutcome> _outcome(String method, Map<String, Object?> args) async {
+    final result = await _method.invokeMapMethod<Object?, Object?>(method, args);
+    return EngineOutcome.fromMap(result ?? const {});
+  }
+
   Future<List<DiagRecord>> diagnosticsSnapshot() async {
     final result = await _method.invokeListMethod<Object?>('diagnosticsSnapshot');
     return (result ?? const [])

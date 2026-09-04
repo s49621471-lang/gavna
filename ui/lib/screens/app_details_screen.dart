@@ -50,7 +50,9 @@ class AppDetailsScreen extends StatelessWidget {
                   children: [
                     Expanded(
                       child: FilledButton.icon(
-                        onPressed: launchable ? () {} : null,
+                        onPressed: launchable
+                            ? () => _run(context, () => state.launch(app), 'Launching…')
+                            : null,
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: const Text('Launch'),
                       ),
@@ -77,7 +79,7 @@ class AppDetailsScreen extends StatelessWidget {
                   children: [
                     SectionRow(label: 'Package', value: app.packageName),
                     const Divider(),
-                    SectionRow(label: 'Version', value: app.versionName),
+                    SectionRow(label: 'Version code', value: '${app.versionCode}'),
                     const Divider(),
                     SectionRow(label: 'Instance', value: app.profileName),
                   ],
@@ -109,9 +111,11 @@ class AppDetailsScreen extends StatelessWidget {
                     const Divider(),
                     SectionRow(label: 'Cache', value: formatBytes(app.cacheBytes)),
                     const Divider(),
+                    SectionRow(label: 'External', value: formatBytes(app.externalBytes)),
+                    const Divider(),
                     SectionRow(
                       label: 'Clear cache',
-                      onTap: () {},
+                      onTap: () => _run(context, () => state.clearCache(app), 'Cache cleared'),
                       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                     ),
                     const Divider(),
@@ -119,7 +123,7 @@ class AppDetailsScreen extends StatelessWidget {
                       label: 'Clear data',
                       value: 'Removes everything this instance stores',
                       valueColor: UniqueColors.warning,
-                      onTap: () {},
+                      onTap: () => _confirmClearData(context),
                       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                     ),
                   ],
@@ -144,10 +148,21 @@ class AppDetailsScreen extends StatelessWidget {
                       ),
                     ),
                     const Divider(),
+                    const Divider(),
+                    SectionRow(
+                      label: 'Instance ID',
+                      value: app.instanceId,
+                      monospaceValue: true,
+                    ),
+                    const Divider(),
+                    SectionRow(
+                      label: 'Generation',
+                      value: '${app.generation}',
+                    ),
+                    const Divider(),
                     SectionRow(
                       label: 'Regenerate',
-                      value: 'New identifiers apply the next time the app starts',
-                      onTap: () => _confirmRegenerate(context),
+                      value: 'Not available yet - lands with device profiles',
                       trailing: const Icon(Icons.refresh_rounded, size: 20),
                     ),
                   ],
@@ -202,20 +217,41 @@ class AppDetailsScreen extends StatelessWidget {
     );
   }
 
-  void _confirmRegenerate(BuildContext context) {
+  /// Runs an engine action and reports its real outcome. A failure is shown with the
+  /// engine's own message rather than a generic one - the engine knows why.
+  static Future<void> _run(
+    BuildContext context,
+    Future<EngineOutcome> Function() action,
+    String successMessage,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await action();
+    messenger.showSnackBar(SnackBar(
+      content: Text(result.ok ? successMessage : (result.message ?? 'That did not work.')),
+    ));
+  }
+
+  void _confirmClearData(BuildContext context) {
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Regenerate device profile?'),
-        content: const Text(
-          'This instance will report a new Android ID and new identifiers. Apps that '
-          'recognise this device may sign you out.',
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Clear ${app.label} data?'),
+        content: Text(
+          'Everything ${app.profileName} has stored is deleted: files, databases and '
+          'settings. Other instances of this app are not affected.',
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context), child: const Text('Regenerate')),
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _run(context, () => state.clearData(app), 'Data cleared');
+            },
+            child: const Text('Clear'),
+          ),
         ],
       ),
     );

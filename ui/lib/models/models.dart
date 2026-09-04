@@ -92,43 +92,83 @@ class InstalledApp {
       );
 }
 
+/// The result of an engine action. Failures carry a message meant for the user.
+class EngineOutcome {
+  const EngineOutcome({required this.ok, this.message, this.vuid});
+
+  final bool ok;
+  final String? message;
+  final int? vuid;
+
+  static EngineOutcome fromMap(Map<Object?, Object?> m) => EngineOutcome(
+        ok: (m['ok'] as bool?) ?? false,
+        message: (m['message'] as String?) ?? (m['code'] as String?),
+        vuid: (m['vuid'] as int?),
+      );
+}
+
 /// One virtual instance shown on Home.
 class VirtualApp {
   const VirtualApp({
     required this.vuid,
     required this.packageName,
+    required this.versionCode,
     required this.label,
     required this.profileName,
-    required this.versionName,
     required this.androidId,
+    required this.instanceId,
+    required this.generation,
     required this.dataBytes,
     required this.cacheBytes,
+    required this.externalBytes,
     this.icon,
     this.running = false,
   });
 
   final int vuid;
   final String packageName;
+  final int versionCode;
   final String label;
   final String profileName;
-  final String versionName;
   final String androidId;
+  final String instanceId;
+  final int generation;
   final int dataBytes;
   final int cacheBytes;
+  final int externalBytes;
   final Uint8List? icon;
   final bool running;
+
+  int get totalBytes => dataBytes + cacheBytes + externalBytes;
 
   VirtualApp copyWith({Uint8List? icon, bool? running}) => VirtualApp(
         vuid: vuid,
         packageName: packageName,
+        versionCode: versionCode,
         label: label,
         profileName: profileName,
-        versionName: versionName,
         androidId: androidId,
+        instanceId: instanceId,
+        generation: generation,
         dataBytes: dataBytes,
         cacheBytes: cacheBytes,
+        externalBytes: externalBytes,
         icon: icon ?? this.icon,
         running: running ?? this.running,
+      );
+
+  static VirtualApp fromMap(Map<Object?, Object?> m) => VirtualApp(
+        vuid: (m['vuid'] as int?) ?? -1,
+        packageName: (m['package'] as String?) ?? '',
+        versionCode: (m['versionCode'] as int?) ?? 0,
+        label: (m['label'] as String?) ?? (m['package'] as String? ?? ''),
+        profileName: (m['profileName'] as String?) ?? 'Profile 1',
+        androidId: (m['androidId'] as String?) ?? '',
+        instanceId: (m['instanceId'] as String?) ?? '',
+        generation: (m['generation'] as int?) ?? 1,
+        dataBytes: (m['dataBytes'] as int?) ?? 0,
+        cacheBytes: (m['cacheBytes'] as int?) ?? 0,
+        externalBytes: (m['externalBytes'] as int?) ?? 0,
       );
 }
 

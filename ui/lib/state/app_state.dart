@@ -55,10 +55,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       _engine = await _bridge.engineStatus();
-      // Instances come from the state database once the VirtualCore server exposes its
-      // interface (phase 2). Until then Home shows the empty state, which is accurate:
-      // there genuinely are no instances.
-      _apps = const [];
+      await _refreshInstances();
       _status = LoadState.ready;
       _error = null;
     } catch (e) {
@@ -67,6 +64,69 @@ class AppState extends ChangeNotifier {
     }
     notifyListeners();
     _listenToDiagnostics();
+  }
+
+  /// Re-reads the instance list from the engine and attaches icons.
+  ///
+  /// Icons come from the host PackageManager when the app is also installed there, and
+  /// are simply absent otherwise - a virtual app usually is not installed, so the
+  /// monogram fallback is the normal case, not an error path.
+  Future<void> _refreshInstances() async {
+    final apps = await _bridge.listInstances();
+    _apps = await Future.wait(apps.map((a) async {
+      final bytes = await icon(a.packageName);
+      return bytes == null ? a : a.copyWith(icon: bytes);
+    }));
+  }
+
+  Future<void> refresh() async {
+    try {
+      await _refreshInstances();
+      _error = null;
+    } catch (e) {
+      _error = e.toString();
+    }
+    notifyListeners();
+  }
+
+  // ---- actions ------------------------------------------------------------------
+
+  Future<EngineOutcome> importInstalled(String packageName) async {
+    final result = await _bridge.importInstalled(packageName);
+    if (result.ok) await refresh();
+    return result;
+  }
+
+  Future<EngineOutcome> importApk(List<String> paths) async {
+    final result = await _bridge.importApk(paths);
+    if (result.ok) await refresh();
+    return result;
+  }
+
+  Future<EngineOutcome> clone(VirtualApp app) async {
+    final result = await _bridge.cloneInstance(app.packageName);
+    if (result.ok) await refresh();
+    return result;
+  }
+
+  Future<EngineOutcome> launch(VirtualApp app) => _bridge.launchInstance(app.vuid);
+
+  Future<EngineOutcome> remove(VirtualApp app) async {
+    final result = await _bridge.removeInstance(app.vuid);
+    if (result.ok) await refresh();
+    return result;
+  }
+
+  Future<EngineOutcome> clearCache(VirtualApp app) async {
+    final result = await _bridge.clearCache(app.vuid);
+    if (result.ok) await refresh();
+    return result;
+  }
+
+  Future<EngineOutcome> clearData(VirtualApp app) async {
+    final result = await _bridge.clearData(app.vuid);
+    if (result.ok) await refresh();
+    return result;
   }
 
   void _listenToDiagnostics() {

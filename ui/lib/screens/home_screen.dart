@@ -306,6 +306,18 @@ class _AppCard extends StatelessWidget {
     );
   }
 
+  static Future<void> _act(
+    BuildContext context,
+    Future<EngineOutcome> Function() action,
+    String successMessage,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await action();
+    messenger.showSnackBar(SnackBar(
+      content: Text(result.ok ? successMessage : (result.message ?? 'That did not work.')),
+    ));
+  }
+
   void _showMenu(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
@@ -327,18 +339,18 @@ class _AppCard extends StatelessWidget {
               leading: const Icon(Icons.copy_all_rounded),
               title: const Text('Clone'),
               subtitle: const Text('Create another independent instance'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.stop_circle_outlined),
-              title: const Text('Stop'),
-              enabled: app.running,
-              onTap: () => Navigator.pop(context),
+              onTap: () {
+                Navigator.pop(context);
+                _act(context, () => state.clone(app), 'Instance created');
+              },
             ),
             ListTile(
               leading: Icon(Icons.delete_outline_rounded, color: UniqueColors.error),
               title: Text('Remove', style: TextStyle(color: UniqueColors.error)),
-              onTap: () => Navigator.pop(context),
+              onTap: () {
+                Navigator.pop(context);
+                _act(context, () => state.remove(app), 'Removed');
+              },
             ),
             const SizedBox(height: UniqueSpace.sm),
           ],

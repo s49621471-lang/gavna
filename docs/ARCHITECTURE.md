@@ -263,29 +263,71 @@ Generated, not hand-written, because the counts are configuration and hand-maint
 
 ### 6.1 Activities
 
-Launch path:
+Launch path, as implemented:
 
 ```
-vApp: startActivity(realIntent)
-  → IActivityTaskManager shim: wrap into stubIntent
-       component  = com.unique/.stub.ActivityStub_p3_aff2_singleTask
-       extras     = { _unique_intent: realIntent, _unique_vuid, _unique_info: ActivityInfo }
-  → system_server launches the stub in :vapp3
-  → ClientTransaction (LaunchActivityItem) arrives
-  → VAM rewrites LaunchActivityItem.mIntent / .mInfo back to the real ones
-  → Instrumentation.newActivity() loads the real Activity class from the vApp classloader
-  → the app sees exactly its own Activity, its own Intent, its own ActivityInfo
+:core          VirtualLauncher picks a :vappN slot for (vuid, manifest process)
+               and starts a stub activity chosen by the target's launchMode.
+               VirtualLaunchParams travel as intent extras - the only marshalling
+               contract for a launch.
+                 |
+system_server  resolves and launches com.unique/.stub.ActivityStub_pN_mM_aA,
+               creating the process and the window from the STUB's manifest entry.
+                 |
+:vappN         UniqueApplication.attachBaseContext installs LaunchInterceptor on
+               ActivityThread.mH before any component runs.
+                 |
+               EXECUTE_TRANSACTION arrives. The interceptor finds the
+               LaunchActivityItem, reads the parameters, and grafts the package
+               (AppBootstrap) synchronously on the main thread.
+                 |
+               It then replaces the item's Intent and ActivityInfo with the real
+               ones, and returns false so the framework proceeds normally.
+                 |
+               performLaunchActivity resolves LoadedApk from
+               activityInfo.applicationInfo, instantiates the app's own Activity
+               from the app's own class loader. The stub class is never
+               constructed on this path.
 ```
 
-Why `ClientTransaction` and not `Handler.Callback(LAUNCH_ACTIVITY)`: since Android 9 the
-lifecycle moved to `ClientTransaction`/`ClientTransactionItem`; since Android 14 the
-transaction items are further restructured and `LAUNCH_ACTIVITY` no longer exists as a
-message. Intercepting the transaction is the only version-durable point.
+Three decisions in that flow are load-bearing:
 
-Fidelity items handled here: `launchMode`, `taskAffinity`, `theme` (must be applied to the
-stub *before* `onCreate`, or Android 15 edge-to-edge enforcement uses the wrong window
-insets), `screenOrientation`, `configChanges`, `windowSoftInputMode`, display cutout mode,
-`android:exported`.
+**Why the transaction and not `Instrumentation.newActivity`.** The activity's `Context`
+is built from `ActivityInfo.applicationInfo`, so an interception that only swaps the class
+leaves the activity reporting UNIQUE's package name and UNIQUE's data directory —
+i.e. it looks like it works and silently corrupts the thing the product exists to get
+right.
+
+**Why fields are found by type, not by name.** `LaunchActivityItem`'s layout changes in
+most releases. It has exactly one `Intent` field and exactly one `ActivityInfo` field, and
+that has been true across every release UNIQUE targets. When the count is not exactly one,
+the interceptor reports `LAUNCH_ITEM_SHAPE_UNKNOWN` and changes nothing, rather than
+guessing.
+
+**Why the graft happens at the transaction rather than at process start.** A `:vappN`
+process is started by the system before anything says which instance it is for. Binding at
+`attachBaseContext` would mean guessing; binding at the transaction means the parameters
+are already in hand, and it guarantees `Application.onCreate` runs before the first
+`Activity`.
+
+Bootstrapping is once per process. A slot serves exactly one (instance, manifest process)
+pair for its lifetime; a second bind is refused, because two instances have different data
+directories and the first instance's objects would keep pointing at the wrong one.
+
+#### 6.1.1 Virtualizing PackageManager is a prerequisite, not a feature
+
+`LoadedApk.initializeJavaContextClassLoader()` asks the real `PackageManagerService` for
+the package and throws `IllegalStateException: ... is package not installed?` when it
+comes back null. So an app that UNIQUE *imported* rather than installed cannot get a class
+loader at all until `IPackageManager` is virtualized. `VirtualPackageManagerHook` therefore
+runs inside the graft, before the application is created.
+
+Every shim there is conditional: it answers for the virtual package and calls
+`ShimCall.proceed()` for everything else. Answering for all packages would break the host
+code sharing the process. Permission queries are the exception in the other direction —
+they are rewritten to ask about the *host* package, because UNIQUE can only narrow what
+the host actually holds and a locally invented "granted" is a lie the platform would then
+refuse to honour.
 
 ### 6.2 Services
 

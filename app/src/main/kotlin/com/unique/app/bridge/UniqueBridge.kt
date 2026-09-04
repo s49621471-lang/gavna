@@ -14,10 +14,19 @@ import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
 import com.unique.core.vam.ForegroundServiceTypes
+import com.unique.app.engine.UniqueEngine
+import com.unique.core.vam.LaunchResult
+import com.unique.core.vpm.CreateResult
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * The Flutter/native bridge.
@@ -36,6 +45,13 @@ object UniqueBridge {
     private const val METHOD_CHANNEL = "com.unique/bridge"
     private const val EVENT_CHANNEL = "com.unique/diagnostics"
 
+    /**
+     * Engine calls touch the database and the filesystem, so they run off the main
+     * thread and reply through the channel afterwards. Doing them inline would block the
+     * Flutter UI thread for the length of an APK import.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var methodChannel: MethodChannel? = null
     private var eventChannel: EventChannel? = null
     private var diagListener: ((DiagEvent) -> Unit)? = null
@@ -43,9 +59,20 @@ object UniqueBridge {
     fun attach(context: Context, messenger: BinaryMessenger) {
         methodChannel = MethodChannel(messenger, METHOD_CHANNEL).apply {
             setMethodCallHandler { call, result ->
-                runCatching { dispatch(context, call.method, call.arguments) }
-                    .onSuccess { result.success(it) }
-                    .onFailure { result.error("UNIQUE_ERROR", it.message, it.stackTraceToString()) }
+                scope.launch {
+                    val outcome = runCatching { dispatch(context, call.method, call.arguments) }
+                    withContext(Dispatchers.Main) {
+                        outcome
+                            .onSuccess { result.success(it) }
+                            .onFailure {
+                                Diagnostics.error(
+                                    DiagChannel.LAUNCH, "BRIDGE_CALL_FAILED",
+                                    mapOf("method" to call.method, "error" to it.toString()),
+                                )
+                                result.error("UNIQUE_ERROR", it.message, it.stackTraceToString())
+                            }
+                    }
+                }
             }
         }
         eventChannel = EventChannel(messenger, EVENT_CHANNEL).apply {
@@ -74,12 +101,107 @@ object UniqueBridge {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun dispatch(context: Context, method: String, args: Any?): Any? = when (method) {
-        "engineStatus" -> engineStatus(context)
-        "listInstalledApps" -> listInstalledApps(context, (args as? Map<String, Any?>))
-        "appIcon" -> appIcon(context, (args as Map<String, Any?>)["package"] as String)
-        "diagnosticsSnapshot" -> Diagnostics.snapshot().map { it.toMap() }
-        else -> throw UnsupportedOperationException("Unknown bridge method: $method")
+    private suspend fun dispatch(context: Context, method: String, args: Any?): Any? {
+        val a = args as? Map<String, Any?> ?: emptyMap()
+        return when (method) {
+            "engineStatus" -> engineStatus(context)
+            "listInstalledApps" -> listInstalledApps(context, a)
+            "appIcon" -> appIcon(context, a["package"] as String)
+            "diagnosticsSnapshot" -> Diagnostics.snapshot().map { it.toMap() }
+
+            "listInstances" -> listInstances()
+            "importInstalled" -> importInstalled(context, a["package"] as String)
+            "importApk" -> importApk((a["paths"] as List<*>).map { File(it as String) })
+            "cloneInstance" -> cloneInstance(a["package"] as String)
+            "launchInstance" -> launchInstance(context, (a["vuid"] as Number).toInt())
+            "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
+            "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)
+            "clearData" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = true)
+            "instanceStorage" -> instanceStorage((a["vuid"] as Number).toInt())
+
+            else -> throw UnsupportedOperationException("Unknown bridge method: $method")
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Instances
+    // ---------------------------------------------------------------------------------
+
+    private suspend fun listInstances(): List<Map<String, Any?>> =
+        UniqueEngine.instances.instances().map { instance ->
+            val usage = UniqueEngine.storage.usage(instance.vuid, instance.packageName)
+            mapOf(
+                "vuid" to instance.vuid,
+                "package" to instance.packageName,
+                "versionCode" to instance.versionCode,
+                "label" to labelOf(instance.packageName, instance.versionCode),
+                "profileName" to instance.displayName,
+                "androidId" to instance.profile.androidId,
+                "instanceId" to instance.profile.instanceId.toString(),
+                "generation" to instance.profile.generation,
+                "dataBytes" to usage.dataBytes,
+                "cacheBytes" to usage.cacheBytes,
+                "externalBytes" to usage.externalBytes,
+            )
+        }
+
+    /** Label and version come from the imported manifest, not from the host. */
+    private fun labelOf(packageName: String, versionCode: Long): String = runCatching {
+        com.unique.core.common.apk.ManifestReader
+            .fromApk(File(UniqueEngine.storage.model.baseApk(packageName, versionCode)))
+            .label
+    }.getOrNull() ?: packageName
+
+    private suspend fun importInstalled(context: Context, packageName: String): Map<String, Any?> =
+        UniqueEngine.importInstalled(context, packageName).toMap()
+
+    private suspend fun importApk(files: List<File>): Map<String, Any?> =
+        UniqueEngine.importFiles(files).toMap()
+
+    private suspend fun cloneInstance(packageName: String): Map<String, Any?> =
+        UniqueEngine.instances.createInstance(packageName).toMap()
+
+    private suspend fun launchInstance(context: Context, vuid: Int): Map<String, Any?> =
+        when (val r = UniqueEngine.launch(context, vuid)) {
+            is LaunchResult.Started -> mapOf("ok" to true, "activity" to r.activity)
+            is LaunchResult.Failed -> mapOf("ok" to false, "code" to r.code, "message" to r.message)
+        }
+
+    private suspend fun removeInstance(vuid: Int): Map<String, Any?> {
+        UniqueEngine.launcher.release(vuid, "removed")
+        UniqueEngine.instances.removeInstance(vuid)
+        return mapOf("ok" to true)
+    }
+
+    private suspend fun clearStorage(vuid: Int, dataToo: Boolean): Map<String, Any?> {
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false, "message" to "Instance $vuid does not exist.")
+        if (dataToo) UniqueEngine.storage.clearData(vuid, instance.packageName)
+        else UniqueEngine.storage.clearCache(vuid, instance.packageName)
+        return mapOf("ok" to true)
+    }
+
+    private suspend fun instanceStorage(vuid: Int): Map<String, Any?> {
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false)
+        val usage = UniqueEngine.storage.usage(vuid, instance.packageName)
+        return mapOf(
+            "ok" to true,
+            "dataBytes" to usage.dataBytes,
+            "cacheBytes" to usage.cacheBytes,
+            "externalBytes" to usage.externalBytes,
+            "dataDir" to UniqueEngine.storage.model.dataDir(vuid, instance.packageName),
+        )
+    }
+
+    private fun CreateResult.toMap(): Map<String, Any?> = when (this) {
+        is CreateResult.Created -> mapOf(
+            "ok" to true,
+            "vuid" to instance.vuid,
+            "package" to instance.packageName,
+            "profileName" to instance.displayName,
+        )
+        is CreateResult.Rejected -> mapOf("ok" to false, "message" to reason)
     }
 
     /**
