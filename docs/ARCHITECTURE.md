@@ -329,6 +329,36 @@ they are rewritten to ask about the *host* package, because UNIQUE can only narr
 the host actually holds and a locally invented "granted" is a lie the platform would then
 refuse to honour.
 
+#### 6.1.2 Identity points two ways
+
+Inside a virtual process every `Context` reports the *virtual* package — that is the
+product working. But the same name travels outward on every framework call as the
+`callingPackage` argument, and `system_server` checks it against the caller's real uid:
+
+```
+SecurityException: Given calling package com.unique.probe does not match caller's uid 10109
+```
+
+So identity has to be virtual inward and real outward, simultaneously. Nothing works past
+the very first framework call otherwise: `PhoneWindow`'s constructor reads one setting,
+which acquires a content provider, which is rejected.
+
+`VirtualActivityManagerHook` rewrites arguments equal to the virtual package name to the
+host package name — but only on methods an app calls *on its own behalf*, identified by
+an `IApplicationThread` parameter, which is the framework's own marker for that. The
+asymmetry of the failure modes is what dictates the narrow rule:
+
+- A method missed → a `SecurityException` naming both packages. Loud, readable, fixable.
+- A method matched that should not be → a package name that was **data** is silently
+  rewritten. `forceStopPackage(String, int)` takes one as data, and a guest calling it
+  with UNIQUE's name would stop UNIQUE. It has no `IApplicationThread`, so the predicate
+  excludes it, and a unit test pins that it stays excluded.
+
+A short allowlist covers identity-bearing methods that carry no `IApplicationThread`, of
+which `getIntentSender` is the one that matters. Enumerating every method by name instead
+would be a list that goes stale each release — which is the same reason `MethodShim`
+exists at all.
+
 ### 6.2 Services
 
 Planned on the same mechanism the activity path now uses, because that mechanism is
