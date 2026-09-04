@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Process
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import com.unique.app.engine.UniqueEngine
@@ -56,11 +57,10 @@ class VirtualLaunchTest {
     @Test
     fun t01_importsAndCreatesAnInstance() = runBlocking {
         // The probe must not be installed: the whole point is running an app the device
-        // does not have. tools/verify-device.sh pushes the APK here and asserts it is
-        // absent from PackageManager before the suite starts.
-        val apk = File(context.getExternalFilesDir(null), "probe.apk")
-        assertThat(apk.isFile).isTrue()
+        // does not have. The APK travels as an asset of this test APK, so the suite does
+        // not depend on the shell being able to write into another app's storage.
         assertThat(isInstalledOnHost(probePackage)).isFalse()
+        val apk = stageProbeApk()
 
         val instance = existingInstance() ?: when (val r = UniqueEngine.importFiles(listOf(apk))) {
             is CreateResult.Created -> r.instance
@@ -74,6 +74,10 @@ class VirtualLaunchTest {
         val baseApk = File(model.baseApk(probePackage, instance.versionCode))
         assertThat(baseApk.isFile).isTrue()
         assertThat(baseApk.length()).isGreaterThan(0L)
+
+        // W^X: Android 10+ refuses to load code from a writable file, and rejects a
+        // writable dex with an error that looks nothing like a permissions problem.
+        assertThat(baseApk.canWrite()).isFalse()
 
         // The instance's own writable tree exists and is empty of the app's own data.
         assertThat(File(model.dataDir(instance.vuid, probePackage)).isDirectory).isTrue()
@@ -308,6 +312,17 @@ class VirtualLaunchTest {
 
     private suspend fun requireInstance(): Instance =
         checkNotNull(existingInstance()) { "no probe instance; t01 must run first" }
+
+    /** Copies the probe out of the test APK's assets into a place the engine can read. */
+    private fun stageProbeApk(): File {
+        val dest = File(context.cacheDir, "probe-under-test.apk")
+        if (dest.isFile && dest.length() > 0) return dest
+        InstrumentationRegistry.getInstrumentation().context.assets.open("probe.apk").use { input ->
+            dest.outputStream().use { output -> input.copyTo(output) }
+        }
+        check(dest.length() > 0) { "probe.apk asset was empty" }
+        return dest
+    }
 
     private fun isInstalledOnHost(packageName: String): Boolean = runCatching {
         context.packageManager.getPackageInfo(packageName, 0)

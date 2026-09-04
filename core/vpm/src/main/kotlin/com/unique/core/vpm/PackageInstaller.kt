@@ -133,8 +133,14 @@ class PackageInstaller(
             return ImportResult.Rejected(ImportRejection.Unsupported("Could not finalise the install."))
         }
 
-        // W^X: Android 10+ refuses to dlopen code from a writable location for
-        // targetSdk >= 29, so the library tree must be read-only before first launch.
+        // W^X.
+        //
+        // Android 10+ refuses to load code from a writable file. This applies to the APK
+        // itself, not only to extracted .so files: ART rejects a writable dex with
+        // "Writable dex file '...' is not allowed", which surfaces as a failure to create
+        // the Application and looks nothing like a permissions problem. Every APK and
+        // every extracted library is therefore made read-only before first launch.
+        val locked = lockDownApks(targetDir)
         val libDir = File(targetDir, "lib/${Abi.ARM64_V8A.dirName}")
         if (libDir.isDirectory) lockDown(libDir)
 
@@ -146,6 +152,7 @@ class PackageInstaller(
                 "splits" to selection.keep.size.toString(),
                 "libs" to extraction.extracted.toString(),
                 "bytes" to written.toString(),
+                "readOnlyApks" to locked.toString(),
             ),
         )
         return ImportResult.Installed(
@@ -215,6 +222,30 @@ class PackageInstaller(
             }
         }
         return Extraction(extracted, sawNative, alignments)
+    }
+
+    /**
+     * Makes every APK in [dir] read-only, and verifies it.
+     *
+     * Verified rather than assumed: `File.setWritable` returns false on some filesystems
+     * without throwing, and a silently-still-writable APK fails much later with an error
+     * that points at the wrong thing.
+     */
+    private fun lockDownApks(dir: File): Int {
+        var locked = 0
+        dir.listFiles()?.filter { it.isFile && it.name.endsWith(".apk") }?.forEach { apk ->
+            apk.setWritable(false, false)
+            apk.setReadable(true, false)
+            if (apk.canWrite()) {
+                Diagnostics.warn(
+                    DiagChannel.STORAGE, "APK_STILL_WRITABLE",
+                    mapOf("path" to apk.absolutePath),
+                )
+            } else {
+                locked++
+            }
+        }
+        return locked
     }
 
     private fun lockDown(dir: File) {

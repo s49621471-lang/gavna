@@ -62,17 +62,14 @@ adb shell am force-stop com.unique > /dev/null 2>&1
 # The probe is deliberately NOT installed on the device.
 #
 # UNIQUE exists to run applications the device does not have installed, and having the
-# probe installed would hide the fact that the platform refuses to build a class loader
-# for an unknown package. The APK is pushed into UNIQUE's own external files directory,
-# which the app can read without any permission, and imported from there.
+# probe installed would hide the platform's refusal to build a class loader for an
+# unknown package. The APK travels inside the instrumentation APK as an asset, so nothing
+# needs to be pushed and scoped storage is not in the way.
 adb uninstall com.unique.probe > /dev/null 2>&1
-probe_on_device="/sdcard/Android/data/com.unique/files/probe.apk"
-adb shell mkdir -p /sdcard/Android/data/com.unique/files > /dev/null 2>&1
-timeout 300 "$ADB" "${serial_args[@]}" push "$probe" "$probe_on_device" > /dev/null || fail "probe push"
 if adb shell pm path com.unique.probe 2>/dev/null | grep -q package; then
     fail "com.unique.probe is still installed; the run would not prove anything"
 fi
-echo "   probe pushed to $probe_on_device, not installed"
+echo "   probe carried in the test APK, not installed on the device"
 
 echo "== run acceptance suite =="
 adb logcat -c 2>/dev/null

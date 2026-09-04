@@ -134,6 +134,39 @@ val generateStubs by tasks.registering {
     }
 }
 
+// ---------------------------------------------------------------------------------
+// The probe APK travels inside the test APK.
+//
+// Pushing it to the device with `adb push` is not reliable: scoped storage stops the
+// shell writing into another app's Android/data directory, and `pm clear` deletes that
+// directory anyway. Carrying it as an asset of the instrumentation APK removes the
+// question entirely - the suite has the file wherever it runs.
+// ---------------------------------------------------------------------------------
+val probeApk = layout.projectDirectory.file("../tools/testapp/build/probe.apk")
+val stagedProbeDir = layout.buildDirectory.dir("generated/unique/androidTestAssets")
+
+val stageProbeApk by tasks.registering {
+    description = "Stages the probe APK as an asset of the instrumentation APK."
+    group = "unique"
+    outputs.dir(stagedProbeDir)
+    doLast {
+        val source = probeApk.asFile
+        if (!source.isFile) {
+            // Built on demand so `./gradlew assembleDebugAndroidTest` always produces a
+            // usable suite rather than one that fails confusingly on the device.
+            providers.exec {
+                commandLine("bash", rootProject.file("tools/testapp/build.sh").absolutePath)
+            }.result.get().assertNormalExitValue()
+        }
+        require(source.isFile) {
+            "tools/testapp/build/probe.apk is missing. Run tools/testapp/build.sh."
+        }
+        val dest = stagedProbeDir.get().asFile.apply { mkdirs() }
+        source.copyTo(File(dest, "probe.apk"), overwrite = true)
+        logger.lifecycle("stageProbeApk: ${source.length()} bytes")
+    }
+}
+
 android {
     namespace = "com.unique.app"
 
@@ -150,7 +183,10 @@ android {
             manifest.srcFile(generatedManifestDir.map { it.file("AndroidManifest.xml") })
             kotlin.srcDir(generatedSourceDir)
         }
-        getByName("androidTest") { kotlin.srcDir("src/androidTest/kotlin") }
+        getByName("androidTest") {
+            kotlin.srcDir("src/androidTest/kotlin")
+            assets.srcDir(stagedProbeDir)
+        }
     }
 
     buildTypes {
@@ -179,6 +215,8 @@ tasks.named("preBuild").configure { dependsOn(generateStubs) }
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     dependsOn(generateStubs)
 }
+tasks.matching { it.name.contains("AndroidTestAssets") || it.name.contains("androidTestAssets") }
+    .configureEach { dependsOn(stageProbeApk) }
 
 dependencies {
     implementation(project(":core:common"))

@@ -473,13 +473,25 @@ ARM64-v8a only. On import, `VPM` selects `lib/arm64-v8a/**` and the
 `config.arm64_v8a` split. An APK with no arm64 slice is refused at import time with a clear
 reason, not at first launch.
 
-### 8.2 Library extraction and W^X
+### 8.2 W^X applies to the APK, not only to `.so` files
 
-Android 10+ refuses to `dlopen` code from a writable location for apps targeting API 29+.
-Extracted `.so` files are therefore written to
-`…/apk/<pkg>/<vc>/lib/arm64-v8a/` and `chmod`ed to `0555`, with the directory `0555` after
-extraction completes. Extraction is atomic (temp dir + `rename`) so a killed install cannot
-leave a half-populated lib dir that later `dlopen`s partially.
+Android 10+ refuses to load code from a writable file for apps targeting API 29+. The
+part that is easy to miss — and that cost a full debugging cycle here — is that this
+covers the **APK itself**, not just extracted native libraries. ART rejects a writable dex
+with:
+
+```
+java.lang.SecurityException: Writable dex file '…/base.apk' is not allowed.
+```
+
+which surfaces as a failure to *create the Application* and reads nothing like a
+permissions problem. Every imported APK and every extracted `.so` is therefore made
+read-only before first launch, and the installer verifies it rather than trusting
+`File.setWritable`, which returns false on some filesystems without throwing.
+
+Extraction is atomic (staging directory + `rename`) so a killed install cannot leave a
+half-populated lib directory that a later `dlopen` would load from partially. Removing or
+updating a package makes the tree writable again first.
 
 `System.loadLibrary` resolves through the vapp's `ClassLoader`'s
 `nativeLibraryPathElements`, which is constructed from `nativeLibraryDir` when the
