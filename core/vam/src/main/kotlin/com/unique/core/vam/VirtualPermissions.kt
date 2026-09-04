@@ -265,6 +265,29 @@ object VirtualPermissions {
         persist(b)
     }
 
+    /**
+     * Applies a change the user made in UNIQUE's UI, in UNIQUE's process, to this one.
+     *
+     * The in-memory copy exists because a permission check is on the hot path; the cost of
+     * that is precisely this method, without which a running app keeps answering from the
+     * state it started with. It does *not* persist: UNIQUE's process has already written
+     * the file, and writing it again from here would race two writers over one record.
+     *
+     * Returns how many permissions were actually changed, so a sync that reached the wrong
+     * process is visible rather than silent.
+     */
+    @Synchronized
+    fun applyExternalChange(permissions: List<String>, state: PermissionState): Int {
+        val b = binding ?: return 0
+        var changed = 0
+        for (permission in permissions) {
+            if (permission !in b.declared) continue
+            store.set(b.vuid, b.packageName, permission, state)
+            changed++
+        }
+        return changed
+    }
+
     @Synchronized
     fun snapshot(): Map<String, PermissionState> {
         val b = binding ?: return emptyMap()

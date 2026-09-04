@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-163557-14136`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-221502-8465`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -96,6 +96,29 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t26` UNIQUE itself reads a guest's provider, across the process boundary | **PASS** |
 | `t27` a guest reaches its own provider in another of its processes | **PASS** |
 | `t28` the guest creates a Vulkan instance, device and graphics queue | **PASS** |
+| `t29` cold start, warm start and memory are measured and recorded | **PASS** |
+| `t30` the guest runs a WebView, in its own data directory | **PASS** |
+| `t31` the guest starts its own activity by an implicit intent | **PASS** |
+| `t32` killing a guest's provider process leaves UNIQUE alive and still able to read another | **PASS** |
+
+### What it costs, on this emulator
+
+Recorded by `t29` on every run. **Software-emulated x86_64 with no hardware acceleration**,
+so these are not device numbers and no budget is asserted against them (§17.1) — they are
+a baseline a physical-device run is compared against.
+
+| Measurement | Run `20260904-221502-8465` |
+|---|---|
+| Cold start, fork → the app's first screen ready | 37.5 s |
+| ... of which fork → guest `Application.onCreate` (the graft) | 27.6 s |
+| ... of which `Application.onCreate` → `Activity.onCreate` | 7.5 s |
+| Warm start, request → ready, into a live process | 5.4 s |
+| Virtual process memory, total PSS | 30.2 MB |
+
+The graft dominates cold start, which is what a JIT-only process loading UNIQUE's
+interception layer before any guest code looks like. PSS rather than RSS: a virtual process
+shares the whole framework and UNIQUE's own code, and RSS would count those pages in full
+in every process at once.
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
@@ -199,10 +222,21 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Every Google bridge body | 6 | Interfaces, routing and host-environment detection exist and are tested; no bridge has an implementation. `docs/GOOGLE_DEVICE_TEST.md` is the procedure that would settle each flow |
 | Native crash handler | 14 | A SIGSEGV inside a guest's `.so` leaves the platform's tombstone and UNIQUE's events up to the crash, but no record written by UNIQUE. The Java handler is implemented and pushes its record out of the dying process |
 | Device profile regenerate | 7 | UI row says it is not available yet |
+| WebView rendering on this environment | 6 | A WebView is created correctly in the guest with the instance's own data directory, but Chromium's renderer crashes on this emulator *outside* virtualization too, so rendering is `NOT_TESTED` rather than attributed to UNIQUE (`t30`) |
 | URI permission grants between virtual processes | 3 | `grantUriPermission` across `:vappN` is not implemented |
 | VirtualCore server interface | 3 | `onBind` returns null; the UI process owns the database for now |
 
 ## Known limits that are not bugs
+
+- **A `:vappN` started to publish a provider must finish inside the platform's publish
+  timeout.** On the verification emulator a cold virtual process can take tens of seconds
+  to reach the graft, and `system_server` has been seen to give up on it:
+  `Killing …:com.unique:vapp2 (adj 0): timeout publishing content providers`. On hardware
+  the margin is far larger, but the ceiling is real and belongs to the platform.
+- **Background ANRs on a loaded emulator.** `Killing …:com.unique:vapp0 (adj 0): bg anr`
+  appears when the machine is thrashing. It is an environment artifact, and the reason no
+  test asserts a wall-clock budget (§17.1).
+
 
 - **No AOT.** Since Android 10 an app cannot invoke `dex2oat`, so virtual apps are
   JIT-only and cold start is slower than an installed app. This is a platform property.
@@ -213,13 +247,13 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
-   filters), URI permission grants and `FileProvider` sharing across virtual processes.
+1. URI permission grants and `FileProvider` sharing across virtual processes — the last
+   Phase 3 gap now that implicit starts and cross-process providers are done.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. A native crash handler, so a SIGSEGV in a guest `.so` leaves a UNIQUE record and not
    only a tombstone.
-4. ARM64, a real GPU driver, and a hardware Vulkan ICD — which only a physical device can
-   answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
+4. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
+   only a physical device can answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
 5. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
    procedure, in the order that makes one failure explain the next.
 

@@ -28,12 +28,17 @@ object VirtualServiceRouter {
     const val STUBS_PER_PROCESS = 7
 
     /**
-     * The stub each slot keeps back for cold broadcast delivery.
+     * The stub each slot keeps back for starting a process out of band.
      *
-     * Reserved structurally rather than by convention. The engine starts this stub to
-     * bring a dead guest's process up, and [reserve] never hands it out, so a guest
-     * service can never land on it — which is what lets [resolve] returning null be a
-     * reliable signal that a `CREATE_SERVICE` is a cold broadcast rather than a lost
+     * Two callers, one reason: a process cannot be brought into existence by wishing for
+     * one, and neither of them may put a window on screen. A cold broadcast starts it to
+     * wake a dead guest (§6.3.1); a cross-process provider acquisition starts it to graft
+     * the target *before* the platform's ten-second provider-publish timeout applies
+     * (§6.4.0).
+     *
+     * Reserved structurally rather than by convention. [reserve] never hands it out, so a
+     * guest service can never land on it — which is what lets [resolve] returning null be
+     * a reliable signal that a `CREATE_SERVICE` is one of those starts rather than a lost
      * reservation. An agreement of the "index 5 is probably free" kind would hold only
      * until a guest ran six services.
      */

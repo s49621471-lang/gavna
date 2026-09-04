@@ -5,17 +5,65 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
+import 'settings_screen.dart' show DiagnosticsScreen;
 
 /// App Details.
 ///
 /// One screen, seven sections, in the order a user needs them: what this is, what it may
 /// do, what it stores, who it says it is, how Google works for it, what is adjusted for
 /// it, and what went wrong.
-class AppDetailsScreen extends StatelessWidget {
+class AppDetailsScreen extends StatefulWidget {
   const AppDetailsScreen({super.key, required this.app, required this.state});
 
   final VirtualApp app;
   final AppState state;
+
+  @override
+  State<AppDetailsScreen> createState() => _AppDetailsScreenState();
+}
+
+class _AppDetailsScreenState extends State<AppDetailsScreen> {
+  VirtualApp get app => widget.app;
+  AppState get state => widget.state;
+
+  /// The permission groups this app actually asks for. Null while they are being read;
+  /// an empty list means it asks for none, which is a different thing and shown as such.
+  List<InstancePermission>? _permissions;
+  GoogleStatus? _google;
+  String? _busyGroup;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final permissions = await state.instancePermissions(app.vuid);
+    final google = await state.googleStatus();
+    if (!mounted) return;
+    setState(() {
+      _permissions = permissions;
+      _google = google;
+    });
+  }
+
+  Future<void> _togglePermission(InstancePermission permission, bool granted) async {
+    setState(() => _busyGroup = permission.group);
+    final result =
+        await state.setInstancePermission(app.vuid, permission.group, granted);
+    final permissions = await state.instancePermissions(app.vuid);
+    if (!mounted) return;
+    setState(() {
+      _busyGroup = null;
+      _permissions = permissions;
+    });
+    if (!result.ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.message ?? 'That did not work.')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -88,19 +136,43 @@ class AppDetailsScreen extends StatelessWidget {
                 SectionCard(
                   title: 'Permissions',
                   children: [
-                    for (final p in const [
-                      ('Camera', Icons.photo_camera_outlined),
-                      ('Microphone', Icons.mic_none_rounded),
-                      ('Location', Icons.location_on_outlined),
-                      ('Files', Icons.folder_outlined),
-                      ('Notifications', Icons.notifications_none_rounded),
-                    ]) ...[
-                      SectionRow(
-                        label: p.$1,
-                        trailing: Switch(value: false, onChanged: null),
-                      ),
-                      if (p.$1 != 'Notifications') const Divider(),
-                    ],
+                    if (_permissions == null)
+                      const SectionRow(label: 'Reading...', value: '')
+                    else if (_permissions!.isEmpty)
+                      const SectionRow(
+                        label: 'None requested',
+                        value: 'This app asks for no runtime permissions',
+                      )
+                    else
+                      // Only the groups this app's own manifest asks for. Offering Camera
+                      // to an app that cannot use it is a lie about the app.
+                      for (final p in _permissions!) ...[
+                        SectionRow(
+                          label: p.label,
+                          value: p.blockedByHost
+                              ? 'Grant it to UNIQUE first - it cannot pass on what it '
+                                  'does not hold'
+                              : p.granted
+                                  ? 'Allowed'
+                                  : 'Not allowed',
+                          valueColor:
+                              p.blockedByHost ? UniqueColors.warning : null,
+                          trailing: _busyGroup == p.group
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2))
+                              : Switch(
+                                  value: p.granted,
+                                  // Disabled, not merely off: UNIQUE can only narrow what
+                                  // it holds, so a switch that moved here would do nothing.
+                                  onChanged: p.blockedByHost
+                                      ? null
+                                      : (v) => _togglePermission(p, v),
+                                ),
+                        ),
+                        if (p != _permissions!.last) const Divider(),
+                      ],
                   ],
                 ),
 
@@ -171,22 +243,39 @@ class AppDetailsScreen extends StatelessWidget {
                 SectionCard(
                   title: 'Google',
                   children: [
+                    // Read from the device. Nothing here claims a flow works, because
+                    // none of them is implemented yet and saying otherwise would send a
+                    // user chasing a failure that is not theirs.
                     SectionRow(
-                      label: 'Sign in with Google',
-                      value: 'Handled by this device\'s Google Play services',
-                      trailing: const _StatusDot(tone: NoticeTone.info),
+                      label: 'Play services on this device',
+                      value: _google == null
+                          ? 'Reading...'
+                          : !_google!.gmsPresent
+                              ? 'Not installed'
+                              : _google!.presentButUnusable
+                                  ? 'Installed but not usable'
+                                  : 'Available  -  ${_google!.gmsVersionName}',
+                      trailing: _StatusDot(
+                        tone: _google == null
+                            ? NoticeTone.info
+                            : _google!.hostGmsAvailable
+                                ? NoticeTone.info
+                                : NoticeTone.warning,
+                      ),
                     ),
                     const Divider(),
-                    SectionRow(
-                      label: 'Google Sign-In (legacy)',
-                      value: 'Needs in-space Google Play services',
-                      trailing: const _StatusDot(tone: NoticeTone.warning),
+                    const SectionRow(
+                      label: 'Sign-in flows',
+                      value: 'Not implemented. UNIQUE decides how each flow would be '
+                          'routed and records it, but no route has a body yet',
+                      trailing: _StatusDot(tone: NoticeTone.warning),
                     ),
                     const Divider(),
-                    SectionRow(
-                      label: 'Play Games',
-                      value: 'Not possible: requires an attested app identity',
-                      trailing: const _StatusDot(tone: NoticeTone.error),
+                    const SectionRow(
+                      label: 'Play Games, Billing, Integrity',
+                      value: 'Expected not to work: they bind to an attested, installed '
+                          'app identity. Not yet measured',
+                      trailing: _StatusDot(tone: NoticeTone.error),
                     ),
                   ],
                 ),
@@ -197,15 +286,28 @@ class AppDetailsScreen extends StatelessWidget {
                     SectionRow(
                       label: 'Recent events',
                       value: '${state.diagnostics.length} recorded',
-                      onTap: () {},
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => DiagnosticsScreen(state: state),
+                        ),
+                      ),
                       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                     ),
                     const Divider(),
                     SectionRow(
-                      label: 'Export diagnostic package',
-                      value: 'Tokens, cookies and account names are removed',
-                      onTap: () {},
-                      trailing: const Icon(Icons.ios_share_rounded, size: 18),
+                      label: _exporting
+                          ? 'Collecting from every running app...'
+                          : 'Export diagnostic package',
+                      value: _exportSummary ??
+                          'UNIQUE\'s logs and this device. Nothing from inside the app: '
+                              'no databases, no cookies, no tokens',
+                      onTap: _exporting ? null : _export,
+                      trailing: _exporting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.ios_share_rounded, size: 18),
                     ),
                   ],
                 ),
@@ -215,6 +317,30 @@ class AppDetailsScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  bool _exporting = false;
+  String? _exportSummary;
+
+  Future<void> _export() async {
+    setState(() {
+      _exporting = true;
+      _exportSummary = null;
+    });
+    final result = await state.exportDiagnostics();
+    if (!mounted) return;
+    setState(() {
+      _exporting = false;
+      _exportSummary = result.ok
+          ? '${result.name}  -  ${result.lines} lines from '
+              '${result.processes + 1} processes'
+          : result.message ?? 'Export failed';
+    });
+    if (result.ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved to ${result.path}')),
+      );
+    }
   }
 
   /// Runs an engine action and reports its real outcome. A failure is shown with the

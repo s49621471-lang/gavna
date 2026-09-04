@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.diag.DiagLevel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.Reflect
 import java.util.concurrent.CountDownLatch
@@ -35,6 +36,39 @@ import java.util.concurrent.atomic.AtomicReference
  * cursors, `openFile` and `call` behave exactly as they would for an installed app.
  */
 object VirtualProviderHost {
+
+    /**
+     * Brings this process up as [params]'s instance, from the reserved stub *service*.
+     *
+     * The point is to do the expensive part — loading UNIQUE's code, installing the
+     * interception layer, grafting the guest — outside the ten seconds
+     * `ActivityManagerService` allows a process it cold-started for a provider. By the
+     * time an acquisition arrives the process is already running and publishing is
+     * immediate. See `VirtualProviderBridge.warmProcess`.
+     *
+     * Does not widen the stub provider's authorities: the stub may not exist yet in this
+     * process, and the bind that follows does it anyway.
+     */
+    fun warm(context: Context, params: VirtualLaunchParams) {
+        val existing = AppBootstrap.current
+        if (existing != null) {
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "PROVIDER_WARM_ALREADY_BOUND",
+                mapOf("package" to existing.params.packageName, "slot" to params.slot.toString()),
+            )
+            return
+        }
+        // Started, not waited for. `warm` runs inside `Service.onStartCommand`, which is
+        // on the main thread and which ActivityManager will ANR if it does not return:
+        //
+        //   Killing …:com.unique:vapp2 (adj 0): bg anr
+        //
+        // and a cold graft takes tens of seconds on a slow device. Posting hands the work
+        // to the very next turn of the same looper, so the service returns at once and the
+        // graft still happens on the thread a guest's Application.onCreate must run on.
+        // The bind that follows is what waits.
+        startGraft(context, params)
+    }
 
     /**
      * Makes this process serve [params]'s instance, and reports what it publishes.
@@ -110,41 +144,101 @@ object VirtualProviderHost {
      * arrive while UNIQUE's own `onCreate` — the one that installs [LaunchInterceptor] —
      * has not run. A message posted to the main looper cannot be dispatched until that
      * work finishes, because it is itself running on the main thread.
+     *
+     * There is at most **one** graft in flight per process, and a second caller waits on
+     * it rather than posting another. Posting a second is not merely wasteful: it queues
+     * *behind* the first on the same main thread, so its timeout counts down while the
+     * work it is waiting for has not started. That is what
+     * `BOOTSTRAP_TIMED_OUT … did not graft within 20s` meant — not a slow graft, but a
+     * timer racing a queue.
      */
     private fun bootstrapOnMainThread(
         context: Context,
         params: VirtualLaunchParams,
     ): AppBootstrap.Result {
-        val main = Looper.getMainLooper()
-        if (Looper.myLooper() == main) return AppBootstrap.bootstrap(context, params)
+        AppBootstrap.current?.let { return it }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return AppBootstrap.bootstrap(context, params)
+        }
 
-        val done = CountDownLatch(1)
-        val outcome = AtomicReference<AppBootstrap.Result>()
-        Handler(main).post {
-            outcome.set(
-                runCatching { AppBootstrap.bootstrap(context, params) }
-                    .getOrElse { AppBootstrap.Result.Failed("BOOTSTRAP_THREW", it.toString(), it) }
-            )
-            done.countDown()
-        }
-        if (!done.await(BOOTSTRAP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            return AppBootstrap.Result.Failed(
-                "BOOTSTRAP_TIMED_OUT",
-                "the main thread of slot ${params.slot} did not graft " +
-                    "${params.packageName} within ${BOOTSTRAP_TIMEOUT_SECONDS}s",
+        val mine = CountDownLatch(1)
+        val running = if (inFlight.compareAndSet(null, mine)) null else inFlight.get()
+        if (running != null) {
+            // Someone else is already grafting this process. Wait for them and read the
+            // result off AppBootstrap, which is where it lands either way.
+            running.await(BOOTSTRAP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            return AppBootstrap.current ?: AppBootstrap.Result.Failed(
+                "BOOTSTRAP_CONCURRENT_TIMED_OUT",
+                "another thread's graft of ${params.packageName} did not finish " +
+                    "within ${BOOTSTRAP_TIMEOUT_SECONDS}s",
             )
         }
-        return outcome.get()
-            ?: AppBootstrap.Result.Failed("BOOTSTRAP_NO_RESULT", "graft produced no result")
+
+        return try {
+            post(context, params, mine)
+            if (!mine.await(BOOTSTRAP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                AppBootstrap.Result.Failed(
+                    "BOOTSTRAP_TIMED_OUT",
+                    "the main thread of slot ${params.slot} did not graft " +
+                        "${params.packageName} within ${BOOTSTRAP_TIMEOUT_SECONDS}s",
+                )
+            } else {
+                outcome.get()
+                    ?: AppBootstrap.Result.Failed("BOOTSTRAP_NO_RESULT", "graft produced no result")
+            }
+        } finally {
+            inFlight.compareAndSet(mine, null)
+        }
     }
 
+    /** Kicks a graft off without waiting for it. Used by [warm]. */
+    private fun startGraft(context: Context, params: VirtualLaunchParams) {
+        val mine = CountDownLatch(1)
+        if (!inFlight.compareAndSet(null, mine)) return
+        post(context, params, mine)
+    }
+
+    private fun post(context: Context, params: VirtualLaunchParams, done: CountDownLatch) {
+        Handler(Looper.getMainLooper()).post {
+            val result = runCatching { AppBootstrap.bootstrap(context, params) }
+                .getOrElse { AppBootstrap.Result.Failed("BOOTSTRAP_THREW", it.toString(), it) }
+            outcome.set(result)
+            when (result) {
+                is AppBootstrap.Result.Ready -> Diagnostics.info(
+                    DiagChannel.PROCESS, "PROVIDER_GRAFT_READY",
+                    mapOf(
+                        "package" to params.packageName,
+                        "vuid" to params.vuid.toString(),
+                        "slot" to params.slot.toString(),
+                        "process" to params.processName,
+                    ),
+                )
+                is AppBootstrap.Result.Failed -> Diagnostics.error(
+                    DiagChannel.PROCESS, "PROVIDER_GRAFT_FAILED",
+                    mapOf(
+                        "package" to params.packageName,
+                        "code" to result.code,
+                        "message" to result.message,
+                    ),
+                )
+            }
+            inFlight.compareAndSet(done, null)
+            done.countDown()
+        }
+    }
+
+    private val inFlight = AtomicReference<CountDownLatch?>(null)
+    private val outcome = AtomicReference<AppBootstrap.Result>()
+
     /**
-     * Long enough for a cold graft on a slow device, short enough to be a report.
+     * Long enough for a cold graft on a slow device, short enough to stay a report.
      *
      * A binder transaction that never returns is an ANR in the *caller*, and the caller
-     * here can be UNIQUE's own UI.
+     * here can be UNIQUE's own UI. Sixty seconds because a measured cold graft on the
+     * verification emulator runs to forty (§17.1), and a timeout tighter than the work is
+     * a test of the machine rather than of the engine.
      */
-    private const val BOOTSTRAP_TIMEOUT_SECONDS = 20L
+    private const val BOOTSTRAP_TIMEOUT_SECONDS = 60L
 
     /**
      * Adds the guest's authorities to the stub's own, so `Transport` accepts their URIs.

@@ -10,6 +10,7 @@ import android.graphics.drawable.Icon
 import android.service.notification.StatusBarNotification
 import android.os.Build
 import android.net.Uri
+import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -20,6 +21,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.common.path.VirtualPathModel
+import com.unique.core.common.diag.DiagChannel
+import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vam.VirtualBroadcastRouter
 import com.unique.core.vam.VirtualProviderBridge
@@ -1257,6 +1260,378 @@ class VirtualLaunchTest {
     }
 
     // -----------------------------------------------------------------------------
+    // Phase 3: implicit starts, resolved against the guest's own intent filters.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t31_theGuestStartsItsOwnActivityImplicitly() = runBlocking {
+        val instance = requireInstance()
+        val result = File(model.filesDir(instance.vuid, probePackage), "probe-deeplink.properties")
+
+        // By custom action, with neither a component nor a package. Nothing else on the
+        // device declares this action, so UNIQUE is the only thing that can resolve it.
+        result.delete()
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.implicitAction", true) }
+        val byAction = awaitFile(result)
+
+        assertThat(byAction["action"]).isEqualTo("com.unique.probe.CUSTOM_OPEN")
+        assertThat(byAction["extra"]).isEqualTo("by-action")
+        assertThat(byAction["packageName"]).isEqualTo(probePackage)
+        // The guest's own activity class, not a stub: the graft happened.
+        assertThat(byAction["componentName"])
+            .isEqualTo("$probePackage/$probePackage.ProbeDeepLinkActivity")
+        assertThat(byAction["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+
+        // By the app's own URI scheme — the shape a browser uses to hand an OAuth result
+        // back, and so the prerequisite for the passthrough Google flow.
+        result.delete()
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.implicitScheme", true) }
+        val byScheme = awaitFile(result)
+
+        assertThat(byScheme["action"]).isEqualTo("android.intent.action.VIEW")
+        assertThat(byScheme["scheme"]).isEqualTo("unique-probe")
+        assertThat(byScheme["data"]).isEqualTo("unique-probe://open/callback?code=abc")
+        assertThat(byScheme["extra"]).isEqualTo("by-scheme")
+        assertThat(byScheme["packageName"]).isEqualTo(probePackage)
+    }
+
+    /**
+     * A guest's provider process dying leaves UNIQUE alive and working.
+     *
+     * Precisely that, and not more. `ActivityManagerService` *does* kill a client whose
+     * **stable** provider reference points into a dying process —
+     *
+     * ```
+     * Killing …:com.unique:vapp0 (adj 0): depends on provider
+     *     com.unique/.stub.ProviderStub_p2 in dying proc com.unique:vapp2
+     * ```
+     *
+     * — and when those two are one instance's main process and the same instance's
+     * `:alt`, that is the platform's own contract, which an installed app with a provider
+     * in `android:process=":alt"` gets too. Asserting it away would be asserting that
+     * UNIQUE is *less* faithful than the platform, and the attempt to (by rewriting the
+     * `stable` flag in flight) desynchronised `ActivityThread`'s reference counts from
+     * ActivityManager's and broke provider access outright.
+     *
+     * What §3 promises is that a guest cannot take UNIQUE down. So the check is on UNIQUE:
+     * still alive, and still *able to do its job* afterwards — a process that survives as
+     * a corpse would pass a liveness check and fail the user.
+     */
+    @Test
+    fun t32_aProviderProcessDyingLeavesUniqueWorking() = runBlocking {
+        val instance = requireInstance()
+        UniqueEngine.registerBroadcastRoutes(context)
+
+        // Make the guest reach across into another slot, which is what creates a provider
+        // dependency between two virtual processes at all.
+        val result =
+            File(model.filesDir(instance.vuid, probePackage), "probe-altprovider.properties")
+        result.delete()
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.queryAltProvider", true) }
+        val observed = awaitFile(result)
+        assertThat(observed["error"]).isNull()
+
+        val providerPid = observed["provider.pid"]!!.toInt()
+        val uniquePid = Process.myPid()
+        assertThat(providerPid).isNotEqualTo(uniquePid)
+
+        killAndWait(providerPid)
+
+        // Watch for long enough that a kill on its way would arrive. Asserting once,
+        // immediately, would pass even while ActivityManager was still deciding.
+        val deadline = System.currentTimeMillis() + 12_000
+        while (System.currentTimeMillis() < deadline) {
+            assertThat(isAlive(uniquePid)).isTrue()
+            Thread.sleep(500)
+        }
+
+        // Alive is not enough. UNIQUE reaches guest providers through an *unstable*
+        // client precisely so that a dead one costs it a reconnection rather than its
+        // process, and this is where that is checked rather than assumed: the same
+        // authority, read again, after the process serving it was killed.
+        val client = VirtualProviderBridge.open(
+            context, instance.vuid, "com.unique.probe.provider",
+        ) ?: throw AssertionError("UNIQUE could not reach a guest provider after the kill")
+        val rows = try {
+            client.query(
+                Uri.parse("content://com.unique.probe.provider/rows"), null, null, null, null,
+            ).use { cursor ->
+                checkNotNull(cursor) { "the guest's provider returned no cursor" }
+                buildMap {
+                    while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+                }
+            }
+        } finally {
+            client.close()
+        }
+        assertThat(rows["packageName"]).isEqualTo(probePackage)
+        assertThat(rows["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 6: WebView, which is the shape most likely to expose the whole trick.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t30_theGuestRunsAWebView() = runBlocking {
+        val instance = requireInstance()
+        val result = File(model.filesDir(instance.vuid, probePackage), "probe-webview.properties")
+        result.delete()
+        clearResult(instance)
+
+        launchProbeWith(instance) { it.putExtra("probe.webview", true) }
+
+        // The probe writes as soon as the WebView exists, before it loads anything. That
+        // is what makes the two halves below separable: everything virtualization is
+        // responsible for is already decided by this point.
+        val created = awaitFileWhere(result, timeoutMillis = 240_000) {
+            it["created"] != null || it["createError"] != null
+        }
+
+        assertThat(created["createError"]).isNull()
+        assertThat(created["created"]).isEqualTo("true")
+        assertThat(created["packageName"]).isEqualTo(probePackage)
+        assertThat(created["callerPid"]!!.toInt()).isNotEqualTo(Process.myPid())
+
+        // WebView is a separate APK loaded into the guest's process as a shared library.
+        // Creating one at all means the class loader and the native loader both coped with
+        // a package the system never installed.
+        assertThat(created["provider"]).isNotEmpty()
+        assertThat(created["userAgent"]).contains("Chrome")
+
+        // And its data directory is derived from the app's, which UNIQUE redirects. If
+        // this were UNIQUE's own directory the guest would be writing its cookies into the
+        // host's storage. This is the single most important line in the test.
+        assertThat(created["databasePath"])
+            .isEqualTo(model.dataDir(instance.vuid, probePackage))
+
+        // Whether Chromium then renders anything is a fact about the *device*, not about
+        // virtualization, so it is settled by asking the device rather than assumed. The
+        // same page is loaded in UNIQUE's own process, un-virtualized; if it fails there
+        // too, there is nothing here for UNIQUE to have broken.
+        val hostLoaded = hostWebViewLoads()
+        if (!hostLoaded) {
+            android.util.Log.w(
+                "UniqueTest",
+                "t30: this device cannot load a page in a WebView even outside " +
+                    "virtualization, so rendering is NOT_TESTED here. The guest created " +
+                    "one correctly: provider=${created["provider"]} " +
+                    "dataDir=${created["databasePath"]}",
+            )
+            return@runBlocking
+        }
+
+        // The host can render, so the guest must too.
+        val loaded = awaitFileWhere(result, timeoutMillis = 240_000) {
+            it["stage"] == "finished"
+        }
+        assertThat(loaded["timedOut"]).isNull()
+        assertThat(loaded["pageError"]).isNull()
+        assertThat(loaded["pageFinished"]).isEqualTo("true")
+        // JavaScript in the page set the title. A document that is created and never
+        // executed still reports "loaded", which is the failure this catches.
+        assertThat(loaded["title"]).isEqualTo("ready:2")
+        assertThat(loaded["destroyed"]).isEqualTo("true")
+    }
+
+    /**
+     * Whether this device can load a page in a WebView at all, outside virtualization.
+     *
+     * Run in UNIQUE's own process against the same page. On a headless software-rendered
+     * emulator Chromium's renderer can die on its own —
+     * `Render process's crash wasn't handled by all associated webviews` — and without
+     * this comparison that failure would be recorded against UNIQUE, which is the one
+     * thing a compatibility matrix must never do.
+     */
+    private fun hostWebViewLoads(timeoutMillis: Long = 120_000): Boolean {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val finished = java.util.concurrent.CountDownLatch(1)
+        val ok = java.util.concurrent.atomic.AtomicBoolean(false)
+        val holder = arrayOfNulls<android.webkit.WebView>(1)
+        val page = "<html><head><title>loading</title></head><body>" +
+            "<script>document.title='ready:'+(1+1);</script></body></html>"
+
+        instrumentation.runOnMainSync {
+            runCatching {
+                val web = android.webkit.WebView(context)
+                holder[0] = web
+                web.settings.javaScriptEnabled = true
+                web.webViewClient = object : android.webkit.WebViewClient() {
+                    override fun onPageFinished(view: android.webkit.WebView, url: String) {
+                        ok.set(view.title == "ready:2")
+                        finished.countDown()
+                    }
+                }
+                web.loadDataWithBaseURL(null, page, "text/html", "utf-8", null)
+            }.onFailure { finished.countDown() }
+        }
+        finished.await(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+        // Destroyed, and this is not tidiness. A live WebView keeps its association with a
+        // renderer process, and when that renderer dies Chromium takes the *embedding*
+        // process down with it:
+        //
+        //   FATAL:crashpad_client_linux.cc(732)] Render process's crash wasn't handled by
+        //       all associated webviews, triggering application crash
+        //
+        // Leaving one behind here killed the instrumentation process two tests later, and
+        // the failure landed on a test about content providers.
+        instrumentation.runOnMainSync {
+            runCatching {
+                holder[0]?.stopLoading()
+                holder[0]?.destroy()
+            }
+        }
+        return ok.get()
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 8: what it costs. Measured and recorded; not asserted against a budget.
+    // -----------------------------------------------------------------------------
+
+    /**
+     * Measures cold start, warm start and the virtual process's memory, and writes the
+     * numbers where a run directory will keep them.
+     *
+     * **It asserts almost nothing about the numbers themselves, on purpose.** This runs on
+     * a headless x86_64 emulator with no hardware acceleration, sharing a machine with
+     * whatever else is building. A wall-clock budget asserted here would not measure
+     * UNIQUE; it would measure the CI host, and it would fail on the day someone else's
+     * job was busy. What is asserted is that every phase happened in the right order and
+     * that a warm start really did reuse the process — the two things that would actually
+     * be *broken* rather than slow.
+     *
+     * The measurement itself is real and is what a physical-device run compares against:
+     * `PERF_COLD_START`, `PERF_WARM_START` and `PERF_MEMORY` on the PROCESS channel end up
+     * in the run's `engine.log`.
+     */
+    @Test
+    fun t29_startupAndMemoryAreMeasured() = runBlocking {
+        val instance = requireInstance()
+
+        // Cold: no process at all, so this includes the fork, the graft, the guest's
+        // Application.onCreate and its first Activity.
+        //
+        // Killing is not by itself enough to guarantee that. A `:vappN` publishes a stub
+        // ContentProvider, so ActivityManager may restart it for a client of its own
+        // between the kill and the launch — and the first version of this test measured
+        // exactly that: a 6-second "cold start" into a process that had been up for three
+        // minutes. Coldness is therefore *checked* rather than arranged, and one retry is
+        // allowed before the measurement is declared unusable and skipped.
+        var cold: Map<String, String> = emptyMap()
+        var coldRequestedAt = 0L
+        var attempts = 0
+        var cameUpForUs = false
+        while (attempts < 3 && !cameUpForUs) {
+            attempts++
+            // Kill until nothing is left, re-reading each time. One pass is not enough:
+            // ActivityManager's list lags a death, so a single sweep can leave a process
+            // it had not yet reported, and a restart can arrive between two sweeps.
+            val killDeadline = SystemClock.uptimeMillis() + 60_000
+            while (SystemClock.uptimeMillis() < killDeadline) {
+                val live = runningVappProcesses().values.filter { isAlive(it) }
+                if (live.isEmpty()) break
+                live.forEach { runCatching { killAndWait(it) } }
+                Thread.sleep(500)
+            }
+            val before = runningVappProcesses().values.filter { isAlive(it) }.toSet()
+
+            clearResult(instance)
+            coldRequestedAt = SystemClock.uptimeMillis()
+            launchProbeWith(instance) { }
+            cold = awaitResult(instance)
+            cameUpForUs = cold["pid"]!!.toInt() !in before &&
+                cold["processStartUptime"]!!.toLong() >= coldRequestedAt
+        }
+
+        val coldPid = cold["pid"]!!.toInt()
+        val processStart = cold["processStartUptime"]!!.toLong()
+        val appOnCreate = cold["applicationOnCreateUptime"]!!.toLong()
+        val activityOnCreate = cold["activityOnCreateUptime"]!!.toLong()
+        val coldWritten = cold["resultWrittenUptime"]!!.toLong()
+
+        // The order is the part that can be wrong rather than merely slow: the guest's
+        // Application must exist before its Activity, and both after the fork.
+        assertThat(processStart).isGreaterThan(0L)
+        assertThat(appOnCreate).isAtLeast(processStart)
+        assertThat(activityOnCreate).isAtLeast(appOnCreate)
+        assertThat(coldWritten).isAtLeast(activityOnCreate)
+
+        // Measured on the guest's own clock. `resultWritten - processStart` is
+        // self-consistent whatever the test was doing, unlike a total anchored to when the
+        // test happened to ask.
+        val wasCold = cameUpForUs
+        val coldTotal = coldWritten - processStart
+        Diagnostics.info(
+            DiagChannel.PROCESS,
+            if (wasCold) "PERF_COLD_START" else "PERF_COLD_START_NOT_COLD",
+            mapOf(
+                "package" to probePackage,
+                "wasCold" to wasCold.toString(),
+                "forkToResultMillis" to coldTotal.toString(),
+                "forkToApplicationMillis" to (appOnCreate - processStart).toString(),
+                "applicationToActivityMillis" to (activityOnCreate - appOnCreate).toString(),
+                "activityToResultMillis" to (coldWritten - activityOnCreate).toString(),
+                "requestToResultMillis" to (coldWritten - coldRequestedAt).toString(),
+                "attempts" to attempts.toString(),
+            ),
+        )
+
+        // Warm: the same process is still up, so this is the launch path with the graft
+        // already done - which is what a user experiences returning to an open app.
+        assertThat(isAlive(coldPid)).isTrue()
+        clearResult(instance)
+        val warmRequestedAt = SystemClock.uptimeMillis()
+        launchProbeWith(instance) { }
+        val warm = awaitResult(instance)
+
+        // A warm start that forked a new process is not a warm start, and the number would
+        // be meaningless rather than merely large.
+        assertThat(warm["pid"]!!.toInt()).isEqualTo(coldPid)
+        assertThat(warm["processStartUptime"]!!.toLong()).isEqualTo(processStart)
+
+        val warmTotal = warm["resultWrittenUptime"]!!.toLong() - warmRequestedAt
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PERF_WARM_START",
+            mapOf(
+                "package" to probePackage,
+                "requestToResultMillis" to warmTotal.toString(),
+                "reusedPid" to coldPid.toString(),
+            ),
+        )
+
+        // Memory. PSS rather than RSS: shared pages - and a virtual process shares the
+        // whole framework and UNIQUE's own code - would be counted in full by RSS in every
+        // process at once, which is how a virtualization layer gets accused of using
+        // several times the memory it uses.
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val info = am.getProcessMemoryInfo(intArrayOf(coldPid)).firstOrNull()
+        assertThat(info).isNotNull()
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PERF_MEMORY",
+            mapOf(
+                "package" to probePackage,
+                "pid" to coldPid.toString(),
+                "totalPssKb" to info!!.totalPss.toString(),
+                "dalvikPssKb" to info.dalvikPss.toString(),
+                "nativePssKb" to info.nativePss.toString(),
+                "otherPssKb" to info.otherPss.toString(),
+            ),
+        )
+        assertThat(info.totalPss).isGreaterThan(0)
+
+        // One outer bound, wide enough to be a statement about *hanging* rather than about
+        // speed: a launch that takes five minutes is not slow, it is stuck. Applied to the
+        // cold number only when the launch really was cold; otherwise it would be timing
+        // however long the process happened to sit idle before the test asked.
+        if (wasCold) assertThat(coldTotal).isLessThan(300_000L)
+        assertThat(warmTotal).isLessThan(300_000L)
+    }
+
+    // -----------------------------------------------------------------------------
     // Phase 5: graphics. EGL, GLES and Vulkan inside a virtualized process.
     // -----------------------------------------------------------------------------
 
@@ -1545,7 +1920,12 @@ class VirtualLaunchTest {
             versionCode = instance.versionCode,
             targetComponent = "$probePackage.ProbeActivity",
             processName = probePackage,
-            slot = slotOf(instance.vuid),
+            // Leased from the pool, not read back from a snapshot. `slotOf` answers 0 for
+            // an instance that has never launched, and slot 0 belongs to the *first*
+            // instance — so a second instance launched through it is refused with
+            // SLOT_ALREADY_BOUND, correctly and confusingly.
+            slot = UniqueEngine.launcher.acquireSlot(instance.vuid, probePackage, probePackage)
+                ?: slotOf(instance.vuid),
         )
         val intent = VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

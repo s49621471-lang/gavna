@@ -140,6 +140,12 @@ class AppState extends ChangeNotifier {
 
   Future<GoogleStatus> googleStatus() => _bridge.googleStatus();
 
+  Future<List<InstancePermission>> instancePermissions(int vuid) =>
+      _bridge.instancePermissions(vuid);
+
+  Future<EngineOutcome> setInstancePermission(int vuid, String group, bool granted) =>
+      _bridge.setInstancePermission(vuid, group, granted);
+
   void _listenToDiagnostics() {
     _bridge.diagnostics().listen((record) {
       _diagnostics.insert(0, record);

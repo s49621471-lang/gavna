@@ -1,7 +1,9 @@
 package com.unique.core.vam
 
+import android.content.ComponentName
 import android.content.ContentProviderClient
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import com.unique.core.common.diag.DiagChannel
@@ -102,22 +104,90 @@ object VirtualProviderBridge {
         val stub = Uri.parse(
             "content://" + VirtualProviderRouter.stubAuthority(hostPackage, route.slot)
         )
-        val reply = runCatching {
-            context.contentResolver.call(
-                stub, METHOD_BIND, null,
-                Bundle().apply { putAll(route.launchParams().toBundle()) },
+        // Warm the target process before asking it for anything. See warmProcess.
+        warmProcess(context, hostPackage, route)
+
+        val extras = Bundle().apply { putAll(route.launchParams().toBundle()) }
+        var lastError: String? = null
+        for (attempt in 1..BIND_ATTEMPTS) {
+            val reply = runCatching {
+                context.contentResolver.call(stub, METHOD_BIND, null, extras)
+            }.getOrElse {
+                lastError = it.toString()
+                null
+            }
+            if (reply != null) return finishBind(route, reply)
+            if (attempt < BIND_ATTEMPTS) {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "PROVIDER_BIND_RETRY",
+                    mapOf(
+                        "authority" to route.authority,
+                        "slot" to route.slot.toString(),
+                        "attempt" to attempt.toString(),
+                        "error" to (lastError ?: "no reply"),
+                    ),
+                )
+                runCatching { Thread.sleep(BIND_RETRY_MILLIS * attempt) }
+            }
+        }
+        Diagnostics.error(
+            DiagChannel.PROCESS, "PROVIDER_BIND_FAILED",
+            mapOf(
+                "authority" to route.authority,
+                "slot" to route.slot.toString(),
+                "attempts" to BIND_ATTEMPTS.toString(),
+                "error" to (lastError ?: "no reply"),
+            ),
+        )
+        return null
+    }
+
+    /**
+     * Starts the target slot's process before anything acquires a provider from it.
+     *
+     * `ActivityManagerService` gives a process it cold-starts *for a provider* ten seconds
+     * to publish, and kills it otherwise:
+     *
+     * ```
+     * Killing 4786:com.unique:vapp2 (adj 0): timeout publishing content providers
+     * ```
+     *
+     * A cold `:vappN` does not reliably make that. It has to load UNIQUE's own code,
+     * install the interception layer and graft the guest before `handleBindApplication`
+     * returns — work an ordinary app does not do, and work that happens *before* providers
+     * are published. On a slow device the process is killed and restarted in a loop, and
+     * every acquisition fails.
+     *
+     * Starting the reserved stub service first takes that budget off the critical path
+     * entirely: the process comes up, grafts, and is already running when the provider
+     * acquisition arrives, so publishing is immediate. It is the same reserved stub the
+     * cold broadcast path uses, for the same reason — bringing a process into existence
+     * without putting a window on screen.
+     *
+     * Fire-and-forget. The retry loop above is what actually waits, because a service
+     * start is asynchronous and there is nothing useful to block on.
+     */
+    private fun warmProcess(context: Context, hostPackage: String, route: Route) {
+        runCatching {
+            val stubService = StubRouter.stubService(
+                route.slot, VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX,
             )
-        }.getOrElse {
-            Diagnostics.error(
-                DiagChannel.PROCESS, "PROVIDER_BIND_FAILED",
-                mapOf(
-                    "authority" to route.authority,
-                    "slot" to route.slot.toString(),
-                    "error" to it.toString(),
-                ),
+            val intent = Intent().apply {
+                component = ComponentName(hostPackage, stubService)
+                route.launchParams().writeTo(this)
+            }
+            context.startService(intent)
+        }.onFailure {
+            // Not fatal: the acquisition may still succeed on a fast device. Recorded
+            // because it explains the retries that follow.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_WARM_FAILED",
+                mapOf("slot" to route.slot.toString(), "error" to it.toString()),
             )
-            return null
-        } ?: return null
+        }
+    }
+
+    private fun finishBind(route: Route, reply: Bundle): Set<String>? {
 
         reply.getString(KEY_ERROR)?.let { error ->
             Diagnostics.error(
@@ -128,6 +198,18 @@ object VirtualProviderBridge {
         }
         return reply.getStringArray(KEY_AUTHORITIES)?.toSet().orEmpty()
     }
+
+    /**
+     * How many times to ask the slot to bind.
+     *
+     * Three, with a growing pause, because the failure being retried is a *cold start*
+     * losing a race with the platform's publish timeout — the second attempt meets a
+     * process that is already most of the way up, and the third one that is fully up.
+     * Retrying an acquisition that failed for any other reason costs a few seconds and
+     * reports the same error it would have anyway.
+     */
+    private const val BIND_ATTEMPTS = 3
+    private const val BIND_RETRY_MILLIS = 2500L
 
     /**
      * A client for one instance's provider, or null when it cannot be reached.

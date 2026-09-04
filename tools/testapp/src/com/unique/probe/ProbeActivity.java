@@ -25,12 +25,16 @@ public class ProbeActivity extends Activity {
     private static final String TAG = ProbeApplication.TAG;
     public static final String RESULT_FILE = "probe-result.properties";
 
+    /** When this Activity's onCreate began, on the same clock as the process start. */
+    private long activityOnCreateUptime = 0L;
+
     /** Permission answers seen before the request and in the callback, written once. */
     private final Map<String, String> mPermissionObservations = new LinkedHashMap<String, String>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        activityOnCreateUptime = android.os.SystemClock.uptimeMillis();
 
         TextView view = new TextView(this);
         view.setTextColor(Color.WHITE);
@@ -124,6 +128,20 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "exercising Vulkan");
             exerciseVulkan();
         }
+
+        if (request != null && request.getBooleanExtra("probe.webview", false)) {
+            Log.i(TAG, "exercising WebView");
+            exerciseWebView();
+        }
+
+        if (request != null && request.getBooleanExtra("probe.implicitAction", false)) {
+            Log.i(TAG, "starting an implicit intent by custom action");
+            startImplicitByAction();
+        }
+        if (request != null && request.getBooleanExtra("probe.implicitScheme", false)) {
+            Log.i(TAG, "starting an implicit intent by URI scheme");
+            startImplicitByScheme();
+        }
         if (request != null && request.getBooleanExtra("probe.identity", false)) {
             Log.i(TAG, "checking own signature and the Google stack");
             exercisePackageIdentity();
@@ -142,6 +160,14 @@ public class ProbeActivity extends Activity {
         out.put("applicationBeforeActivity",
                 String.valueOf(ProbeApplication.applicationOnCreateAt != 0L
                         && ProbeApplication.applicationOnCreateAt < System.nanoTime()));
+        // Startup timing. Written on every launch, so a cold one and a warm one differ
+        // only in whether the process already existed - which is the whole measurement.
+        out.put("processStartUptime", String.valueOf(ProbeApplication.processStartUptime));
+        out.put("applicationOnCreateUptime",
+                String.valueOf(ProbeApplication.applicationOnCreateUptime));
+        out.put("activityOnCreateUptime", String.valueOf(activityOnCreateUptime));
+        out.put("resultWrittenUptime", String.valueOf(android.os.SystemClock.uptimeMillis()));
+
         out.put("activityClass", getClass().getName());
         out.put("componentName", getComponentName().flattenToString());
         out.put("pid", String.valueOf(android.os.Process.myPid()));
@@ -663,6 +689,64 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-alarm-clip.properties", out);
+    }
+
+    /**
+     * Starts an activity by action alone, with no component and no package.
+     *
+     * The most ordinary shape of implicit start there is, and the one that did nothing at
+     * all under virtualization: PackageManager resolves against installed packages, and
+     * this app is not one.
+     */
+    private void startImplicitByAction() {
+        try {
+            Intent intent = new Intent(ProbeDeepLinkActivity.ACTION)
+                    .addCategory(Intent.CATEGORY_DEFAULT)
+                    .putExtra("probe.deeplink.extra", "by-action");
+            startActivity(intent);
+        } catch (Throwable t) {
+            Log.e(TAG, "implicit start by action failed", t);
+        }
+    }
+
+    /**
+     * Starts a VIEW on this app's own URI scheme.
+     *
+     * The shape a browser uses to hand an OAuth result back to an app, which is why this
+     * is the prerequisite for the passthrough Google flow rather than a curiosity.
+     */
+    private void startImplicitByScheme() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    android.net.Uri.parse("unique-probe://open/callback?code=abc"))
+                    .addCategory(Intent.CATEGORY_BROWSABLE)
+                    .putExtra("probe.deeplink.extra", "by-scheme");
+            startActivity(intent);
+        } catch (Throwable t) {
+            Log.e(TAG, "implicit start by scheme failed", t);
+        }
+    }
+
+    /**
+     * Brings up a WebView and writes down what it managed to do.
+     *
+     * The write happens in the callback rather than after the call returns: a page load
+     * delivers its result to this same thread, so anything that waits here waits forever.
+     */
+    private void exerciseWebView() {
+        // Ninety seconds. Chromium's first start in a process is genuinely slow on a
+        // software-rendered emulator, and a timeout that fires while it is still starting
+        // measures the machine rather than the engine.
+        ProbeWebView.start(this, 90000, new ProbeWebView.Done() {
+            @Override
+            public void onResult(Map<String, String> result, boolean finished) {
+                Map<String, String> out = new LinkedHashMap<String, String>(result);
+                out.put("packageName", getPackageName());
+                out.put("callerPid", String.valueOf(android.os.Process.myPid()));
+                out.put("stage", finished ? "finished" : "created");
+                writeMap("probe-webview.properties", out);
+            }
+        });
     }
 
     /**

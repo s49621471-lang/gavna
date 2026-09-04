@@ -314,6 +314,37 @@ Bootstrapping is once per process. A slot serves exactly one (instance, manifest
 pair for its lifetime; a second bind is refused, because two instances have different data
 directories and the first instance's objects would keep pointing at the wrong one.
 
+#### 6.1.0 Implicit starts, resolved against the guest's own filters
+
+**Implemented; `t31` covers it.** `PackageManager` resolves an implicit intent against
+*installed* packages, so `startActivity(Intent("com.example.OPEN_SETTINGS"))` from a guest
+matched nothing and did nothing visible. That is a large hole: it covers a great deal of
+ordinary in-app navigation, and it is also why Mode C OAuth (§9.5) could not work — that
+flow ends with a browser handing a deep link back, and a deep link is an implicit intent.
+
+`VirtualIntentResolver` matches the intent against the guest's manifest filters using
+`android.content.IntentFilter`. Deliberately the platform's own matcher rather than a
+reimplementation: action, category, scheme, host, port, path and MIME interact in ways that
+are easy to get *nearly* right, and nearly right here means opening the wrong screen.
+
+The harder question is which side should win, because a guest may equally mean the host — a
+share sheet, a browser, the dialer. The rule, in order:
+
+1. **Scoped to itself** (`setPackage(ownName)`): the guest said so. Resolve against the
+   guest only.
+2. **Unscoped, and something installed can serve it**: the host wins. An `https` `VIEW`
+   belongs in a browser and a `SEND` belongs in the chooser; pulling either into the guest
+   would break behaviour that works today.
+3. **Unscoped, and nothing on the device can serve it**: the guest wins, if it matches. A
+   custom action only this app declares is certainly this app's.
+
+What this does not reproduce is the platform's own behaviour, where an installed app's
+matching activity is one candidate among all and the *user* picks. UNIQUE cannot put a
+virtual activity into the system chooser, so it decides — and records which rule decided
+(`ACTIVITY_IMPLICIT_ROUTED reason=scoped|onlyHandler`, or
+`ACTIVITY_IMPLICIT_HOST_PREFERRED`), because "it opened the wrong thing" is a question that
+needs an answer.
+
 #### 6.1.1 Virtualizing PackageManager is a prerequisite, not a feature
 
 `LoadedApk.initializeJavaContextClassLoader()` asks the real `PackageManagerService` for
@@ -578,16 +609,31 @@ The resolution has three moving parts and one trick.
    `(vuid, authority)`, never the authority alone: two clones of an app declare the same
    authority, and picking the first would hand a caller another instance's database.
 
-2. **A `call()` to that slot's stub provider**, which is what starts the process — and the
-   same call makes the process *be* that instance, grafting the guest and publishing its
-   providers. Synchronous, which is the point: starting a service and polling for
-   readiness would put a race and a timeout where an answer belongs. The graft itself is
-   posted to the main thread and waited on, because a guest's `Application.onCreate` must
-   run there — apps create `Handler`s in it — and because
-   `ActivityThread.handleBindApplication` installs a process's providers *before* calling
-   `Application.onCreate`, so a `call()` can arrive before UNIQUE's own `onCreate` has
-   installed anything. A message posted to the main looper cannot be dispatched until that
-   finishes.
+2. **The slot's process is started out of band first, then `call()`ed.**
+   `ActivityManagerService` gives a process it cold-starts *for a provider* ten seconds to
+   publish, and kills it otherwise:
+
+   ```
+   Killing 4786:com.unique:vapp2 (adj 0): timeout publishing content providers
+   ```
+
+   A cold `:vappN` does not reliably make that. Before `handleBindApplication` returns it
+   has to load UNIQUE's code, install the interception layer and graft the guest — work an
+   ordinary app does not do, and work that happens *before* providers are published. The
+   process was killed and restarted in a loop and every acquisition failed. So UNIQUE
+   starts the reserved stub service first (the same one §6.3.1 uses, for the same reason),
+   which takes that budget off the critical path: by the time the acquisition arrives the
+   process is running and publishing is immediate.
+
+   The graft runs on the main thread — a guest's `Application.onCreate` must, because apps
+   create `Handler`s in it — and there is at most **one in flight per process**. Both of
+   those were learned the hard way. `warm` posts and returns immediately, because it runs
+   inside `Service.onStartCommand` and a service whose main thread does not return is
+   ANR'd (`bg anr`). And a second caller waits on the graft already running rather than
+   posting another, because a second post queues *behind* the first on the same thread —
+   its timer counting down while the work it waits for has not started. That is what
+   `BOOTSTRAP_TIMED_OUT … did not graft within 20s` actually meant: not a slow graft, but a
+   timer racing a queue.
 
 3. **The trick: the stub's authority set is widened at runtime.**
    `ContentProvider.setAuthorities` has existed since API 21 and is what `attachInfo`
@@ -610,6 +656,35 @@ stub's, and afterwards adds the guest authority back onto `ContentProviderHolder
 acquisition repeats the whole resolve-and-bind round trip — correct, and slow for no
 visible reason. UNIQUE's own authorities are never redirected; that is what ends the
 recursion.
+
+**Provider stability is left exactly as the guest asked for it**, and the reasoning is
+worth keeping because the obvious change here is wrong twice over.
+
+Once cross-process providers existed, `ActivityManagerService` started doing this:
+
+```
+Killing 25752:com.unique:vapp0 (adj 0): depends on provider
+    com.unique/.stub.ProviderStub_p2 in dying proc com.unique:vapp2 (adj 0)
+```
+
+which reads as one virtual app killed because another died — a §3 violation. It is not.
+The two processes are one instance's main process and the *same instance's* `:alt`, and an
+installed app with a provider in `android:process=":alt"` gets precisely this from the
+platform. It is the contract the guest asked for by holding a stable reference, and
+reproducing it is fidelity rather than a bug.
+
+Forcing the acquisition unstable to avoid it was tried, and is worse than the thing it
+avoided. `stable` is not only a message to ActivityManager: `ActivityThread` keeps its own
+stable and unstable reference counts on the client side and hands them back on release.
+Rewriting the flag in flight leaves the two ledgers disagreeing, ActivityManager drops a
+connection the client still believes it holds, and the next query returns no cursor at all.
+`t27` and `t32` both went red on it, and the symptom — an acquisition that works once and
+then silently stops — pointed nowhere near the flag.
+
+What §3 actually promises is narrower, and holds without touching anything: one *instance*
+cannot kill another, and a guest cannot kill UNIQUE. Nothing a guest writes can name
+another instance's authority, and UNIQUE's own process reaches guest providers through
+`acquireUnstableContentProviderClient`. `t32` kills a provider's process and watches both.
 
 **What is not covered.** A slot is leased per (instance, manifest process), so a guest
 whose provider process has been reaped and whose slot has been handed to another instance
@@ -1289,6 +1364,59 @@ the host has. Until such a run exists, Vulkan stays `NOT_TESTED` in
 `docs/COMPATIBILITY.md`. A test that quietly passes on hardware that cannot run it is how
 `NOT_TESTED` gets written down as `SUPPORTED`.
 
+### 10.2 WebView
+
+WebView is the shape most likely to expose a virtualization layer, and none of the reasons
+are about rendering.
+
+It is a **separate APK** loaded into the app's process as a shared library, so the class
+loader and the native loader both have to cope with a host application whose own package
+the system never installed. It keeps its data in a directory derived from the app's data
+directory, which UNIQUE redirects — if that redirect is wrong, a guest writes its cookies
+into UNIQUE's storage. And since Android P it refuses to run in two processes against one
+data directory:
+
+```
+java.lang.RuntimeException: Using WebView from more than one process at once with the
+    same data directory is not supported.
+```
+
+That last one is not hypothetical. The check is per *process*, only the process whose name
+equals the package name gets the default (empty) suffix, and **none** of UNIQUE's `:vappN`
+processes does. So the first virtual process to create a WebView would work and the second
+would throw — inside the guest, naming UNIQUE's directory, pointing at nothing the app's
+author could act on. `AppBootstrap` therefore calls
+`WebView.setDataDirectorySuffix("vapp<slot>")` before any guest code runs at all: it must
+happen before WebView is used in the process and can only be called once.
+
+Keyed by slot rather than by instance because slot and process are one-to-one and the
+constraint is about processes; two instances in two slots also get separate suffixes, which
+is correct for a different reason.
+
+`t30` creates a WebView in a virtual process and checks the data directory is the
+*instance's*. Then it does something the rest of the suite does not need to: it asks
+whether **this device** can render at all, by loading the same page in UNIQUE's own
+process, un-virtualized. On the verification emulator Chromium's renderer dies on its own —
+
+```
+E/chromium: Renderer process crash detected (code 5)
+F/chromium: [FATAL:crashpad_client_linux.cc(732)] Render process's crash wasn't handled
+    by all associated webviews, triggering application crash
+```
+
+— and it does so outside virtualization too. Recording that against UNIQUE would be the one
+thing a compatibility matrix must never do, so rendering is `NOT_TESTED` on this
+environment and the comparison is what establishes it. On a device where the host *can*
+render, the same test asserts the guest does too, including that JavaScript in the page
+ran: a document created and never executed still reports "loaded".
+
+The probe reports twice — once as soon as the WebView exists, again when the load ends —
+because that Chromium fatal handler takes the embedding process with it. A probe that only
+reported at the end turned a renderer crash into a timeout: an empty file, and no way to
+tell whether the WebView was created, which provider it used, or which data directory it
+chose. Those are the facts virtualization is responsible for, and they are all decided
+before the first byte is parsed.
+
 ---
 
 ## 11. Device Profile
@@ -1476,6 +1604,35 @@ process can reach. Users are told this before adding an app.
 | **6** | Device profiles: persistence, regenerate, multi-profile, consistency tests | Consistency suite green |
 | **7** | Compatibility pass over the test matrix; fixes land in `core/compat` only | Matrix published with honest per-app status |
 | **8** | Performance, RAM, diagnostics, crash UX, polish | Benchmarks vs. native install published |
+
+### 17.1 What is measured, and what those numbers are worth
+
+`t29` measures cold start, warm start and memory on every run, and records them on the
+PROCESS channel (`PERF_COLD_START`, `PERF_WARM_START`, `PERF_MEMORY`) so they land in the
+run's `engine.log`. It asserts almost nothing about the numbers themselves, on purpose.
+This suite runs on a headless x86_64 emulator with no hardware acceleration, sharing a
+machine with whatever else is building. A wall-clock budget asserted there would not
+measure UNIQUE; it would measure the host, and it would go red on the day another job was
+busy. What *is* asserted is the ordering — fork, then `Application.onCreate`, then the
+Activity — and that a warm start really reused the process, which are the two things that
+would be broken rather than merely slow.
+
+Two details are load-bearing, and the first version of the test got both wrong.
+
+**Cold is checked, not arranged.** Killing every `:vappN` does not guarantee the next
+launch is cold: a `:vappN` publishes a stub ContentProvider (§6.4.0), so ActivityManager
+may restart it for a client of its own between the kill and the launch. The first version
+reported a six-second "cold start" into a process that had been up for three minutes. The
+test now compares the guest's own `Process.getStartUptimeMillis()` against when it asked,
+retries once, and reports `PERF_COLD_START_NOT_COLD` rather than a wrong number.
+
+**The total is measured on the guest's clock.** `resultWritten - processStart` is
+self-consistent whatever the test was doing; a total anchored to when the test happened to
+call `startActivity` measures idle time as often as work.
+
+Memory is reported as **PSS**, not RSS. A virtual process shares the whole framework and
+UNIQUE's own code, and RSS counts shared pages in full in every process at once — which is
+how a virtualization layer gets accused of using several times the memory it uses.
 
 ### Definition of done for the MVP
 

@@ -229,9 +229,15 @@ object LaunchInterceptor {
         val intentField = fieldOfType(data.javaClass, Intent::class.java) ?: return
         val stubIntent = intentField.get(data) as? Intent ?: return
         val params = VirtualLaunchParams.from(stubIntent) ?: return
-        // A cold broadcast start must reach the stub with its extras intact: the stub is
-        // the thing that runs, and the guest's broadcast is riding inside.
-        if (params.kind == VirtualComponentKind.RECEIVER) return
+        // An out-of-band process start must reach the stub with its extras intact: the
+        // stub is the thing that runs, and it needs the parameters to know what to be. A
+        // cold broadcast carries the guest's intent inside; a provider warm carries only
+        // the identity to graft.
+        if (params.kind == VirtualComponentKind.RECEIVER ||
+            params.kind == VirtualComponentKind.PROVIDER
+        ) {
+            return
+        }
         val target = params.targetComponent ?: return
         intentField.set(data, unwrapServiceIntent(stubIntent, target))
     }

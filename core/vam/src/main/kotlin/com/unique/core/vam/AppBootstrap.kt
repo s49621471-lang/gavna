@@ -8,6 +8,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Process
 import com.unique.core.common.apk.Abi
+import android.webkit.WebView
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
@@ -59,6 +60,17 @@ object AppBootstrap {
 
     /** UNIQUE's own package name once this process has been grafted; null before. */
     val hostPackageName: String? get() = hostPackage
+
+    @Volatile private var host: Context? = null
+
+    /**
+     * UNIQUE's own `Context` in this process, kept for the things the guest's cannot do.
+     *
+     * After the graft, `application` is the guest's and its `PackageManager` answers as the
+     * guest — which is the point, and exactly wrong for asking the *device* a question,
+     * such as whether anything installed here can serve an intent.
+     */
+    val hostContext: Context? get() = host
 
     val current: Result.Ready? get() = bootstrapped
 
@@ -162,6 +174,7 @@ object AppBootstrap {
         // Anything addressing UNIQUE's own components - the router provider, the stubs -
         // needs the real name.
         hostPackage = hostContext.packageName
+        host = hostContext.applicationContext ?: hostContext
         val pmHooked = VirtualPackageManagerHook.install(
             packageName = params.packageName,
             manifest = manifest,
@@ -229,6 +242,10 @@ object AppBootstrap {
         // after this point is not covered until the next install; that limit is recorded
         // rather than papered over.
         installIoRedirection(hostContext, effective, appInfo)
+
+        // Must happen before any guest code can touch a WebView, and cannot be undone
+        // afterwards. See webViewDataDirectorySuffix.
+        setWebViewDataDirectorySuffix(effective)
 
         // Where a crash record goes when this process stops existing. Installed before
         // any guest code runs, because the earliest crashes are the ones with no other
@@ -307,6 +324,52 @@ object AppBootstrap {
             ),
         )
         return ready
+    }
+
+    /**
+     * Gives this process its own WebView data directory.
+     *
+     * Since Android P, WebView refuses to run in two processes against one data directory:
+     *
+     * ```
+     * java.lang.RuntimeException: Using WebView from more than one process at once with
+     *     the same data directory is not supported.
+     * ```
+     *
+     * The check is per *process*, and every `:vappN` is another process of UNIQUE as far
+     * as WebView can tell — only the process whose name equals the package name gets the
+     * default (empty) suffix, and none of UNIQUE's virtual processes does. So the first
+     * `:vappN` to create a WebView would work and the second would throw, which is a
+     * failure that arrives in the guest, names UNIQUE's directory, and points at nothing
+     * the app developer can act on.
+     *
+     * Keyed by slot rather than by instance, because slot and process are one-to-one and
+     * the constraint is about processes. Two instances of one app in two slots therefore
+     * also get separate suffixes, which is correct for a different reason.
+     *
+     * It must be called before WebView is used in this process and can only be called
+     * once, so it happens here, before any guest code runs at all.
+     */
+    private fun setWebViewDataDirectorySuffix(params: VirtualLaunchParams) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        val suffix = "vapp${params.slot}"
+        runCatching { WebView.setDataDirectorySuffix(suffix) }.fold(
+            onSuccess = {
+                Diagnostics.info(
+                    DiagChannel.WEBVIEW, "WEBVIEW_DATA_DIR_SUFFIX",
+                    mapOf("suffix" to suffix, "slot" to params.slot.toString()),
+                )
+            },
+            onFailure = {
+                // IllegalStateException means WebView was already loaded in this process.
+                // It should not be, and if it is, saying so here is far cheaper than the
+                // guest's own crash later.
+                Diagnostics.warn(
+                    DiagChannel.WEBVIEW, "WEBVIEW_DATA_DIR_SUFFIX_REFUSED",
+                    mapOf("suffix" to suffix, "error" to it.toString()),
+                )
+            },
+        )
     }
 
     // ---------------------------------------------------------------------------------

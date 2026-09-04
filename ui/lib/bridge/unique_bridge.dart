@@ -86,6 +86,25 @@ class UniqueBridgeClient {
     return DiagnosticsExportResult.fromMap(result ?? const {});
   }
 
+  /// The permission groups this instance's app actually asks for, and their state.
+  Future<List<InstancePermission>> instancePermissions(int vuid) async {
+    final result = await _method.invokeListMethod<Object?>(
+      'instancePermissions',
+      {'vuid': vuid},
+    );
+    return (result ?? const [])
+        .map((e) => InstancePermission.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  Future<EngineOutcome> setInstancePermission(
+    int vuid,
+    String group,
+    bool granted,
+  ) async =>
+      _outcome('setInstancePermission',
+          {'vuid': vuid, 'group': group, 'granted': granted});
+
   /// What this device can offer a virtualized app's Google flows.
   Future<GoogleStatus> googleStatus() async {
     final result = await _method.invokeMapMethod<Object?, Object?>('googleStatus');

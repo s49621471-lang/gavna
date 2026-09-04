@@ -18,8 +18,11 @@ import com.unique.core.nativebridge.UniqueNative
 import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
 import com.unique.app.engine.DiagnosticsExport
+import com.unique.app.engine.InstancePermissions
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.vam.LaunchResult
+import com.unique.core.vpermission.PermissionGroup
+import com.unique.core.vpermission.PermissionState
 import com.unique.core.vpm.CreateResult
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -153,6 +156,10 @@ object UniqueBridge {
             "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)
             "clearData" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = true)
             "instanceStorage" -> instanceStorage((a["vuid"] as Number).toInt())
+            "instancePermissions" ->
+                InstancePermissions.rows(context, (a["vuid"] as Number).toInt())
+                    .map { it.toMap() }
+            "setInstancePermission" -> setInstancePermission(context, a)
 
             else -> throw UnsupportedOperationException("Unknown bridge method: $method")
         }
@@ -352,6 +359,20 @@ object UniqueBridge {
             "externalBytes" to usage.externalBytes,
             "dataDir" to UniqueEngine.storage.model.dataDir(vuid, instance.packageName),
         )
+    }
+
+    private suspend fun setInstancePermission(
+        context: Context,
+        a: Map<String, Any?>,
+    ): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val group = runCatching { PermissionGroup.valueOf(a["group"] as String) }.getOrNull()
+            ?: return mapOf("ok" to false, "message" to "Unknown permission group.")
+        val granted = a["granted"] as? Boolean ?: false
+        val state = if (granted) PermissionState.GRANTED else PermissionState.DENIED
+        val ok = InstancePermissions.set(context, vuid, group, state)
+        return if (ok) mapOf("ok" to true)
+        else mapOf("ok" to false, "message" to "This app does not ask for ${group.label}.")
     }
 
     private fun CreateResult.toMap(): Map<String, Any?> = when (this) {

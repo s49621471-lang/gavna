@@ -112,20 +112,7 @@ object VirtualActivityTaskManagerHook {
     internal fun routeActivity(hostPackage: String, intent: Intent): Intent {
         val ready = AppBootstrap.current ?: return intent
         val component = intent.component
-        if (component == null) {
-            // An implicit start. Resolving it against the guest's own intent filters is
-            // real work (§6.5) and starting the wrong activity would be far worse than a
-            // start that visibly does nothing, so it goes to the platform untouched and
-            // is reported.
-            Diagnostics.event(
-                DiagChannel.LAUNCH, DiagLevel.DEBUG, "ACTIVITY_INTENT_IMPLICIT",
-                mapOf(
-                    "action" to (intent.action ?: "-"),
-                    "package" to ready.params.packageName,
-                ),
-            )
-            return intent
-        }
+        if (component == null) return routeImplicit(hostPackage, intent, ready)
         if (component.packageName != ready.params.packageName) return intent
 
         val entry = resolveTarget(ready, component.className) ?: run {
@@ -136,19 +123,7 @@ object VirtualActivityTaskManagerHook {
             return intent
         }
 
-        val stubParams = ready.params.copy(
-            targetComponent = entry.className,
-            kind = VirtualComponentKind.ACTIVITY,
-        )
-        val stubIntent = Intent(intent).apply {
-            setPackage(null)
-            stubParams.writeTo(this)
-            VirtualLaunchIntent.stampIdentity(this, guest = intent, params = stubParams)
-        }
-        stubIntent.component = android.content.ComponentName(
-            hostPackage,
-            StubRouter.stubActivity(ready.params.slot, entry.launchMode.coerceIn(0, 3), 0),
-        )
+        val stubIntent = routeExplicit(hostPackage, intent, ready, entry)
         Diagnostics.event(
             DiagChannel.LAUNCH, DiagLevel.DEBUG, "ACTIVITY_INTENT_ROUTED",
             mapOf(
@@ -158,6 +133,88 @@ object VirtualActivityTaskManagerHook {
             ),
         )
         return stubIntent
+    }
+
+    /** Builds the stub intent for a guest activity that has already been chosen. */
+    private fun routeExplicit(
+        hostPackage: String,
+        intent: Intent,
+        ready: AppBootstrap.Result.Ready,
+        entry: ComponentEntry,
+    ): Intent {
+        val stubParams = ready.params.copy(
+            targetComponent = entry.className,
+            kind = VirtualComponentKind.ACTIVITY,
+        )
+        return Intent(intent).apply {
+            setPackage(null)
+            stubParams.writeTo(this)
+            VirtualLaunchIntent.stampIdentity(this, guest = intent, params = stubParams)
+            component = android.content.ComponentName(
+                hostPackage,
+                StubRouter.stubActivity(ready.params.slot, entry.launchMode.coerceIn(0, 3), 0),
+            )
+        }
+    }
+
+    /**
+     * Resolves an implicit start against the guest's own filters, or lets it go.
+     *
+     * See [VirtualIntentResolver] for which side wins and why. Every outcome is recorded
+     * with the rule that produced it, because "it opened the wrong thing" is a question
+     * that needs an answer and not a shrug.
+     */
+    private fun routeImplicit(
+        hostPackage: String,
+        intent: Intent,
+        ready: AppBootstrap.Result.Ready,
+    ): Intent {
+        val guestPackage = ready.params.packageName
+        val matches = VirtualIntentResolver.matchingActivities(ready.manifest, intent)
+        if (matches.isEmpty()) {
+            Diagnostics.event(
+                DiagChannel.LAUNCH, DiagLevel.DEBUG, "ACTIVITY_IMPLICIT_NO_GUEST_MATCH",
+                mapOf("action" to (intent.action ?: "-"), "package" to guestPackage),
+            )
+            return intent
+        }
+
+        val scopedToGuest = intent.`package` == guestPackage ||
+            intent.selector?.`package` == guestPackage
+        if (!scopedToGuest) {
+            val context = AppBootstrap.hostContext
+            if (context != null &&
+                VirtualIntentResolver.hostCanHandle(context, intent, hostPackage)
+            ) {
+                // An https VIEW belongs in a browser and a SEND belongs in the chooser.
+                // Pulling either into the guest would break behaviour that works today.
+                Diagnostics.info(
+                    DiagChannel.LAUNCH, "ACTIVITY_IMPLICIT_HOST_PREFERRED",
+                    mapOf(
+                        "action" to (intent.action ?: "-"),
+                        "package" to guestPackage,
+                        "guestMatches" to matches.size.toString(),
+                        "guestBest" to matches.first().entry.className,
+                    ),
+                )
+                return intent
+            }
+        }
+
+        val best = matches.first()
+        val routed = routeExplicit(hostPackage, intent, ready, best.entry)
+        Diagnostics.info(
+            DiagChannel.LAUNCH, "ACTIVITY_IMPLICIT_ROUTED",
+            mapOf(
+                "action" to (intent.action ?: "-"),
+                "data" to (intent.data?.scheme ?: "-"),
+                "activity" to best.entry.className,
+                "package" to guestPackage,
+                "reason" to if (scopedToGuest) "scoped" else "onlyHandler",
+                "candidates" to matches.size.toString(),
+            ),
+        )
+        return routed
     }
 
     /** An activity or the alias's target activity, as the platform resolves it. */

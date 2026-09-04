@@ -448,6 +448,32 @@ object VirtualActivityManagerHook {
         return authority
     }
 
+    // A note on provider *stability*, because the obvious change here is wrong twice over.
+    //
+    // ActivityManager kills a client whose stable provider's process dies:
+    //
+    //   Killing …:com.unique:vapp0 (adj 0): depends on provider
+    //       com.unique/.stub.ProviderStub_p2 in dying proc com.unique:vapp2
+    //
+    // which looks like a violation of §3 until you notice what the two processes are: one
+    // instance's main process and the same instance's `:alt`. An *installed* app with a
+    // provider in `android:process=":alt"` gets exactly this from the platform. It is the
+    // contract the guest asked for, not something UNIQUE introduced, and reproducing it is
+    // right.
+    //
+    // Forcing the acquisition unstable to avoid it was tried and is worse than the problem.
+    // `stable` is not only a message to ActivityManager: `ActivityThread` keeps its own
+    // stable/unstable reference counts on the client side and hands them back on release.
+    // Rewriting the flag in flight leaves the two ledgers disagreeing, ActivityManager
+    // drops a connection the client still believes it holds, and the next query returns no
+    // cursor at all — `t27` and `t32` both went red on it.
+    //
+    // What §3 actually promises is that one *instance* cannot kill another, or UNIQUE.
+    // Nothing a guest writes can name another instance's authority, and UNIQUE's own
+    // process reaches guest providers through `acquireUnstableContentProviderClient`
+    // (see VirtualProviderBridge.open), so both hold without touching this flag. `t32`
+    // asserts them.
+
     /**
      * Authorities remembered as "not a guest's", so the router is asked at most once.
      *

@@ -9,7 +9,7 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="35"
+    android:versionCode="36"
     android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
@@ -46,6 +46,25 @@
             android:name="com.unique.probe.ProbeSecondActivity"
             android:exported="false"
             android:launchMode="standard" />
+
+        <!-- Reachable only by matching an intent against these filters. A custom action
+             the device has no other handler for, and the app's own URI scheme - which is
+             the shape a browser uses to hand an OAuth result back. -->
+        <activity
+            android:name="com.unique.probe.ProbeDeepLinkActivity"
+            android:exported="false"
+            android:launchMode="standard">
+            <intent-filter>
+                <action android:name="com.unique.probe.CUSTOM_OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="unique-probe" android:host="open" />
+            </intent-filter>
+        </activity>
 
         <service
             android:name="com.unique.probe.ProbeJobService"

@@ -315,3 +315,33 @@ class GoogleStatus {
         note: _text(m, 'note'),
       );
 }
+
+/// One permission group, for one instance, as the engine actually has it.
+///
+/// `blockedByHost` is the state that matters most and the one a bare switch cannot show:
+/// UNIQUE can only ever narrow what it holds itself, so a group the *host* has not been
+/// granted cannot be turned on here no matter what the user does. A switch that appears
+/// on and does nothing is worse than one that explains itself.
+class InstancePermission {
+  const InstancePermission({
+    required this.group,
+    required this.label,
+    required this.granted,
+    required this.state,
+    required this.blockedByHost,
+  });
+
+  final String group;
+  final String label;
+  final bool granted;
+  final String state;
+  final bool blockedByHost;
+
+  static InstancePermission fromMap(Map<Object?, Object?> m) => InstancePermission(
+        group: (m['group'] as String?) ?? '',
+        label: (m['label'] as String?) ?? '',
+        granted: (m['granted'] as bool?) ?? false,
+        state: (m['state'] as String?) ?? 'ASK',
+        blockedByHost: (m['blockedByHost'] as bool?) ?? false,
+      );
+}

@@ -21,6 +21,7 @@ import com.unique.core.vam.VirtualComponentKind
 import com.unique.core.vam.VirtualDiagnostics
 import com.unique.core.vam.VirtualJobDispatcher
 import com.unique.core.vam.VirtualLaunchParams
+import com.unique.core.vam.VirtualPermissionSync
 import com.unique.core.vam.VirtualProviderBridge
 import com.unique.core.vam.VirtualProviderHost
 
@@ -114,6 +115,16 @@ abstract class StubServiceBase(private val slot: Int) : Service() {
             return START_NOT_STICKY
         }
 
+        // A process being warmed for a provider acquisition. Same reason as above — the
+        // stub exists so the process does — but here nothing is delivered: the graft *is*
+        // the work, and it has to happen outside ActivityManager's ten-second budget for
+        // publishing a cold-started process's providers.
+        if (params != null && params.kind == VirtualComponentKind.PROVIDER) {
+            VirtualProviderHost.warm(this, params)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         Diagnostics.error(
             DiagChannel.PROCESS, "STUB_SERVICE_START_NOT_ROUTED",
             mapOf(
@@ -192,6 +203,9 @@ abstract class StubProviderBase(private val slot: Int) : ContentProvider() {
         // slot that failed to bind are exactly the ones worth reading.
         if (method == VirtualDiagnostics.METHOD_SNAPSHOT) {
             return VirtualDiagnostics.snapshotBundle(":vapp$slot")
+        }
+        if (method == VirtualPermissionSync.METHOD_SET_PERMISSION) {
+            return VirtualPermissionSync.apply(extras)
         }
         return VirtualProviderHost.route(arg?.let { Uri.parse(it).authority }, "call")
             ?.call(method, arg, extras)
