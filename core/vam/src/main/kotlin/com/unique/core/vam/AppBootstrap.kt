@@ -318,10 +318,14 @@ object AppBootstrap {
             ).filter { it.isNotBlank() }.flatMap(::pathAliases).distinct()
             UniqueNative.setRedirectScope(scope)
             val status = UniqueNative.installIoRedirect()
+            // And keep it current: a library the guest loads later has its own GOT and is
+            // not covered by the scan above.
+            val watch = UniqueNative.watchLibraryLoads()
             Diagnostics.info(
                 DiagChannel.NATIVE, "IO_REDIRECT_INSTALLED",
                 mapOf(
                     "status" to status.name,
+                    "watch" to watch.name,
                     "rules" to rules.size.toString(),
                     "slots" to UniqueNative.redirectSlotsPatched().toString(),
                     "scope" to scope.joinToString(",").take(200),

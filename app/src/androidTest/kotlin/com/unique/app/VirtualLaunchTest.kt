@@ -923,6 +923,13 @@ class VirtualLaunchTest {
         assertThat(observed["libcRawPath"]).isEqualTo("/data/data/$probePackage/files/probe-libc-raw.txt")
         assertThat(observed["libcRawWrite"]).startsWith("ok:")
         assertThat(observed["libcRawLandedInInstance"]).isEqualTo("true")
+
+        // And from a library loaded *after* the interception was installed. The initial
+        // scan walks what is loaded at that moment, so a late arrival has its own
+        // untouched GOT — this is the case that used to be recorded as broken.
+        assertThat(observed["lateLoaded"]).isEqualTo("true")
+        assertThat(observed["lateWrite"]).startsWith("ok:")
+        assertThat(observed["lateLandedInInstance"]).isEqualTo("true")
     }
 
     // -----------------------------------------------------------------------------

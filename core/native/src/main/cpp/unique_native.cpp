@@ -126,6 +126,11 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeRedirectSlotsPatched(JNIEnv
 }
 
 UNIQUE_EXPORT JNIEXPORT jint JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeWatchLibraryLoads(JNIEnv*, jclass) {
+    return static_cast<jint>(unique::io_redirect::watch_library_loads());
+}
+
+UNIQUE_EXPORT JNIEXPORT jint JNICALL
 Java_com_unique_core_nativebridge_UniqueNative_nativeInstallIoRedirect(JNIEnv*, jclass) {
     return static_cast<jint>(unique::io_redirect::install());
 }

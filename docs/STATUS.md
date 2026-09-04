@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-141145-15710`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-143510-18967`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -207,9 +207,11 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 1. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
    filters), URI permissions and `FileProvider` sharing.
-2. A library the guest loads *after* bootstrap is not hooked until the next install.
-3. Give `onServiceConnected` the guest's own `ComponentName`.
-4. ARM64 itself, which only the physical device can answer.
+2. Split APK and update support: ABI/density/language splits, and preserving instance
+   data across an update.
+3. Waking a dead guest on a broadcast, and cross-process providers — both need `:server`.
+4. Give `onServiceConnected` the guest's own `ComponentName`.
+5. ARM64 itself, which only the physical device can answer.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

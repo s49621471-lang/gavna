@@ -309,7 +309,7 @@ INSTRUMENTATION_STATUS: test=t22_twoInstancesHaveDifferentDeviceIdentities
 INSTRUMENTATION_STATUS_CODE: 0
 INSTRUMENTATION_RESULT: stream=
 
-Time: 595.134
+Time: 581.149
 
 OK (22 tests)
 

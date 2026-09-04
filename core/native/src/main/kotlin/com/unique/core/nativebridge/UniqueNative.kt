@@ -95,6 +95,15 @@ object UniqueNative {
     /** GOT entries patched by the last [installIoRedirect]. Zero means nothing was hooked. */
     fun redirectSlotsPatched(): Int = if (loaded) nativeRedirectSlotsPatched() else 0
 
+    /**
+     * Keeps the interception current as the guest loads more libraries.
+     *
+     * The initial hook walks what is loaded at that moment, so a library loaded later has
+     * an untouched GOT. This notices the load and re-scans.
+     */
+    fun watchLibraryLoads(): InstallStatus =
+        if (loaded) InstallStatus.of(nativeWatchLibraryLoads()) else InstallStatus.FAILED
+
     fun installIoRedirect(): InstallStatus =
         if (loaded) InstallStatus.of(nativeInstallIoRedirect()) else InstallStatus.FAILED
 
@@ -112,6 +121,7 @@ object UniqueNative {
     @JvmStatic private external fun nativeRedirect(path: String): String?
     @JvmStatic private external fun nativeSetRedirectScope(paths: Array<String>)
     @JvmStatic private external fun nativeRedirectSlotsPatched(): Int
+    @JvmStatic private external fun nativeWatchLibraryLoads(): Int
     @JvmStatic private external fun nativeInstallIoRedirect(): Int
     @JvmStatic private external fun nativeSetProperty(key: String, value: String)
     @JvmStatic private external fun nativeClearProperties()

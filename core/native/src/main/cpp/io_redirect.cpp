@@ -1,6 +1,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <mutex>
 #include <string>
@@ -65,6 +66,11 @@ bool installed() { return g_installed; }
 // without crossing a PLT, and that is correct: the path was already rewritten on the way
 // in, and rewriting it twice would be wrong.
 // ---------------------------------------------------------------------------------
+
+// Declared at namespace scope, deliberately: inside the anonymous namespace below this
+// would declare a *different* symbol from the definition further down, and the call from
+// the trampolines becomes ambiguous rather than resolving to the real one.
+InstallStatus install_locked();
 
 namespace {
 
@@ -199,6 +205,48 @@ int h_statfs(const char* path, struct statfs* out) {
 
 std::vector<std::string> g_filters;
 int g_slots_patched = 0;
+bool g_watching = false;
+
+// The loader entry points, captured when the watch is installed.
+void* (*o_android_dlopen_ext)(const char*, int, const void*, const void*) = nullptr;
+void* (*o_dlopen)(const char*, int) = nullptr;
+
+/// True while this thread is already re-scanning, so a load triggered from inside the
+/// scan cannot recurse into it.
+thread_local bool t_rescanning = false;
+
+/// Re-hooks after a library has finished loading.
+///
+/// Called *after* the original returns, which matters: at that point the dynamic linker
+/// has released its own lock, and `dl_iterate_phdr` — which install() uses and which
+/// takes the same lock — can run without deadlocking. Doing this from inside the linker
+/// would hang the process on a non-recursive mutex.
+void rescan_after_load(const char* what) {
+    if (t_rescanning) return;
+    t_rescanning = true;
+    const int before = g_slots_patched;
+    install_locked();
+    if (g_slots_patched != before) {
+        ULOGI("io_redirect: rehooked after loading %s (%d -> %d slots)",
+              what == nullptr ? "?" : what, before, g_slots_patched);
+    }
+    t_rescanning = false;
+}
+
+void* h_android_dlopen_ext(const char* path, int flags, const void* extinfo,
+                           const void* caller) {
+    void* handle = o_android_dlopen_ext != nullptr
+            ? o_android_dlopen_ext(path, flags, extinfo, caller)
+            : nullptr;
+    if (handle != nullptr) rescan_after_load(path);
+    return handle;
+}
+
+void* h_dlopen(const char* path, int flags) {
+    void* handle = o_dlopen != nullptr ? o_dlopen(path, flags) : ::dlopen(path, flags);
+    if (handle != nullptr) rescan_after_load(path);
+    return handle;
+}
 
 }  // namespace
 
@@ -217,7 +265,9 @@ int slots_patched() { return g_slots_patched; }
 ///
 /// Idempotent, and meant to be repeated: a library the guest loads later has its own GOT
 /// and is not covered by an earlier pass. Callers re-run this after System.loadLibrary.
-InstallStatus install() {
+/// The scan itself. Split out so the loader trampolines can re-run it without recursing
+/// through the public entry point's scope checks.
+InstallStatus install_locked() {
     plt::HookRequest requests[] = {
         {"open",     reinterpret_cast<void*>(h_open),     reinterpret_cast<void**>(&o_open)},
         {"openat",   reinterpret_cast<void*>(h_openat),   reinterpret_cast<void**>(&o_openat)},
@@ -272,5 +322,54 @@ InstallStatus install() {
     g_installed = report.slots_patched > 0;
     return report.slots_patched > 0 ? InstallStatus::kOk : InstallStatus::kNotImplemented;
 }
+
+InstallStatus install() { return install_locked(); }
+
+/**
+ * Notices libraries loaded *after* the initial scan.
+ *
+ * The initial hook walks what is loaded at that moment, so a library the guest loads
+ * later - `System.loadLibrary` from an Activity, or one native library `dlopen`ing
+ * another - has its own untouched GOT and none of its file operations are redirected.
+ * That was recorded as broken rather than papered over; this closes it.
+ *
+ * `System.loadLibrary` reaches the linker through `libnativeloader`, so the notification
+ * point is that library's call to `android_dlopen_ext` - one symbol, in one system
+ * library, and the trampoline only calls the original and then re-scans. It rewrites
+ * nothing and redirects nothing, which is what makes hooking outside the guest's own code
+ * acceptable here when redirecting IO there would not be.
+ *
+ * The guest's own libraries are hooked too, so a native plugin loader is covered as well.
+ */
+InstallStatus watch_library_loads() {
+    if (g_watching) return InstallStatus::kOk;
+
+    plt::HookRequest requests[] = {
+        {"android_dlopen_ext", reinterpret_cast<void*>(h_android_dlopen_ext),
+         reinterpret_cast<void**>(&o_android_dlopen_ext)},
+        {"dlopen", reinterpret_cast<void*>(h_dlopen), reinterpret_cast<void**>(&o_dlopen)},
+    };
+
+    // Narrow and explicit: the loader plumbing, plus the guest's own code.
+    std::vector<std::string> scope;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        scope = g_filters;
+    }
+    scope.emplace_back("libnativeloader.so");
+    scope.emplace_back("libart.so");
+
+    auto report = plt::hook_all(scope, requests, sizeof(requests) / sizeof(requests[0]));
+    g_watching = report.slots_patched > 0;
+    ULOGI("io_redirect: library-load watch %s (%d slot(s) in %d libraries)",
+          g_watching ? "installed" : "found nothing to hook",
+          report.slots_patched, report.libraries_matched);
+    for (const auto& name : report.sample) {
+        ULOGW("io_redirect: watch saw but did not match: %s", name.c_str());
+    }
+    return g_watching ? InstallStatus::kOk : InstallStatus::kNotImplemented;
+}
+
+bool watching() { return g_watching; }
 
 }  // namespace unique::io_redirect

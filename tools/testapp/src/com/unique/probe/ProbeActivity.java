@@ -499,6 +499,17 @@ public class ProbeActivity extends Activity {
             out.put("libcRawPath", canonical);
             out.put("libcRawLandedInInstance",
                     String.valueOf(new java.io.File(getFilesDir(), "probe-libc-raw.txt").isFile()));
+
+            // A second library, loaded here rather than in a static initializer - so it
+            // arrives after UNIQUE installed its interception, which is the case the
+            // initial scan cannot cover.
+            ProbeLateNative.load();
+            String lateCanonical =
+                    "/data/data/" + getPackageName() + "/files/probe-libc-late.txt";
+            out.put("lateLoaded", "true");
+            out.put("lateWrite", ProbeLateNative.writeThroughLibc(lateCanonical));
+            out.put("lateLandedInInstance",
+                    String.valueOf(new java.io.File(getFilesDir(), "probe-libc-late.txt").isFile()));
         } catch (Throwable t) {
             out.put("loaded", "false");
             out.put("error", t.toString());

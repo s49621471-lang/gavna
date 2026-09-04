@@ -39,6 +39,9 @@ InstallStatus install();
 bool installed();
 // GOT entries actually patched by the last install().
 int slots_patched();
+// Re-hooks automatically when a library is loaded after install(). Idempotent.
+InstallStatus watch_library_loads();
+bool watching();
 }  // namespace io_redirect
 
 namespace prop_virtual {
