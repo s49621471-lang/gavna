@@ -9,8 +9,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="7"
-    android:versionName="1.0.7">
+    android:versionCode="8"
+    android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
@@ -28,5 +28,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Phase 3 targets. The Activity does not touch them, so the phase 2
+             acceptance path is unaffected until the tests exercise them. -->
+        <service
+            android:name="com.unique.probe.ProbeService"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.unique.probe.ProbeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.unique.probe.PING" />
+            </intent-filter>
+        </receiver>
+
+        <provider
+            android:name="com.unique.probe.ProbeProvider"
+            android:authorities="com.unique.probe.provider"
+            android:exported="false" />
+
     </application>
 </manifest>
