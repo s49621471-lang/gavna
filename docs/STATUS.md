@@ -3,11 +3,12 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0 and 1 complete. Phase 2: a virtual application launches, runs and persists.**
+**Phases 0, 1 and 2 complete. Phase 3: all four component types run.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
-launched into a `:vappN` process where it believes it is itself. Evidence is checked in
-under `docs/evidence/`.
+launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
+manifest BroadcastReceiver and ContentProvider all run as the guest, in the guest's
+storage, in the guest's process. Evidence is checked in under `docs/evidence/`.
 
 ## What each environment can prove
 
@@ -62,7 +63,8 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-071253-7364`, Android 14 x86_64, probe **not installed on the device**:
+Run `20260904-081621-24341`, Android 14 x86_64, probe **not installed on the device**.
+Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
 |---|---|
@@ -70,6 +72,27 @@ Run `20260904-071253-7364`, Android 14 x86_64, probe **not installed on the devi
 | `t02` launch, and the app sees its own identity | **PASS** |
 | `t03` the app writes nothing into UNIQUE's own directories | **PASS** |
 | `t04` data survives a full process kill and relaunch | **PASS** |
+| `t05` a second instance is fully independent | **PASS** |
+| `t06` a crashing instance kills neither UNIQUE nor its sibling | **PASS** |
+| `t07` the guest's own Service runs, started *and* bound | **PASS** |
+| `t08` the guest's manifest BroadcastReceiver gets broadcasts | **PASS** |
+| `t09` the guest's ContentProvider answers its own authority | **PASS** |
+
+What the guest's non-Activity components reported
+(`docs/evidence/phase3-components-engine.log`):
+
+```
+Service.onCreate       package=com.unique.probe process=13624
+Service.onStartCommand startId=1 count=1
+Service.onBind         count=1 component=com.unique.probe/.ProbeService
+onServiceConnected     com.unique/.stub.ServiceStub_p0_s0
+Receiver.onReceive     action=com.unique.probe.PING package=com.unique.probe
+Provider.onCreate      package=com.unique.probe
+rowCount               = 3
+provider.packageName   = com.unique.probe
+provider.filesDir      = …/virtual/users/0/data/com.unique.probe/files
+provider.pid           = 13624   (the same process as the Activity)
+```
 
 What the guest itself reported (`docs/evidence/phase2-first-launch-engine.log`):
 
@@ -99,10 +122,6 @@ Three things are worth reading carefully:
 - **`uid` is UNIQUE's.** This is correct and permanent: UNIQUE is not a privilege
   boundary. The guest's *package identity* is virtual; its *Linux identity* is the host's.
 
-### Still to run
-
-`t05` (a second instance is fully independent) and `t06` (a crashing instance kills
-neither UNIQUE nor its sibling) are written and have not yet been executed.
 
 ## Previously blocking, now fixed
 
@@ -116,6 +135,11 @@ visible to unit tests:
 | `SecurityException: Writable dex file … is not allowed` (W^X on the APK) | fixed |
 | `SecurityException: Given calling package … does not match caller's uid` | fixed (outbound identity rewrite) |
 | `SecurityException: Package … does not belong to <uid>` — the `AttributionSource` on provider calls | fixed |
+| `t06` passed vacuously: `/proc` is `hidepid=invisible`, so the pid check saw nothing | fixed (`ActivityManager.getRunningAppProcesses`) |
+| `t06`: the crash extra never arrived — the task was recreated from its *stored* intent | fixed (`FLAG_ACTIVITY_CLEAR_TASK`) |
+| Every bind reached AMS unrewritten: `ContextImpl` calls `bindServiceInstance` from Android 12 on, and the shim was registered for `bindService`, which still exists and so bound cleanly | fixed (structural service matcher; the bind report now names the concrete methods) |
+| `stageProbeApk` declared no inputs, so the suite ran an old probe against a new engine while reporting green | fixed (probe sources are inputs; the APK is rebuilt, not reused) |
+| `verify-device.sh` piped `adb install` into `tail`, discarding its exit status — a failed install ran the suite against whatever was installed before | fixed |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step
@@ -125,7 +149,10 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 | Surface | Phase | What it does instead |
 |---|---|---|
-| Services, receivers, providers | 3 | Stubs log `*_NOT_IMPLEMENTED` and decline |
+| Waking a *dead* virtual process on a broadcast | 3 | A manifest receiver is a dynamic registration inside the live process; a dead guest receives nothing. `VirtualReceiverRegistry.registeredActions` reports what is live |
+| Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
+| Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
+| `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
 | Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | libc IO redirection | 4 | `InstallStatus.NOT_IMPLEMENTED`; the table is complete and tested, the ~30 hooks are not |
@@ -146,12 +173,12 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Re-run the acceptance suite with the W^X fix; get `t02` green — a virtual activity
-   rendering is the gate for everything after it.
-2. Run `t03`–`t06`: storage isolation, restart persistence, two independent instances,
-   crash isolation with a surviving sibling.
-3. Phase 3: services, receivers, providers, then permissions.
-4. Phase 4: ARM64 native, which needs the physical device to mean anything.
+1. Remaining Phase 3: the task/back stack, foreground services and their Android 14 type
+   intersection, `PendingIntent`, URI permissions, runtime permissions and AppOps,
+   `JobScheduler`, `AlarmManager`, the clipboard, the notification bridge.
+2. Give `onServiceConnected` the guest's own `ComponentName`.
+3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
+   anything.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

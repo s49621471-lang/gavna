@@ -37,11 +37,15 @@ never tried" is the difference between a fact and a guess.
 | Activity launch | `SUPPORTED` | `NOT_TESTED` | Guest's real Activity class, correct `componentName` |
 | Instance data isolation | `SUPPORTED` | `NOT_TESTED` | Every accessor resolves under `users/<vuid>/`; nothing leaks into UNIQUE's own dirs |
 | Persistence across restart | `SUPPORTED` | `NOT_TESTED` | SharedPreferences, file and SQLite all continued after a process kill |
-| Multiple instances | `NOT_TESTED` | `NOT_TESTED` | `t05` written, not yet run |
-| Crash isolation | `NOT_TESTED` | `NOT_TESTED` | `t06` written, not yet run |
-| Services | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
-| Broadcast receivers | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
-| Content providers | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 3) |
+| Multiple instances | `SUPPORTED` | `NOT_TESTED` | Two instances of the same APK, independent data, both alive at once (`t05`) |
+| Crash isolation | `SUPPORTED` | `NOT_TESTED` | A deliberate uncaught exception in one instance kills neither UNIQUE nor the sibling (`t06`) |
+| Services — started | `SUPPORTED` | `NOT_TESTED` | `onCreate` + `onStartCommand` in the guest's own process and storage (`t07`) |
+| Services — bound | `PARTIAL` | `NOT_TESTED` | `onBind` runs and the client connects with the guest's own binder; `onServiceConnected` receives the **stub's** `ComponentName`, which is the name AMS holds (`t07`) |
+| Services — foreground | `NOT_TESTED` | `NOT_TESTED` | Android 14 type intersection designed (§6.2), not implemented |
+| Broadcast receivers — manifest, guest running | `PARTIAL` | `NOT_TESTED` | Delivered to the guest's own receiver class (`t08`). Limited to a *live* process, and — under `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` — to senders that scope the intent when the receiver is not exported |
+| Broadcast receivers — waking a dead guest | `BROKEN` | `NOT_TESTED` | A dynamic registration dies with the process. Needs `:server` to hold the registration |
+| Content providers — same virtual process | `SUPPORTED` | `NOT_TESTED` | Acquired through `ContentResolver`, answered by UNIQUE; `onCreate` before any other component; correct package, storage and pid (`t09`) |
+| Content providers — cross-process | `BROKEN` | `NOT_TESTED` | Resolves to nothing outside the owning virtual process. Needs the `:server` authority table |
 | Runtime permissions | `NOT_TESTED` | `NOT_TESTED` | Store exists, not wired to the guest |
 | Native ARM64 / JNI | `NOT_TESTED` | `NOT_TESTED` | Not implemented (phase 4); the emulator is x86_64 and could not prove it anyway |
 | Native IO redirection | `NOT_TESTED` | `NOT_TESTED` | Table implemented and unit-tested; libc interception not implemented |
@@ -53,10 +57,9 @@ never tried" is the difference between a fact and a guess.
 
 | Application | Kind | EMU34 | ARM64 | Notes |
 |---|---|---|---|---|
-| `com.unique.probe` | Plain Java, one Activity, SharedPreferences + file + SQLite | `SUPPORTED` | `NOT_TESTED` | `tools/testapp`. Rendering not asserted — the suite reads the app's observations, it does not look at the screen |
+| `com.unique.probe` | Plain Java. Activity, Service, manifest Receiver, Provider, SharedPreferences + file + SQLite | `SUPPORTED` | `NOT_TESTED` | `tools/testapp`. Rendering not asserted — the suite reads the app's observations, it does not look at the screen |
 | Multi-activity sample | Task/back-stack | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
 | Foreground-service sample | FGS types | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
-| Receiver sample | Manifest + context receivers | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
 | Provider sample | Cross-process provider | `NOT_TESTED` | `NOT_TESTED` | Phase 3 |
 | Notification sample | Channels, tap routing | `NOT_TESTED` | `NOT_TESTED` | Phase 10 |
 | WebView sample | WebView, deep-link return | `NOT_TESTED` | `NOT_TESTED` | Phase 6 |

@@ -361,18 +361,66 @@ exists at all.
 
 ### 6.2 Services
 
-Planned on the same mechanism the activity path now uses, because that mechanism is
-verified: services do **not** arrive as `ClientTransaction`s. `ActivityThread.H` still
-delivers them as plain messages — `CREATE_SERVICE`, `BIND_SERVICE`, `SERVICE_ARGS`,
-`UNBIND_SERVICE`, `STOP_SERVICE` — whose `msg.obj` carries a `CreateServiceData` /
-`BindServiceData` holding a `ServiceInfo` and an `Intent`. The same
-`Handler.Callback` already installed for activities therefore covers services, and the
-same rule applies: locate the fields by *type*, replace the `ServiceInfo` with the
-virtual one, and let `ActivityThread` instantiate the app's own `Service` class.
+**Implemented; `t07` covers both started and bound.** Services do **not** arrive as
+`ClientTransaction`s. `ActivityThread.H` still delivers them as plain messages —
+`CREATE_SERVICE`, `BIND_SERVICE`, `SERVICE_ARGS`, `UNBIND_SERVICE`, `STOP_SERVICE` —
+whose `msg.obj` carries a `CreateServiceData` / `BindServiceData` holding a `ServiceInfo`
+and an `Intent`. The same `Handler.Callback` already installed for activities therefore
+covers services, and the same rule applies: locate the fields by *type*, replace the
+`ServiceInfo` with the virtual one, and let `ActivityThread` instantiate the app's own
+`Service` class.
 
-`startService`/`bindService` on the outbound side are rewritten by an `IActivityManager`
-shim to target a stub service in the right `:vappN`, carrying the real intent as
-`VirtualLaunchParams` does for activities.
+`CreateServiceData` carries no `Intent` on every release, so which virtual service a
+`CREATE_SERVICE` stands for is resolved from the *stub's identity* through
+`VirtualServiceRouter` — which is why each concurrently-running virtual service needs a
+stub of its own, and why the pool being exhausted is a refusal with a diagnostic rather
+than a silently reused stub.
+
+#### 6.2.1 The service family is matched structurally, not by name
+
+The outbound half looked correct for a long time and was not. `Context.bindService`
+reached `IActivityManager.bindService` through Android 10, `bindIsolatedService` in
+Android 11, and **`bindServiceInstance` from Android 12 on**. A shim registered for
+`bindService` still *binds* on API 34 — the method is on the interface, it is simply never
+called — so the bind report said everything was fine while every bind left the process
+unrewritten and `system_server` answered:
+
+```
+W ActivityManager: Unable to start service Intent { cmp=com.unique.probe/.ProbeService } U=0: not found
+```
+
+`startService` was unaffected, because that name never changed. The result is the worst
+shape a bug can have: half the feature works, and the diagnostics agree with the working
+half.
+
+Two changes follow from it, and both generalise:
+
+1. **Match the family, not the spelling.** One shim now claims every `IActivityManager`
+   method that takes an `Intent` and is about a service. That covers `startService`,
+   all three spellings of bind, `stopService`, `peekService`, and whatever Android 17
+   renames them to. `unbindFinished` is named explicitly, being the only member whose
+   name does not say "service"; methods keyed on a connection or a token rather than an
+   `Intent` — `unbindService`, `stopServiceToken`, `serviceDoneExecuting` — are excluded
+   because they need no rewrite.
+2. **A binding report must name the concrete methods.** `ShimBindResult` now carries the
+   real method names each shim matched, and `SERVICE_HOOKED` / `VAM_HOOK_INSTALLED` print
+   them. "Bound" alone cannot distinguish a live interception from a dead one; the
+   concrete list can, and it is what makes the next rename a one-line diff instead of an
+   investigation.
+
+The same rewrite deliberately covers the two *inbound-originated* members,
+`publishService` and `unbindFinished`. `ActivityThread.handleBindService` hands back to
+`ActivityManagerService` the very `Intent` object it was given, and AMS looks the binding
+up by `Intent.FilterComparison` — so the guest sees its own component in `onBind`, and AMS
+must see the stub's again, or the connection is never completed and `onServiceConnected`
+never fires. Routing them through the same rewrite reproduces the stub intent exactly,
+because `VirtualServiceRouter.outbound` returns the stub already reserved for that service
+and `filterEquals` ignores the extras that differ.
+
+**What the client side still sees.** `onServiceConnected` receives the *stub's*
+`ComponentName`, because that is the component AMS knows about. The binder is the guest's
+own object. Apps overwhelmingly ignore that argument, but this is a real divergence and it
+is recorded in the probe's `probe-connection.properties` rather than asserted away.
 
 **Foreground services on Android 14+** are the sharpest edge:
 `Service.startForeground(id, notification, type)` requires (a) the *type* be declared on
@@ -395,24 +443,57 @@ surfaces as an unexplainable crash inside the guest, so the two are reviewed tog
 
 ### 6.3 Broadcast receivers
 
-- **Manifest receivers**: registered dynamically by `:server` on behalf of the virtual app
-  for the actions in its manifest, then dispatched into the owning `:vappN`. Android 8+
-  implicit-broadcast restrictions apply to the host too, so the set of actions that can be
-  delivered is genuinely reduced; the unsupported subset is enumerated in Diagnostics
-  rather than pretended.
-- **Context receivers**: `registerReceiver` shim injects `RECEIVER_EXPORTED` /
-  `RECEIVER_NOT_EXPORTED` (mandatory since Android 14 when the *host* targets 34+),
-  choosing `NOT_EXPORTED` unless the virtual app explicitly requested exported behaviour.
-- Ordered broadcasts, sticky broadcasts and `BroadcastReceiver.PendingResult` (`goAsync`)
-  are proxied with the real result data.
+**Implemented for a running guest; `t08` covers it.** A manifest receiver cannot work the
+way an activity or a service does: the system will not deliver to a component of a package
+it never installed, and unlike a service there is no long-lived object to stand in for —
+a receiver is instantiated, run and discarded. So UNIQUE registers a *dynamic* receiver of
+its own for each action the guest declares, and on delivery instantiates the guest's
+`BroadcastReceiver` from the guest's class loader and calls `onReceive` with the guest's
+`Context`. A fresh instance per delivery, which is what the platform does.
+
+Three limits, all of them real and none of them hidden:
+
+- **A dynamic registration lives only as long as the process.** A manifest receiver's
+  whole point is often to *wake* a dead process, and that needs `:server` to hold the
+  registration and start the virtual process on delivery.
+  `VirtualReceiverRegistry.registeredActions` reports exactly what is live.
+- **Android 8+ implicit-broadcast restrictions** apply to UNIQUE's registration just as
+  they would to the guest's. Actions that cannot be registered are reported individually.
+- **Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS`** (compat change
+  229362273, on from `targetSdk` 34) matches an implicit intent — one with neither a
+  component nor a package — only against *exported* filters. UNIQUE mirrors the guest's
+  own `android:exported` rather than forcing either answer: forcing `NOT_EXPORTED` is
+  safer in isolation but is not what the app asked for, and forcing `EXPORTED` would let
+  any app on the device poke a receiver its author marked private. The consequence is that
+  a **sender inside UNIQUE must scope its intent** with `setPackage`, and that a system
+  broadcast arriving implicitly does not reach a non-exported guest receiver. Closing that
+  needs the same `:server`-side re-dispatch a dead process needs.
+
+Ordered broadcasts, sticky broadcasts and `BroadcastReceiver.PendingResult` (`goAsync`)
+are not proxied yet.
 
 ### 6.4 Content providers
 
-`ContentResolver.acquireProvider` → `IActivityManager.getContentProvider` shim →
-`VAM` resolves the authority against the *virtual* provider table first. Cross-vapp
-provider access is routed through `:server`, which holds an authority → (vuid, process)
-map and returns a stub-backed `IContentProvider` that transparently forwards
-`query/insert/update/delete/call/openFile`, including `AssetFileDescriptor` passing.
+**Implemented for same-process access; `t09` covers it.**
+`ActivityManagerService` resolves an authority against installed packages, so a query for
+a guest's authority comes back null and the caller sees
+`IllegalArgumentException: Unknown URL`. Since the provider's code lives in the virtual
+process anyway, `VirtualProviderRegistry` instantiates each declared provider from the
+guest's class loader at bootstrap — *before* receivers, matching the platform, which
+creates a process's providers before any other component — runs `attachInfo` (which runs
+the provider's own `onCreate`), keeps the `IContentProvider` binder, and the
+`getContentProvider` shim answers the acquisition itself with a
+`ContentProviderHolder` carrying `noReleaseNeeded`, because UNIQUE owns the provider's
+lifetime and not AMS.
+
+Anything that is *not* a guest authority still goes to the real service and gets the
+host's `AttributionSource` substituted (§6.1.2).
+
+**Cross-process acquisition is not implemented.** A provider is normally a cross-process
+interface, and answering another virtual process's acquisition requires `:server` to hold
+the authority → (vuid, process) map and route the Binder. Until then an authority queried
+from outside its own virtual process resolves to nothing, and that is reported rather than
+faked.
 
 `FileProvider`, `DocumentsProvider` and URI permission grants are handled in §7.4.
 

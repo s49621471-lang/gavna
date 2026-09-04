@@ -402,6 +402,50 @@ class VirtualLaunchTest {
         assertThat(observed["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: the guest's own ContentProvider, acquired through the ContentResolver.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t09_theGuestsOwnProviderAnswersItsAuthority() = runBlocking {
+        val instance = requireInstance()
+        val providerResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-provider.properties")
+        providerResult.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.queryProvider", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        val activity = awaitResult(instance)
+        val observed = awaitFile(providerResult)
+
+        // The resolver went to ActivityManagerService for the authority. Without UNIQUE
+        // answering it, AMS resolves authorities against installed packages and the
+        // caller gets "IllegalArgumentException: Unknown URL".
+        assertThat(observed["error"]).isNull()
+        assertThat(observed["rowCount"]).isEqualTo("3")
+
+        // The provider ran as the guest, in the guest's storage, in the guest's process.
+        assertThat(observed["provider.packageName"]).isEqualTo(probePackage)
+        assertThat(observed["provider.filesDir"])
+            .isEqualTo(model.filesDir(instance.vuid, probePackage))
+        assertThat(observed["provider.pid"]).isEqualTo(activity["pid"])
+        assertThat(observed["callerPid"]).isEqualTo(activity["pid"])
+        assertThat(observed["type"]).isEqualTo("vnd.android.cursor.dir/probe")
+    }
+
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {

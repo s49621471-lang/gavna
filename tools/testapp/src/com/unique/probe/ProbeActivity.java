@@ -68,6 +68,10 @@ public class ProbeActivity extends Activity {
                 }
             }, BIND_AUTO_CREATE);
         }
+        if (request != null && request.getBooleanExtra("probe.queryProvider", false)) {
+            Log.i(TAG, "querying own provider");
+            queryOwnProvider();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -178,6 +182,51 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "wrote " + f.getAbsolutePath());
         } catch (Throwable t) {
             Log.e(TAG, "could not write connection result", t);
+        }
+    }
+
+    /**
+     * Queries the app's own ContentProvider through the ContentResolver.
+     *
+     * Deliberately through the resolver and not by calling the provider class directly:
+     * the resolver goes to ActivityManagerService to acquire the authority, which is the
+     * step that fails for a package the system has never installed.
+     */
+    private void queryOwnProvider() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        Cursor cursor = null;
+        try {
+            android.net.Uri uri = android.net.Uri.parse("content://" + ProbeProvider.AUTHORITY + "/rows");
+            cursor = getContentResolver().query(uri, null, null, null, null);
+            if (cursor == null) {
+                out.put("error", "resolver returned no cursor");
+            } else {
+                out.put("rowCount", String.valueOf(cursor.getCount()));
+                while (cursor.moveToNext()) {
+                    out.put("provider." + cursor.getString(0), cursor.getString(1));
+                }
+                out.put("type", String.valueOf(getContentResolver().getType(uri)));
+            }
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "provider query failed", t);
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        out.put("callerPid", String.valueOf(android.os.Process.myPid()));
+        try {
+            File f = new File(getFilesDir(), "probe-provider.properties");
+            FileOutputStream fos = new FileOutputStream(f, false);
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> e : out.entrySet()) {
+                Log.i(TAG, e.getKey() + "=" + e.getValue());
+                body.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+            }
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+            Log.i(TAG, "wrote " + f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write provider result", t);
         }
     }
 }
