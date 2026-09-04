@@ -1,0 +1,29 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.keystore
+!debug.keystore
+
+# Flutter / Dart
+ui/.dart_tool/
+ui/.flutter-plugins
+ui/.flutter-plugins-dependencies
+ui/.packages
+ui/build/
+ui/.android/
+ui/.ios/
+.pub-cache/
+.pub/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Scratch
+/scratch/
