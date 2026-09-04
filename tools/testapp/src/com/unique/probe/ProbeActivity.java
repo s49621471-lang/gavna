@@ -745,6 +745,19 @@ public class ProbeActivity extends Activity {
                 out.put("present." + pkg, "error:" + t.getClass().getSimpleName());
             }
         }
+        // Device identity. Two instances of one app must not look like one installation
+        // to anything that fingerprints, which is most of the interesting apps.
+        try {
+            out.put("androidId", android.provider.Settings.Secure.getString(
+                    getContentResolver(), android.provider.Settings.Secure.ANDROID_ID));
+        } catch (Throwable t) {
+            out.put("androidIdError", t.toString());
+        }
+        out.put("buildModel", String.valueOf(android.os.Build.MODEL));
+        out.put("buildManufacturer", String.valueOf(android.os.Build.MANUFACTURER));
+        out.put("buildFingerprint", String.valueOf(android.os.Build.FINGERPRINT));
+        out.put("buildSerial", String.valueOf(android.os.Build.SERIAL));
+
         out.put("packageName", getPackageName());
         writeMap("probe-identity.properties", out);
     }

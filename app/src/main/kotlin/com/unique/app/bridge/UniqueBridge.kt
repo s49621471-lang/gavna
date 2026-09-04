@@ -222,9 +222,16 @@ object UniqueBridge {
         "hiddenApiDetail" to HiddenApi.failureDetail,
         "foregroundServiceTypes" to ForegroundServiceTypes.HOST_SUPPORTED,
         // Phase gates. The UI reads these; it does not guess.
-        "virtualLaunchImplemented" to false,
-        "ioRedirectImplemented" to false,
-        "settingsInterceptionImplemented" to false,
+        //
+        // These are capability flags, not live state: "the mechanism exists in this
+        // build". Each is true because there is a device acceptance test that fails if
+        // it stops being - t02 for the launch, t17 for the redirect, t22 for settings -
+        // so a flag can only go stale in the direction of the suite going red first.
+        // They were all false while nothing was implemented, which was right then and
+        // would understate the build now.
+        "virtualLaunchImplemented" to true,
+        "ioRedirectImplemented" to true,
+        "settingsInterceptionImplemented" to true,
     )
 
     private fun listInstalledApps(context: Context, args: Map<String, Any?>?): List<Map<String, Any?>> {

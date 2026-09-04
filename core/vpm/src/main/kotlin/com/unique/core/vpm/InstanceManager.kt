@@ -10,6 +10,7 @@ import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.profile.DeviceProfile
+import com.unique.core.common.profile.DeviceProfileCodec
 import com.unique.core.common.profile.DeviceProfileFactory
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.nativebridge.UniqueNative
@@ -78,6 +79,25 @@ class InstanceManager(
      * meant an x86_64 device picked the wrong ABI split and extracted no native code at
      * all - so the native path could not be exercised anywhere but a phone.
      */
+    /**
+     * Writes the instance's profile where its virtual process can read it.
+     *
+     * Under `runtime/`, not in the app's data directory: a guest that can rewrite its own
+     * device identity has none.
+     */
+    private fun writeProfileFile(vuid: Int, profile: DeviceProfile) {
+        runCatching {
+            val file = File(model.profileFile(vuid))
+            file.parentFile?.mkdirs()
+            file.writeText(DeviceProfileCodec.encode(profile))
+        }.onFailure {
+            Diagnostics.error(
+                DiagChannel.PROCESS, "PROFILE_FILE_WRITE_FAILED",
+                mapOf("vuid" to vuid.toString(), "error" to it.toString()),
+            )
+        }
+    }
+
     private fun deviceSpec(): DeviceSpec = DeviceSpec(
         abis = Build.SUPPORTED_ABIS.orEmpty().mapNotNull { Abi.fromDirName(it) },
         densityDpi = Resources.getSystem().displayMetrics.densityDpi,
@@ -129,6 +149,9 @@ class InstanceManager(
         val existing = dao.instancesOf(packageName).size
         val name = displayName ?: if (existing == 0) "Profile 1" else "Profile ${existing + 1}"
         val profile = profileFactory.create(name)
+        // A copy where the virtual process can read it. The profile lives in the state
+        // database, which a :vappN deliberately has no IPC to on the launch path.
+        writeProfileFile(vuid, profile)
 
         storage.prepareInstance(vuid, packageName)
 

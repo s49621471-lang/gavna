@@ -3,7 +3,7 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0-4 complete. Phase 5 begun: a guest renders with OpenGL.**
+**Phases 0-5 complete. Phases 6 and 7 begun: signatures, and per-instance device identity.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
 launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-134218-10843`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-141145-15710`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -89,6 +89,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t19` the guest sets alarms and uses the clipboard | **PASS** |
 | `t20` the guest renders with OpenGL, and the pixel reads back | **PASS** |
 | `t21` the guest reads its own signature, and the truth about the Google stack | **PASS** |
+| `t22` two instances have different device identities | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
@@ -186,7 +187,6 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Implicit system broadcasts to a non-exported guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters. UNIQUE mirrors the guest's own `android:exported`; closing the gap needs `:server` to re-dispatch |
 | Acquiring a guest's provider from *another* process | 3 | Only callers inside the same virtual process are served; `:server` must own the authority table |
 | `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
-| Settings interception (ANDROID_ID to the guest) | 3 | Shims defined, not installed; `DeviceProfileStatus.settingsInterceptionActive` is false |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
 | Every Google bridge body | 6 | Interfaces and routing exist and are tested; no bridge has an implementation |

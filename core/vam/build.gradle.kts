@@ -17,6 +17,7 @@ dependencies {
     implementation(project(":core:vpm"))
     implementation(project(":core:vstorage"))
     implementation(project(":core:native"))
+    implementation(project(":core:vprofile"))
     implementation(project(":core:vprocess"))
     implementation(project(":core:vpermission"))
     implementation(project(":core:diagnostics"))

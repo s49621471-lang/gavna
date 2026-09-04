@@ -85,10 +85,13 @@ object DeviceProfileProvider {
      * the settings provider's `call` signature gained a `AttributionSource` parameter in
      * Android 12 and changed again since, and this definition is unaffected by that.
      *
-     * Wiring: applied by `:core:vam` when it wraps the acquired settings provider.
-     * TODO(phase-3): that wrapping is not in place yet, so these shims are defined and
-     * unit-testable but not yet installed. Until then a virtual app reads the host's real
-     * ANDROID_ID, and `DeviceProfileStatus.settingsInterceptionActive` reports false.
+     * Wiring: `:core:vam` intercepts this in the `IContentProvider` wrapper it already
+     * installs for `AttributionSource` — see `VirtualSettings.answerSettingsCall`, which
+     * answers the call outright rather than rewriting a result, because the provider
+     * would otherwise be asked for a setting the *host* owns.
+     *
+     * These shims remain as the declarative form of the same rule and are unit-tested
+     * against a synthetic provider; the live path is the wrapper.
      */
     fun settingsProviderShims(): List<MethodShim> = listOf(
         shim("call") {
@@ -116,18 +119,31 @@ data class DeviceProfileStatus(
     val bound: Boolean,
     val profileId: String?,
     val generation: Int?,
-    /** True once `:core:vam` wraps the settings provider. Currently always false. */
+    /** True when a virtual process is answering settings reads from the profile. */
     val settingsInterceptionActive: Boolean,
     /** True once native property virtualization is installed. Currently always false. */
     val nativePropertiesActive: Boolean,
+    /** Settings reads answered from the profile so far, for the diagnostics screen. */
+    val settingsAnswered: Int = 0,
 ) {
     companion object {
-        fun current(): DeviceProfileStatus = DeviceProfileStatus(
+        /**
+         * Reported from the *live* state rather than from a constant.
+         *
+         * This used to hard-code `settingsInterceptionActive = false`, which was honest
+         * while nothing was installed and would have become a lie the moment something
+         * was. A status field that cannot become true is worse than no field at all.
+         */
+        fun current(
+            settingsActive: Boolean = false,
+            settingsAnswered: Int = 0,
+        ): DeviceProfileStatus = DeviceProfileStatus(
             bound = DeviceProfileProvider.isBound,
             profileId = DeviceProfileProvider.current?.profileId,
             generation = DeviceProfileProvider.current?.generation,
-            settingsInterceptionActive = false,
+            settingsInterceptionActive = settingsActive,
             nativePropertiesActive = false,
+            settingsAnswered = settingsAnswered,
         )
     }
 }

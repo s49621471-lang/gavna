@@ -14,6 +14,8 @@ import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.path.VirtualPathModel
+import com.unique.core.common.profile.DeviceProfileCodec
+import com.unique.core.vprofile.DeviceProfileProvider
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.hook.Reflect
@@ -118,6 +120,12 @@ object AppBootstrap {
 
         installLoadedApk(activityThreadClass, activityThread, params.packageName, loadedApk)
         rebindBoundApplication(activityThread, appInfo, loadedApk, params.processName)
+
+        // The instance's own identity, read from runtime/ before any guest code runs.
+        // Without it every instance of every app reports the same ANDROID_ID and the same
+        // Build fields, so anything that fingerprints the device sees two clones as one
+        // installation - and separate identity is the point of a second instance.
+        bindDeviceProfile(hostContext, params)
 
         // Bound before the permission shims are installed and before the guest's
         // Application exists: an app that checks a permission in Application.onCreate -
@@ -325,6 +333,39 @@ object AppBootstrap {
                 mapOf("package" to params.packageName, "error" to it.toString()),
             )
         }
+    }
+
+    /**
+     * Loads this instance's device profile and applies what has to be applied early.
+     *
+     * `Build` fields are `static final` and are read at class initialisation, so they are
+     * written before the guest's classes load. Settings are answered lazily through the
+     * provider wrapper instead, because a guest reads them whenever it likes.
+     *
+     * A missing or unreadable profile is reported and the host's identity stands. That is
+     * the safe direction: an instance with a *half* identity is worse than one with the
+     * device's, because its halves disagree with each other.
+     */
+    private fun bindDeviceProfile(hostContext: Context, params: VirtualLaunchParams) {
+        val model = VirtualPathModel(hostContext.filesDir.absolutePath)
+        val file = File(model.profileFile(params.vuid))
+        val profile = runCatching {
+            if (file.isFile) DeviceProfileCodec.decode(file.readText()) else null
+        }.getOrNull()
+        if (profile == null) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROFILE_UNAVAILABLE",
+                mapOf(
+                    "vuid" to params.vuid.toString(),
+                    "file" to file.path,
+                    "detail" to "the guest will report this device's own identity",
+                ),
+            )
+            return
+        }
+        VirtualSettings.bind(profile)
+        VirtualSettings.applyBuildOverrides(profile)
+        DeviceProfileProvider.bind(profile)
     }
 
     /**

@@ -429,6 +429,16 @@ object VirtualActivityManagerHook {
             val rewritten = args?.map { arg ->
                 if (arg is AttributionSource) hostSource else arg
             }?.toTypedArray()
+            // A settings read is answered from the instance's own device profile. This is
+            // the point where "two clones look like one installation to anything that
+            // fingerprints" is fixed, and it belongs here because Settings.Secure reads
+            // through the provider rather than through a system-service interface.
+            val answered = if (method.name == "call" && rewritten != null) {
+                VirtualSettings.answerSettingsCall(rewritten)
+            } else {
+                null
+            }
+            if (answered != null) return@newProxyInstance answered
             try {
                 method.invoke(provider, *(rewritten ?: emptyArray()))
             } catch (e: java.lang.reflect.InvocationTargetException) {

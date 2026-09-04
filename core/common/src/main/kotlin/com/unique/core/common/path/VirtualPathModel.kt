@@ -98,6 +98,14 @@ class VirtualPathModel(private val hostFilesRoot: String) {
      * to a guest's `JobService` cannot be in memory. Keyed by host job id alone because
      * that is all the system hands back when the job fires.
      */
+    /**
+     * The instance's device profile, in the one form a `:vappN` process can read.
+     *
+     * The profile lives in the state database, which the virtual process deliberately has
+     * no IPC to on the launch path; this is its copy.
+     */
+    fun profileFile(vuid: Int) = "${runtimeDir()}/profiles/$vuid.properties"
+
     fun jobRecord(hostJobId: Int) = "${runtimeDir()}/jobs/$hostJobId.properties"
 
     fun permissionsFile(vuid: Int, packageName: String) =

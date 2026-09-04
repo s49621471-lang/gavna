@@ -979,7 +979,61 @@ class VirtualLaunchTest {
         assertThat(observed["present.com.google.android.gms"]).isEqualTo(gmsOnHost.toString())
         assertThat(observed["present.com.android.vending"])
             .isEqualTo(isInstalledOnHost("com.android.vending").toString())
+
+        // The instance's own ANDROID_ID, not the device's. Two clones that report the
+        // same one look like a single installation to anything that fingerprints, which
+        // is most of the apps worth cloning.
+        assertThat(observed["androidIdError"]).isNull()
+        assertThat(observed["androidId"]).isEqualTo(instance.profile.androidId)
+        assertThat(observed["androidId"]).isNotEqualTo(hostAndroidId())
+
+        // And the serial comes from the profile too.
+        assertThat(observed["buildSerial"]).isEqualTo(instance.profile.serial)
     }
+
+    @Test
+    fun t22_twoInstancesHaveDifferentDeviceIdentities() = runBlocking {
+        val first = requireInstance()
+        val second = secondInstance()
+        assertThat(second.profile.androidId).isNotEqualTo(first.profile.androidId)
+
+        val observed = mutableMapOf<Int, Map<String, String>>()
+        for (target in listOf(first, second)) {
+            val result =
+                File(model.filesDir(target.vuid, probePackage), "probe-identity.properties")
+            result.delete()
+            clearResult(target)
+            val params = VirtualLaunchParams(
+                vuid = target.vuid,
+                packageName = probePackage,
+                versionCode = target.versionCode,
+                targetComponent = "$probePackage.ProbeActivity",
+                processName = probePackage,
+                slot = slotOf(target.vuid),
+            )
+            context.startActivity(
+                VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                    .putExtra("probe.identity", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+            awaitResult(target)
+            observed[target.vuid] = awaitFile(result)
+        }
+
+        // The property the whole profile mechanism exists for: the same app, cloned, is
+        // two devices as far as it can tell.
+        assertThat(observed[first.vuid]!!["androidId"])
+            .isNotEqualTo(observed[second.vuid]!!["androidId"])
+        assertThat(observed[first.vuid]!!["androidId"]).isEqualTo(first.profile.androidId)
+        assertThat(observed[second.vuid]!!["androidId"]).isEqualTo(second.profile.androidId)
+        assertThat(observed[first.vuid]!!["buildSerial"])
+            .isNotEqualTo(observed[second.vuid]!!["buildSerial"])
+    }
+
+    @Suppress("DEPRECATION")
+    private fun hostAndroidId(): String? = android.provider.Settings.Secure.getString(
+        context.contentResolver, android.provider.Settings.Secure.ANDROID_ID,
+    )
 
     private fun hostSignatureSha256(): String {
         @Suppress("DEPRECATION")
