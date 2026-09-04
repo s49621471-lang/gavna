@@ -91,6 +91,15 @@ class VirtualPathModel(private val hostFilesRoot: String) {
      * inside UNIQUE's app-private storage, which is also where anything resembling a
      * security decision has to live.
      */
+    /**
+     * Where a scheduled job's routing record lives.
+     *
+     * A job outlives the process that scheduled it, so the mapping from host job id back
+     * to a guest's `JobService` cannot be in memory. Keyed by host job id alone because
+     * that is all the system hands back when the job fires.
+     */
+    fun jobRecord(hostJobId: Int) = "${runtimeDir()}/jobs/$hostJobId.properties"
+
     fun permissionsFile(vuid: Int, packageName: String) =
         "${runtimeDir()}/permissions/$vuid/$packageName.properties"
 

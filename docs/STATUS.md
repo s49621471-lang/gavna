@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-104904-21384`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-111403-24576`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -85,6 +85,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t15` the guest's notification is posted, and two instances do not collide | **PASS** |
 | `t16` the guest's foreground service starts | **PASS** |
 | `t17` the guest loads and runs its own native library | **PASS** |
+| `t18` the guest's job is scheduled, and the system runs it | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase4-native-engine.log`):
@@ -201,9 +202,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 1. Phase 4: libc IO redirection, so native code that builds its own absolute paths lands
    in the instance's directory rather than UNIQUE's. The table is implemented and tested;
    the ~30 interception points are not.
-2. Remaining Phase 3: implicit activity starts (resolving against the guest's own intent
-   filters), URI permissions and `FileProvider` sharing, `JobScheduler`, `AlarmManager`,
-   the clipboard.
+2. Remaining Phase 3: `AlarmManager`, the clipboard, implicit activity starts (resolving
+   against the guest's own intent filters), URI permissions and `FileProvider` sharing.
 3. Give `onServiceConnected` the guest's own `ComponentName`.
 4. ARM64 itself, which only the physical device can answer.
 

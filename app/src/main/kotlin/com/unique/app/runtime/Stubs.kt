@@ -14,6 +14,7 @@ import android.os.IBinder
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.vam.LaunchInterceptor
+import com.unique.core.vam.VirtualJobDispatcher
 import com.unique.core.vam.VirtualLaunchParams
 
 /**
@@ -104,21 +105,37 @@ abstract class StubServiceBase(private val slot: Int) : Service() {
     }
 }
 
+/**
+ * Stub job service.
+ *
+ * Unlike the activity and service stubs this class *is* on the success path: the system
+ * binds it, and it hands the job to the guest's own `JobService`. A job fires long after
+ * the process that scheduled it has gone, so there is nothing to intercept ahead of time —
+ * the routing record written at schedule time is what says whose job this is.
+ */
 abstract class StubJobServiceBase(private val slot: Int) : JobService() {
 
-    override fun onStartJob(params: JobParameters?): Boolean {
-        Diagnostics.warn(
-            DiagChannel.PROCESS, "STUB_JOB_NOT_IMPLEMENTED",
-            mapOf(
-                "slot" to slot.toString(),
-                "jobId" to (params?.jobId?.toString() ?: "?"),
-                "vuid" to (params?.jobId?.let { com.unique.core.vam.StubRouter.jobOwner(it).toString() } ?: "?"),
-            ),
-        )
-        return false
-    }
+    override fun onStartJob(params: JobParameters?): Boolean =
+        when (val dispatch = VirtualJobDispatcher.start(this, params)) {
+            // The guest ran. `stillRunning` false is the ordinary case - work finished
+            // synchronously - and is not a failure, which is why it is not reported here.
+            is VirtualJobDispatcher.Dispatch.Ran -> dispatch.stillRunning
+            is VirtualJobDispatcher.Dispatch.NotReached -> {
+                Diagnostics.error(
+                    DiagChannel.PROCESS, "STUB_JOB_NOT_ROUTED",
+                    mapOf(
+                        "slot" to slot.toString(),
+                        "hostJobId" to (params?.jobId?.toString() ?: "?"),
+                        "vuid" to (params?.jobId
+                            ?.let { com.unique.core.vam.StubRouter.jobOwner(it).toString() } ?: "?"),
+                        "reason" to dispatch.reason,
+                    ),
+                )
+                false
+            }
+        }
 
-    override fun onStopJob(params: JobParameters?): Boolean = false
+    override fun onStopJob(params: JobParameters?): Boolean = VirtualJobDispatcher.stop(params)
 }
 
 /**

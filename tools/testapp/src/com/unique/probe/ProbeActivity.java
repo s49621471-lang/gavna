@@ -102,6 +102,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "loading own native library");
             exerciseNative();
         }
+        if (request != null && request.getBooleanExtra("probe.job", false)) {
+            Log.i(TAG, "scheduling own job");
+            scheduleJob();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -478,5 +482,40 @@ public class ProbeActivity extends Activity {
             Log.e(TAG, "native library failed", t);
         }
         writeMap("probe-native.properties", out);
+    }
+
+    /**
+     * Schedules a job against the app's own JobService.
+     *
+     * An override deadline rather than a real constraint: the point is to observe the
+     * system starting the app's job, not to test JobScheduler's own policy engine.
+     */
+    private void scheduleJob() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            android.app.job.JobScheduler js =
+                    (android.app.job.JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
+            android.app.job.JobInfo job = new android.app.job.JobInfo.Builder(
+                    31, new ComponentName(this, ProbeJobService.class))
+                    .setMinimumLatency(0)
+                    .setOverrideDeadline(1000)
+                    .build();
+            int result = js.schedule(job);
+            out.put("scheduleResult", String.valueOf(result));
+            out.put("requestedJobId", "31");
+
+            // Read back through the same API an app would use. It must see the id it
+            // chose and its own class, not whatever UNIQUE scheduled underneath.
+            android.app.job.JobInfo pending = js.getPendingJob(31);
+            out.put("pendingFound", String.valueOf(pending != null));
+            if (pending != null) {
+                out.put("pendingJobId", String.valueOf(pending.getId()));
+                out.put("pendingService", pending.getService().flattenToShortString());
+            }
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "job scheduling failed", t);
+        }
+        writeMap("probe-job-schedule.properties", out);
     }
 }

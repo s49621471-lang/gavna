@@ -918,6 +918,64 @@ class VirtualLaunchTest {
             .contains(model.filesDir(instance.vuid, probePackage))
     }
 
+    // -----------------------------------------------------------------------------
+    // Phase 3: JobScheduler. The first path where the *system* starts the guest.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t18_theGuestsJobIsScheduledAndRun() = runBlocking {
+        val instance = requireInstance()
+        val dir = model.filesDir(instance.vuid, probePackage)
+        val scheduled = File(dir, "probe-job-schedule.properties")
+        val ran = File(dir, "probe-job.properties")
+        scheduled.delete()
+        ran.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.job", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+
+        awaitResult(instance)
+        val observed = awaitFile(scheduled)
+
+        // JobInfo.service names a component of a package the system has never installed,
+        // so an unrewritten schedule is rejected with a bare RESULT_FAILURE and nothing in
+        // the log to say why.
+        assertThat(observed["error"]).isNull()
+        assertThat(observed["scheduleResult"]).isEqualTo("1")   // JobScheduler.RESULT_SUCCESS
+
+        // Read back through the same API an app would use: it must see the id it chose
+        // and its own class, not what UNIQUE scheduled underneath.
+        assertThat(observed["pendingFound"]).isEqualTo("true")
+        assertThat(observed["pendingJobId"]).isEqualTo("31")
+        assertThat(observed["pendingService"])
+            .isEqualTo("$probePackage/.ProbeJobService")
+
+        // UNIQUE scheduled it under a namespaced id, so two instances cannot cancel each
+        // other's work.
+        val hostJobId = StubRouter.hostJobId(instance.vuid, 31)
+        assertThat(StubRouter.virtualJobId(hostJobId)).isEqualTo(31)
+
+        // And the system ran it, in the guest's own class, storage and process.
+        val executed = awaitFile(ran, timeoutMillis = 120_000)
+        assertThat(executed["ran"]).isEqualTo("true")
+        assertThat(executed["jobId"]).isEqualTo("31")
+        assertThat(executed["className"]).isEqualTo("$probePackage.ProbeJobService")
+        assertThat(executed["packageName"]).isEqualTo(probePackage)
+        assertThat(executed["filesDir"]).isEqualTo(dir)
+    }
+
     /**
      * Waits for a file whose contents satisfy [until].
      *

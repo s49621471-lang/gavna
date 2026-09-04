@@ -196,6 +196,13 @@ object AppBootstrap {
             )
         }
 
+        runCatching { VirtualJobSchedulerHook.install(ready, hostContext) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "JOB_HOOK_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         // Needs the guest's Context: a notification's icon is a resource in an APK the
         // system has never installed, and only this process can load it.
         runCatching { VirtualNotificationHook.install(ready, hostContext.packageName) }

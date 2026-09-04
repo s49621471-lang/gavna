@@ -543,8 +543,37 @@ START u0 {id=u0/com.unique.probe.ProbeSecondActivity cmp=…ActivityStub_p0_m0_a
 
 ### 6.5 Jobs, alarms, clipboard
 
-- **JobScheduler**: virtual job ids are namespaced (`vuid << 20 | jobId`) onto host stub
-  `JobService`s; constraints and backoff are preserved; over-quota conditions are reported.
+- **JobScheduler** — **implemented; `t18` covers it.** Virtual job ids are namespaced
+  (`vuid << 20 | jobId`) onto host stub `JobService`s. Three things make it different from
+  every other component path:
+
+  - **It is the first path where the *system* starts the guest.** A job fires long after
+    the process that scheduled it has gone, so there is nothing to intercept ahead of
+    time. A routing record — instance, package, class, slot — is written to
+    `runtime/jobs/<hostJobId>.properties` at schedule time and read back by whichever
+    `:vappN` the system starts, which bootstraps from it. A record that is gone is
+    reported (`JOB_RECORD_MISSING`); it never silently does nothing.
+  - **`JobInfo` is copied through a `Parcel`, not rebuilt.** Its fields are final and it
+    has no public copy constructor, and rebuilding one through its `Builder` means
+    enumerating every constraint the platform has ever had — a list that goes stale
+    exactly as fast as the AIDL signatures `MethodShim` exists to avoid pinning. A parcel
+    round-trip copies whatever the release actually carries, including fields UNIQUE has
+    never heard of. The copy is what keeps the *guest's* object untouched: it scheduled
+    id 7 and must keep seeing id 7.
+  - **The guest's service borrows the stub's engine.** `jobFinished` goes through a
+    private `JobServiceEngine` the platform installs when it *binds* a service. The
+    guest's instance is never bound — the system bound the stub — so its engine is null
+    and `jobFinished` would throw inside the app's own code. It is handed the stub's.
+
+  Everything read back (`getPendingJob`, `getAllPendingJobs`) is rewritten in the other
+  direction, and `getAllPendingJobs` needs the `ParceledListSlice` unwrap of §6.7.1.
+  UNIQUE's own jobs are filtered out of that list: an app asking for its pending jobs must
+  not be shown the host's.
+
+  One diagnostic distinction worth keeping: `onStartJob` returning false is the *ordinary*
+  case — work finished synchronously — and is reported differently from "UNIQUE could not
+  reach the guest". They are the same value to the platform and must not be the same event
+  in the log.
 - **AlarmManager**: `PendingIntent`s are rewritten to host trampolines with explicit
   mutability flags (mandatory since Android 12). Exact alarms require
   `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM` at host level; if the host lacks it, the alarm
