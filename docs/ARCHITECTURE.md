@@ -331,10 +331,18 @@ refuse to honour.
 
 ### 6.2 Services
 
-`startService`/`bindService` → stub service in the target `:vappN` carrying the real
-`Intent`; `VAM` maintains the real service record (start ids, bind connections, sticky
-restarts). `bindService` returns the virtual app's real `IBinder` through the stub's
-`onBind`, so in-process and cross-vapp binding both behave normally.
+Planned on the same mechanism the activity path now uses, because that mechanism is
+verified: services do **not** arrive as `ClientTransaction`s. `ActivityThread.H` still
+delivers them as plain messages — `CREATE_SERVICE`, `BIND_SERVICE`, `SERVICE_ARGS`,
+`UNBIND_SERVICE`, `STOP_SERVICE` — whose `msg.obj` carries a `CreateServiceData` /
+`BindServiceData` holding a `ServiceInfo` and an `Intent`. The same
+`Handler.Callback` already installed for activities therefore covers services, and the
+same rule applies: locate the fields by *type*, replace the `ServiceInfo` with the
+virtual one, and let `ActivityThread` instantiate the app's own `Service` class.
+
+`startService`/`bindService` on the outbound side are rewritten by an `IActivityManager`
+shim to target a stub service in the right `:vappN`, carrying the real intent as
+`VirtualLaunchParams` does for activities.
 
 **Foreground services on Android 14+** are the sharpest edge:
 `Service.startForeground(id, notification, type)` requires (a) the *type* be declared on
@@ -350,6 +358,10 @@ the host hold `FOREGROUND_SERVICE_<TYPE>`. So:
   `ForegroundServiceDidNotStartInTimeException` crash the user cannot interpret.
 - Android 15's 6-hour `dataSync` cap and `SHORT_SERVICE` timeout are surfaced as
   diagnostics events.
+
+`ForegroundServiceTypes.HOST_SUPPORTED` is the code-side mirror of the manifest's
+`uses-permission` list; a type present in one and absent from the other is a bug that
+surfaces as an unexplainable crash inside the guest, so the two are reviewed together.
 
 ### 6.3 Broadcast receivers
 
