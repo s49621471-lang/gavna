@@ -92,6 +92,10 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "exercising app ops");
             exerciseAppOps();
         }
+        if (request != null && request.getBooleanExtra("probe.notify", false)) {
+            Log.i(TAG, "posting own notification");
+            postNotification();
+        }
         if (request != null && request.getBooleanExtra("probe.crash", false)) {
             Log.w(TAG, "crashing on request");
             throw new IllegalStateException("Deliberate probe crash");
@@ -396,5 +400,47 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-appops.properties", out);
+    }
+
+    /**
+     * Creates a channel and posts a notification, the way any app does.
+     *
+     * The content PendingIntent points at this app's own second Activity, so a tap has to
+     * come back into this instance and not into UNIQUE or into a sibling.
+     */
+    private void postNotification() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            android.app.NotificationChannel channel = new android.app.NotificationChannel(
+                    "probe-channel", "Probe", android.app.NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("Posted by the UNIQUE probe");
+            nm.createNotificationChannel(channel);
+            out.put("channelCreated", "probe-channel");
+
+            android.app.PendingIntent tap = android.app.PendingIntent.getActivity(
+                    this, 0,
+                    new Intent(this, ProbeSecondActivity.class)
+                            .putExtra("probe.second.extra", "via-notification")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                            | android.app.PendingIntent.FLAG_IMMUTABLE);
+
+            android.app.Notification n = new android.app.Notification.Builder(this, "probe-channel")
+                    .setContentTitle("probe-notification")
+                    .setContentText("posted by " + getPackageName())
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentIntent(tap)
+                    .setAutoCancel(true)
+                    .build();
+            nm.notify(4711, n);
+            out.put("posted", "4711");
+            out.put("packageName", getPackageName());
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "notification failed", t);
+        }
+        writeMap("probe-notification.properties", out);
     }
 }

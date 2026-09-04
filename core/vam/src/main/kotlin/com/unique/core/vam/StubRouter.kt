@@ -82,6 +82,19 @@ object StubRouter {
     fun hostChannelId(vuid: Int, packageName: String, channelId: String): String =
         "vu$vuid:$packageName:$channelId"
 
+    /**
+     * Namespaces a notification id, for the same reason job ids are namespaced.
+     *
+     * Apps pick small constants — `1`, `100`, `R.id.something` — and two instances of one
+     * app pick the same ones, so instance 2 posting would replace instance 1's
+     * notification. Same 11/20 bit split as [hostJobId]; the result stays positive.
+     */
+    fun hostNotificationId(vuid: Int, virtualId: Int): Int =
+        ((vuid and 0x7FF) shl 20) or (virtualId and 0xFFFFF)
+
+    fun virtualNotificationId(hostId: Int): Int = hostId and 0xFFFFF
+    fun notificationOwner(hostId: Int): Int = (hostId ushr 20) and 0x7FF
+
     fun parseChannelId(hostChannelId: String): Triple<Int, String, String>? {
         if (!hostChannelId.startsWith("vu")) return null
         val parts = hostChannelId.split(':', limit = 3)

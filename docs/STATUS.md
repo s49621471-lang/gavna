@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-093323-6465`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260904-101006-9531`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 
 | Test | Result |
@@ -82,6 +82,7 @@ Full output in `docs/evidence/phase3-components-instrumentation.txt`.
 | `t12` a runtime permission belongs to the instance, not to UNIQUE | **PASS** |
 | `t13` a grant survives the virtual process being killed | **PASS** |
 | `t14` app ops accept the guest's identity | **PASS** |
+| `t15` the guest's notification is posted, and two instances do not collide | **PASS** |
 
 What the guest's non-Activity components reported
 (`docs/evidence/phase3-components-engine.log`):
@@ -185,9 +186,9 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Remaining Phase 3: the notification bridge, foreground services and their Android 14
-   type intersection, implicit activity starts (resolving against the guest's own intent
-   filters), URI permissions, `JobScheduler`, `AlarmManager`, the clipboard.
+1. Remaining Phase 3: foreground services and their Android 14 type intersection, implicit
+   activity starts (resolving against the guest's own intent filters), URI permissions,
+   `JobScheduler`, `AlarmManager`, the clipboard.
 2. Give `onServiceConnected` the guest's own `ComponentName`.
 3. Phase 4: ARM64 native and libc IO redirection, which need the physical device to mean
    anything.

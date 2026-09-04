@@ -1,9 +1,13 @@
 package com.unique.app
 
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
+import android.service.notification.StatusBarNotification
 import android.os.Process
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -12,6 +16,7 @@ import com.google.common.truth.Truth.assertThat
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.vam.LaunchResult
+import com.unique.core.vam.StubRouter
 import com.unique.core.vam.VirtualLaunchIntent
 import com.unique.core.vam.VirtualLaunchParams
 import com.unique.core.vpm.CreateResult
@@ -702,6 +707,106 @@ class VirtualLaunchTest {
 
         // And the app still believes it is itself.
         assertThat(observed["packageName"]).isEqualTo(probePackage)
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: a guest's notification, posted as UNIQUE without colliding with a sibling.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t15_theGuestsNotificationIsPostedAndNamespaced() = runBlocking {
+        val instance = requireInstance()
+        // Android 13+ drops a notification silently when POST_NOTIFICATIONS is denied, and
+        // the suite's `pm clear` revokes it. Stated here rather than assumed.
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(context.packageName, "android.permission.POST_NOTIFICATIONS")
+
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        notifications.cancelAll()
+
+        val second = secondInstance()
+        for (target in listOf(instance, second)) {
+            File(model.filesDir(target.vuid, probePackage), "probe-notification.properties")
+                .delete()
+            clearResult(target)
+            val params = VirtualLaunchParams(
+                vuid = target.vuid,
+                packageName = probePackage,
+                versionCode = target.versionCode,
+                targetComponent = "$probePackage.ProbeActivity",
+                processName = probePackage,
+                slot = slotOf(target.vuid),
+            )
+            context.startActivity(
+                VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                    .putExtra("probe.notify", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+            awaitResult(target)
+            val written = awaitFile(
+                File(model.filesDir(target.vuid, probePackage), "probe-notification.properties")
+            )
+            assertThat(written["error"]).isNull()
+            assertThat(written["posted"]).isEqualTo("4711")
+        }
+
+        // Posted as UNIQUE, so UNIQUE can read them back. Nothing appears at all if the
+        // posting package was not rewritten: system_server checks it against the uid.
+        val posted = awaitNotification(StubRouter.hostNotificationId(instance.vuid, 4711))
+        val sibling = awaitNotification(StubRouter.hostNotificationId(second.vuid, 4711))
+        assertThat(posted.notification.extras.getString(Notification.EXTRA_TITLE))
+            .isEqualTo("probe-notification")
+
+        // Both instances posted id 4711 and both survive. Unnamespaced, the second would
+        // have replaced the first, and the two would share the user's sound and
+        // importance settings under one entry in Settings.
+        assertThat(posted.id).isNotEqualTo(sibling.id)
+        assertThat(StubRouter.virtualNotificationId(posted.id)).isEqualTo(4711)
+        assertThat(StubRouter.virtualNotificationId(sibling.id)).isEqualTo(4711)
+        assertThat(StubRouter.notificationOwner(posted.id)).isEqualTo(instance.vuid)
+        assertThat(StubRouter.notificationOwner(sibling.id)).isEqualTo(second.vuid)
+
+        assertThat(posted.notification.channelId)
+            .isEqualTo(StubRouter.hostChannelId(instance.vuid, probePackage, "probe-channel"))
+        assertThat(sibling.notification.channelId).isNotEqualTo(posted.notification.channelId)
+        assertThat(notifications.notificationChannels.map { it.id })
+            .containsAtLeast(posted.notification.channelId, sibling.notification.channelId)
+
+        // The icon is a resource in an APK the system has never installed. SystemUI would
+        // resolve it against UNIQUE and land on nothing, or on an unrelated drawable at
+        // the same numeric id, so it travels as pixels instead.
+        assertThat(posted.notification.smallIcon.type).isEqualTo(Icon.TYPE_BITMAP)
+
+        // And a tap is routed back to the instance that posted it.
+        assertThat(posted.notification.extras.getInt(StubRouter.EXTRA_VUID, -1))
+            .isEqualTo(instance.vuid)
+        assertThat(sibling.notification.extras.getInt(StubRouter.EXTRA_VUID, -1))
+            .isEqualTo(second.vuid)
+    }
+
+    /** The instance t05 created, or a new one when t15 is run on its own. */
+    private suspend fun secondInstance(): Instance {
+        val first = requireInstance()
+        UniqueEngine.instances.instances()
+            .firstOrNull { it.packageName == probePackage && it.vuid != first.vuid }
+            ?.let { return it }
+        return when (val r = UniqueEngine.instances.createInstance(probePackage, "Profile 2")) {
+            is CreateResult.Created -> r.instance
+            is CreateResult.Rejected -> throw AssertionError("second instance rejected: ${r.reason}")
+        }
+    }
+
+    private fun awaitNotification(id: Int, timeoutMillis: Long = 60_000): StatusBarNotification {
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            notifications.activeNotifications.firstOrNull { it.id == id }?.let { return it }
+            Thread.sleep(250)
+        }
+        throw AssertionError(
+            "no notification with id $id within ${timeoutMillis}ms; active ids: " +
+                notifications.activeNotifications.joinToString(",") { it.id.toString() }
+        )
     }
 
     private fun awaitFile(file: File, timeoutMillis: Long = 180_000): Map<String, String> {

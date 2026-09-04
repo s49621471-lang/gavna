@@ -155,7 +155,16 @@ class ShimBuilder(private val methodName: String) {
     private var replacement: ((ShimCall) -> Any?)? = null
     private var methodMatcher: ((Method) -> Boolean)? = null
 
-    /** Rewrites every argument of type [T] that satisfies [matching]. */
+    /**
+     * Rewrites every argument of type [T] that satisfies [matching].
+     *
+     * Safe for a type whose *value* identifies it — a package name is compared against
+     * the virtual package, so an unrelated string is never touched. It is a trap for a
+     * bare `Int`, which carries no evidence about what it means: rewriting every int of
+     * `enqueueNotificationWithTag(pkg, opPkg, tag, id, notification, userId)` namespaces
+     * the user id as well, and the platform answers "asks to run as user 1048576".
+     * Prefer [rewriteFirst] or [rewriteLast] with a matcher that pins the shape.
+     */
     inline fun <reified T : Any> rewriteAll(
         noinline matching: (T) -> Boolean = { true },
         noinline with: (T) -> T?,

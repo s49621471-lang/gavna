@@ -194,6 +194,16 @@ object AppBootstrap {
             )
         }
 
+        // Needs the guest's Context: a notification's icon is a resource in an APK the
+        // system has never installed, and only this process can load it.
+        runCatching { VirtualNotificationHook.install(ready, hostContext.packageName) }
+            .onFailure {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "NOTIFICATION_INSTALL_FAILED",
+                    mapOf("package" to params.packageName, "error" to it.toString()),
+                )
+            }
+
         // Registered after the application exists, because the guest's own Context is
         // what its receivers must run with.
         runCatching { VirtualReceiverRegistry.install(ready) }.onFailure {

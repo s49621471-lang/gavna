@@ -633,6 +633,57 @@ Ops are *attributed* to UNIQUE, because the uid is UNIQUE's. That is correct and
 an op record is a kernel-level fact about which process touched the camera. Per-instance
 denial happens a layer up, at the permission check, which is what apps actually consult.
 
+### 6.7 Notifications
+
+**Implemented; `t15` covers posting, channels and two instances.** Four things have to be
+true for a virtual app's notification to appear and behave, and each fails differently:
+
+1. **Identity.** `enqueueNotificationWithTag` takes the posting package and `system_server`
+   checks it against the uid, so the virtual name is rejected outright and nothing appears.
+2. **Channel.** Two instances of one app declare the same channel id, so they would share
+   the user's sound, importance and Do Not Disturb settings under a single entry in
+   Settings — the opposite of what a second instance is for.
+3. **Notification id.** Apps pick small constants and both instances pick the same one, so
+   instance 2 posting silently replaces instance 1's. Ids are namespaced the way job ids
+   are.
+4. **Icon.** A guest's small icon is a resource in an APK the system has never installed.
+   SystemUI resolves it against the *posting* package — UNIQUE — and finds nothing, or
+   worse an unrelated drawable at the same numeric id. The virtual process can load it, so
+   it is rendered there and travels as a bitmap.
+
+The content `PendingIntent` needs nothing here: it was routed onto a stub when the guest
+built it (§6.4.1), including the identifier that keeps two instances' taps apart.
+
+#### 6.7.1 Two traps worth keeping
+
+Both cost a device run, and both generalise beyond notifications.
+
+**An `Int` argument carries no evidence about itself.** Every package-name rewrite in
+UNIQUE is guarded by value — `matching = { it == virtualPackage }` — so an unrelated string
+is never touched. `rewriteAll<Int>` has no such guard, and on
+`enqueueNotificationWithTag(pkg, opPkg, tag, id, notification, userId)` it namespaced the
+*user id* as well:
+
+```
+SecurityException: enqueueNotification from com.unique asks to run as user 1048576
+```
+
+1048576 is `1 shl 20` — the namespacing applied to user 0. These AIDL methods all end with
+`userId`, so a method carrying a single int has no notification id at all
+(`cancelAllNotifications(pkg, userId)` is the trap); an id exists only when there are two,
+and it is the first.
+
+**A type-based rule cannot see through a container.**
+`NotificationManager.createNotificationChannel` hands the channel to `system_server` inside
+a `ParceledListSlice`, so a rule declared on `List<*>` never fires. The channel reached the
+platform with the guest's own id while the notification pointed at the namespaced one, and
+`NotificationManagerService` **silently dropped** the notification — every UNIQUE
+diagnostic said it had been adapted and posted. The slice is unwrapped through `getList()`
+and rebuilt.
+
+**Known divergence:** `getNotificationChannel` returns the namespaced id rather than the
+guest's own. Apps generally only test it for null.
+
 ---
 
 ## 7. Virtual storage

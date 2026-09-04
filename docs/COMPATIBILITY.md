@@ -59,7 +59,10 @@ never tried" is the difference between a fact and a guess.
 | Native IO redirection | `NOT_TESTED` | `NOT_TESTED` | Table implemented and unit-tested; libc interception not implemented |
 | Surface / OpenGL / Vulkan | `NOT_TESTED` | `NOT_TESTED` | Phase 5 |
 | Google flows | `NOT_TESTED` | `NOT_TESTED` | Interfaces only, no implementations |
-| Notifications | `NOT_TESTED` | `NOT_TESTED` | Namespacing implemented and unit-tested; bridge not implemented |
+| Notifications — post | `SUPPORTED` | `NOT_TESTED` | Posted as UNIQUE with the guest's title and text; the icon is rendered from the guest's resources and travels as a bitmap (`t15`) |
+| Notifications — two instances | `SUPPORTED` | `NOT_TESTED` | Both instances post id 4711 and both survive, on separate channels the user can configure independently (`t15`) |
+| Notifications — tap routing | `PARTIAL` | `NOT_TESTED` | The content `PendingIntent` is routed onto a stub at creation and carries the instance's vuid; the tap itself is not driven by the suite |
+| `getNotificationChannel` returns the guest's own id | `BROKEN` | `NOT_TESTED` | It returns the namespaced id. Apps generally only test it for null |
 
 ## Applications
 
