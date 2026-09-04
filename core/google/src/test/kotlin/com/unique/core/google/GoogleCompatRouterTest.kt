@@ -72,11 +72,11 @@ class GoogleCompatRouterTest {
         assertThat(d.mode).isEqualTo(GoogleMode.HOST_BRIDGE)
     }
 
-    @Test fun `play games is always unsupported`() {
+    @Test fun `play games is unsupported for now, and says so without claiming impossibility`() {
         for (caps in listOf(fullyCapable, GoogleCapabilities.NONE)) {
             val d = GoogleCompatRouter(caps).route(manifest(true), neutral, GoogleFlow.PLAY_GAMES)
             assertThat(d.mode).isEqualTo(GoogleMode.UNSUPPORTED)
-            assertThat(d.rationale).contains("attested")
+            assertThat(d.rationale).contains("Not supported yet")
         }
     }
 

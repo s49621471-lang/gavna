@@ -100,11 +100,14 @@ class GoogleCompatRouter(
                         "Legacy Google Sign-In requires in-space Google Play services. Enable them for this space, or use an app that supports Sign in with Google.")
             }
 
-            // Audience is a web/server client id, so the host's GMS produces a token the
-            // app's backend genuinely accepts.
+            // Reasoning, not a measurement: the audience of a Sign in with Google token is
+            // a web/server client id, so a token obtained through the host's GMS should be
+            // valid for the app's own backend. This is the layer's central hypothesis and
+            // it stays labelled as one until a Google Sign-In sample confirms it on a
+            // device (phase 5).
             GoogleFlow.CREDENTIAL_MANAGER -> if (capabilities.hostGmsAvailable) {
                 RoutingDecision(flow, GoogleMode.HOST_BRIDGE,
-                    "Sign in with Google issues a token for the app's server client, so the device's own Google Play services can answer.")
+                    "Unverified: Sign in with Google issues a token for the app's server client, so the device's own Google Play services should be able to answer. Not yet confirmed against a real sample.")
             } else {
                 RoutingDecision(flow, GoogleMode.UNSUPPORTED, "Google Play services are not available on this device.")
             }
@@ -138,10 +141,12 @@ class GoogleCompatRouter(
                 RoutingDecision(flow, GoogleMode.UNSUPPORTED, "Google Play services are not available on this device.")
             }
 
-            // Attestation-bound. Not achievable in app-level virtualization, and UNIQUE
-            // does not attempt to defeat it.
+            // Attestation-bound, and not investigated yet. The expectation is that this
+            // does not work, but no sample has been run on a device, so the decision says
+            // "not yet" rather than "never" - the difference matters when someone later
+            // decides whether to spend a week on it.
             GoogleFlow.PLAY_GAMES -> RoutingDecision(flow, GoogleMode.UNSUPPORTED,
-                "Play Games requires an attested, installed app identity, which app-level virtualization cannot provide.")
+                "Not supported yet: Play Games checks an attested app identity, and UNIQUE has not been tested against it.")
         }
     }
 }

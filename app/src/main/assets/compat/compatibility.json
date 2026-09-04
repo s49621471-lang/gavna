@@ -3,9 +3,10 @@
     "UNIQUE compatibility database.",
     "Every package-specific behaviour in the engine enters through this file; the code",
     "itself contains no package-name comparisons (ARCHITECTURE.md section 20).",
-    "Entries here are architectural facts, not measured results: nothing has been run on",
-    "a device yet, so no package is claimed as SUPPORTED. Phase 7 fills this in from the",
-    "test matrix."
+    "Entries here are expectations, not measured results. Nothing but the PHASE 2 probe",
+    "has been run on a device, so no package is claimed as SUPPORTED, and nothing is",
+    "marked UNSUPPORTED - that level is reserved for results measured on hardware.",
+    "Phase 7 fills this in from the test matrix."
   ],
   "version": 1,
   "profiles": [
@@ -23,8 +24,8 @@
     },
     {
       "package": "com.android.vending",
-      "support": "UNSUPPORTED",
-      "note": "Play Store requires an attested, installed identity. Not achievable in app-level virtualization.",
+      "support": "UNSUPPORTED_FOR_NOW",
+      "note": "Expected to need an attested, installed identity. Not investigated on a device yet.",
       "flags": ["REQUIRES_ATTESTATION"]
     }
   ]

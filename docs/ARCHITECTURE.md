@@ -96,10 +96,9 @@ Stating the boundary precisely, because it drives every other decision:
 - **Not a VM / not an emulator.** No QEMU, no separate kernel, no separate ROM.
 - **Not a privilege escalation.** Everything runs as the host's single Linux uid. UNIQUE
   cannot give a virtual app a permission the host does not hold.
-- **Not an attestation bypass.** Play Integrity / SafetyNet / DroidGuard will fail inside
-  UNIQUE and this is not treated as a bug (§9.7). Apps that hard-require device
-  attestation are recorded as **Unsupported** in the compatibility database, not "worked
-  around".
+- **Not an attestation bypass.** Defeating Play Integrity / SafetyNet / DroidGuard is out
+  of scope as a matter of policy. Whether they happen to work is a separate, untested
+  question, recorded as `UNSUPPORTED_FOR_NOW` until measured (§9.7).
 - **Not a way to run a different ABI.** ARM64-v8a only. A 32-bit-only app is
   **Unsupported** on a 64-bit-only device; on a device with a 32-bit runtime, a separate
   32-bit helper package would be required (roadmap, not MVP).
@@ -494,7 +493,7 @@ Consequences, by flow:
 | Flow | Identity GMS checks | Result with host GMS, unassisted |
 |---|---|---|
 | Legacy `GoogleSignIn` (`Auth.GOOGLE_SIGN_IN_API`) | (package, SHA-1) must match an **Android OAuth client** | `DEVELOPER_ERROR (10)` — the app's client is registered for its own package |
-| Credential Manager / `GetGoogleIdOption` | ID-token audience is a **web/server client id**; package is recorded but not the audience | Can succeed — the token is valid for the app's backend |
+| Credential Manager / `GetGoogleIdOption` | ID-token audience is a **web/server client id**; package is recorded but not the audience | *Hypothesis:* should succeed, since the token is issued for the app's backend. **Unverified** — see below |
 | `AccountManager.getAuthToken` (web client scopes) | Account + scope consent | Can succeed, consent shown as UNIQUE |
 | Firebase Auth `GoogleAuthProvider` | Consumes an ID token obtained by one of the above | Follows whichever path produced the token |
 | WebView / Custom Tabs OAuth (AppAuth, etc.) | Nothing GMS-specific; redirect URI only | Works, given WebView + deep-link return |
@@ -541,6 +540,13 @@ Known, documented limitations of Mode A: no `signature|privileged` permissions, 
 devices, and a real RAM cost (~150–250 MB for the GMS process set). Mode A is therefore
 **opt-in per space**, not the default.
 
+> **The Credential Manager route is the layer's central hypothesis, not a finding.**
+> The reasoning in the table above is sound but has not been run against a real Google
+> Sign-In sample on a device. Everything downstream of it — the default routing for
+> `CREDENTIAL_MANAGER` and `FIREBASE_AUTH`, and the claim that a host-bridged token is
+> usable — depends on it. It is labelled `Unverified` in the router's own rationale
+> string, and phase 5 either confirms it or the routing table changes.
+
 ### 9.4 MODE B — Host bridge
 
 The virtual app's request is captured, translated, and executed by `:helper` against the
@@ -572,12 +578,21 @@ host's app id, which varies by GMS version. It ships behind a flag, with the tes
 entry that proves or disproves it per device, and is reported as `Experimental` in the UI
 until a device passes the test. It is **not** claimed as working.
 
-### 9.7 What is out of scope, permanently
+### 9.7 Not supported yet, and not yet investigated
 
 Play Integrity, SafetyNet, DroidGuard, Play Billing and Play Games all bind to an attested,
-installed package identity. These cannot work inside app-level virtualization and UNIQUE
-does not attempt to defeat them. Apps requiring them are marked **Unsupported** with the
-reason shown to the user.
+installed package identity, and the expectation is that none of them works inside
+app-level virtualization. That expectation has **not been tested**, so these are recorded
+as `UNSUPPORTED_FOR_NOW` rather than as impossible.
+
+The distinction is deliberate. `UNSUPPORTED` is reserved for a result measured on a
+device with the reason recorded; `UNSUPPORTED_FOR_NOW` says only that nobody has done the
+work. Writing "impossible" into the codebase on reasoning alone is how a project talks
+itself out of something it never actually tried, and it is unfalsifiable in exactly the
+place where a measurement is cheap.
+
+UNIQUE does not attempt to *defeat* attestation, and that is a scope decision rather than
+a claim about feasibility.
 
 ---
 

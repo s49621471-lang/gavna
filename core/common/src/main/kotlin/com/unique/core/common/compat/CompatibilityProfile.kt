@@ -1,7 +1,26 @@
 package com.unique.core.common.compat
 
-/** How well a package is known to work inside UNIQUE. */
-enum class SupportLevel { SUPPORTED, PARTIAL, EXPERIMENTAL, UNSUPPORTED, UNKNOWN }
+/**
+ * How well a package is known to work inside UNIQUE.
+ *
+ * The distinction between [UNSUPPORTED_FOR_NOW] and [UNSUPPORTED] is deliberate and
+ * load-bearing: the first records that nobody has done the work yet, the second records
+ * a measured result. Nothing may be marked [UNSUPPORTED] on reasoning alone - that is how
+ * a project talks itself out of features it never actually tried.
+ */
+enum class SupportLevel {
+    SUPPORTED,
+    PARTIAL,
+    EXPERIMENTAL,
+
+    /** Not working today, and not yet investigated. The default for anything unproven. */
+    UNSUPPORTED_FOR_NOW,
+
+    /** Investigated on a device and found not to work, with the reason recorded. */
+    UNSUPPORTED,
+
+    UNKNOWN,
+}
 
 /**
  * Behaviour switches a compatibility profile can turn on for one package.
@@ -28,7 +47,12 @@ enum class CompatFlag {
     REBUILD_NOTIFICATIONS,
     /** The package's `.so` files are not 16 KB aligned; it cannot run on 16 KB devices. */
     NATIVE_ALIGNMENT_16K,
-    /** Requires Play Integrity / attestation, which app-level virtualization cannot provide. */
+    /**
+     * Depends on Play Integrity or another attested identity.
+     *
+     * Recorded as an observation about the app, not as a verdict about UNIQUE: what an
+     * attested check does inside virtualization has not been measured yet.
+     */
     REQUIRES_ATTESTATION,
 }
 
@@ -43,7 +67,12 @@ enum class GoogleMode {
     HOST_BRIDGE,
     /** Mode C: no GMS involvement — WebView/Custom Tabs OAuth with a deep-link return. */
     PASSTHROUGH,
-    /** Explicitly not served; the app receives a typed error and a diagnostic is written. */
+    /**
+     * Not served today. The app receives a typed error and a diagnostic is written.
+     *
+     * This is a statement about the current build, not a permanent one: a flow stays here
+     * until it has been tried against a real sample on a device.
+     */
     UNSUPPORTED,
 }
 
