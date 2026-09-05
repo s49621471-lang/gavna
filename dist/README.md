@@ -38,6 +38,28 @@ Both are signed with Android's **debug key** (`CN=Android Debug`, SHA-256
 test-signing arrangement and is marked as such: these must not be distributed as a
 release, and an app signed with a real key later will not install over them.
 
+## What changed since the first phone run
+
+That run imported two apps and launched neither. Both causes are fixed here.
+
+- **A guest could not read a setting**, so it could not open a database, could not attach
+  an Activity, and never started. The settings provider was cached before the graft and
+  UNIQUE's identity rewrite never got in front of it.
+- **`getHistoricalProcessExitReasons` went out under the guest's own name**, which needs
+  `DUMP` for any package but the caller's — so startup crash-reporting code took the app
+  down with it.
+- **Every imported app was called `@7f010000`** and had no icon. Names and icons are now
+  read from the stored APK through the platform's own parser, in the phone's language.
+- **The log was nearly empty of UNIQUE's own events.** This build writes the full
+  structured trace to logcat, so a capture from a logcat app on the phone now contains
+  everything the in-app export does. That is a much better starting point than the last
+  one, which held only warnings and errors.
+- **The interface speaks English and Russian**, following the phone by default and
+  switchable in *Settings → Appearance → Language*.
+
+Neither engine fix is re-proven on hardware: the emulator never reproduced them, so it
+cannot confirm them either. `docs/COMPATIBILITY.md` still says `BROKEN` for both on ARM64.
+
 ## What to do next
 
 `docs/PHYSICAL_DEVICE_TEST.md` is the twelve-step sequence. It needs no `adb`, no root and
