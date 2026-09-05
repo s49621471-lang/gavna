@@ -86,7 +86,20 @@ object SystemServiceHook {
         ServiceTarget("netstats", "android.net.INetworkStatsService\$Stub"),
         ServiceTarget("content", "android.content.IContentService\$Stub"),
         ServiceTarget("shortcut", "android.content.pm.IShortcutService\$Stub"),
-        ServiceTarget("search", "android.app.ISearchManager\$Stub"),
+
+        // Added after a survey of 63 real apps (tools/apk-survey) and a second device run.
+        // `mount` is not speculative: it killed a guest outright.
+        //
+        //   SecurityException: callingPackage does not match UID
+        //     at IStorageManager$Stub$Proxy.getVolumeList
+        //     at Environment.isExternalStorageManager        -> clear.una died on its first frame
+        ServiceTarget("mount", "android.os.storage.IStorageManager\$Stub"),
+        ServiceTarget("phone", "com.android.internal.telephony.ITelephony\$Stub"),
+        ServiceTarget("download", "android.app.IDownloadManager\$Stub"),
+        ServiceTarget("device_policy", "android.app.admin.IDevicePolicyManager\$Stub"),
+        ServiceTarget("media.camera", "android.hardware.ICameraService\$Stub"),
+        ServiceTarget("telecom", "com.android.internal.telecom.ITelecomService\$Stub"),
+        ServiceTarget("media_router", "android.media.IMediaRouterService\$Stub"),
     )
 
     data class InstallReport(

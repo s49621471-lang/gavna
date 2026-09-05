@@ -126,24 +126,48 @@ class ReportTest(unittest.TestCase):
             "android.telephony.TelephonyManager": {"apps": {"a", "b"}, "methods": {"getDeviceId"}},
             "android.app.LocaleManager": {"apps": {"a"}, "methods": {"getApplicationLocales"}},
         }
-        text = survey.report(found, total=2, installed={"locale"}, declared={"locale"})
+        text = survey.report(
+            found, total=2, installed={"locale"}, declared={"locale"}, by_design=set()
+        )
         self.assertIn("phone", text)
         self.assertIn("Not in TARGETS at all", text)
         self.assertIn("TelephonyManager, 2/2 apps", text)
         self.assertIn("RESULT: 1 service(s)", text)
 
     def test_declared_but_never_installed_is_called_out_separately(self):
-        # "window" is in TARGETS, nothing installs it, and 45 of 49 real apps call it.
-        # Reporting that as proxied is worse than reporting it as missing.
-        found = {"android.view.WindowManager": {"apps": {"a"}, "methods": {"addView"}}}
-        text = survey.report(found, total=1, installed=set(), declared={"window"})
+        # A name in TARGETS that nothing installs reads as proxied and is not, which is
+        # worse than a name that is plainly absent. `media_session` was exactly this until
+        # a survey found it.
+        found = {
+            "android.media.session.MediaSessionManager": {"apps": {"a"}, "methods": {"x"}}
+        }
+        text = survey.report(
+            found, total=1, installed=set(), declared={"media_session"}, by_design=set()
+        )
         self.assertIn("DECLARED ONLY", text)
         self.assertIn("read as done and are not", text)
         self.assertIn("1 of them declared but never installed", text)
 
+    def test_a_deliberate_omission_is_not_reported_as_a_gap(self):
+        # `search` carries no caller package at all on API 35 — its whole interface takes
+        # no String. Nagging about it for ever is how a check gets ignored.
+        found = {"android.app.SearchManager": {"apps": {"a"}, "methods": {"getSearchableInfo"}}}
+        text = survey.report(
+            found, total=1, installed=set(), declared={"search"}, by_design={"search"}
+        )
+        self.assertIn("by design", text)
+        self.assertIn("RESULT: 0 service(s)", text)
+
+    def test_the_engine_records_which_omissions_are_deliberate(self):
+        omissions = survey.deliberate_omissions()
+        self.assertIn("search", omissions)
+        self.assertIn("window", omissions)
+
     def test_a_fully_proxied_survey_reports_none(self):
         found = {"android.app.LocaleManager": {"apps": {"a"}, "methods": {"x"}}}
-        text = survey.report(found, total=1, installed={"locale"}, declared={"locale"})
+        text = survey.report(
+            found, total=1, installed={"locale"}, declared={"locale"}, by_design=set()
+        )
         self.assertIn("RESULT: 0 service(s)", text)
         self.assertNotIn("Not in TARGETS at all", text)
 

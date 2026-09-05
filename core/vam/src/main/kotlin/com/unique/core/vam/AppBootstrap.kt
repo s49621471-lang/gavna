@@ -346,6 +346,9 @@ object AppBootstrap {
             VirtualActivityManagerHook.hostSourceFor(hostContext, hostContext.packageName),
         )
 
+        // Created, but its `onCreate` deliberately *not* run yet: `makeApplication` is
+        // passed a null Instrumentation, and `callApplicationOnCreate` happens at the very
+        // end of this method instead. See [runApplicationOnCreate] for why.
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {
             return Result.Failed(
@@ -450,6 +453,11 @@ object AppBootstrap {
 
         Diagnostics.vuid = params.vuid
         Diagnostics.packageName = params.packageName
+
+        // Last, and deliberately so: everything above is what the guest's own `onCreate`
+        // is about to reach. See [runApplicationOnCreate].
+        runApplicationOnCreate(activityThreadClass, activityThread, application as Application)
+
         Diagnostics.info(
             DiagChannel.LAUNCH, "BOOTSTRAP_OK",
             mapOf(
@@ -942,7 +950,11 @@ object AppBootstrap {
         activityThread: Any,
         loadedApk: Any,
     ): Pair<Application?, String> {
-        val instrumentation = Reflect.get(activityThreadClass, "mInstrumentation", activityThread)
+        // Null, and that is the point. `makeApplicationInner` uses this argument for
+        // exactly one thing — `instrumentation.callApplicationOnCreate(app)` — so passing
+        // null builds the Application and stops short of running it. See
+        // [runApplicationOnCreate], which does that afterwards, and why it has to.
+        val instrumentation: Any? = null
         val attempts = ArrayList<String>()
 
         val candidates = loadedApk.javaClass.declaredMethods
@@ -977,6 +989,84 @@ object AppBootstrap {
             }
         }
         return null to attempts.joinToString("; ")
+    }
+
+    /**
+     * Runs the guest's `Application.onCreate`, once everything it can reach is in place.
+     *
+     * ## Why this is separate from creating the Application
+     *
+     * It used to happen inside `makeApplication`, which is where the platform's own
+     * `LoadedApk` puts it — and that put it in the middle of the graft, with the identity
+     * hooks and the guest's providers still to come. A guest's `onCreate` is not a quiet
+     * moment: it starts analytics, opens a network stack, asks whether notifications are
+     * enabled, initialises WorkManager. Every one of those goes out through a service that
+     * was not proxied yet, and the framework caches the interface it got:
+     *
+     * ```
+     * SecurityException: Package com.openai.chatgpt does not belong to 10302
+     *   at ConnectivityManager.getNetworkCapabilities            (statsig, from onCreate)
+     * SecurityException: Caller not system or systemui or same package: uid 10302 does not
+     *   have android.permission.STATUS_BAR_SERVICE
+     *   at NotificationManager.areNotificationsEnabled           -> killed the app
+     * ```
+     *
+     * Both services *were* proxied — sixty and eighty lines further down this file.
+     * `NotificationManager.sService` is a static field, so the raw interface it captured
+     * during `onCreate` outlived the hook that arrived afterwards, and the shim was never
+     * reached again.
+     *
+     * ## Why this ordering is also the platform's
+     *
+     * `ActivityThread.handleBindApplication` does the same three things in the same order:
+     * make the Application, install the content providers, *then*
+     * `callApplicationOnCreate`. UNIQUE was passing a non-null `Instrumentation` into
+     * `makeApplicationInner`, which collapsed the first and third steps into one and left
+     * providers published after the app had already started. `androidx.startup`'s
+     * `InitializationProvider` is built on that guarantee, and said so:
+     *
+     * ```
+     * PROVIDER_PUBLISH_FAILED provider=androidx.startup.InitializationProvider
+     *   error=IllegalStateException: WorkManager is already initialized.
+     * ```
+     *
+     * So this is not a workaround for a UNIQUE-specific problem. It is the platform's own
+     * sequence, restored.
+     *
+     * Failures are reported and swallowed. A guest whose `onCreate` throws is broken in a
+     * way UNIQUE cannot fix, and the platform's behaviour — the process dies with the
+     * guest's own stack — is reproduced by letting the exception reach the default handler
+     * rather than by turning a live guest into a `BOOTSTRAP_FAILED` with no trace.
+     */
+    private fun runApplicationOnCreate(
+        activityThreadClass: Class<*>,
+        activityThread: Any,
+        application: Application,
+    ) {
+        val instrumentation = Reflect.get(activityThreadClass, "mInstrumentation", activityThread)
+        if (instrumentation == null) {
+            // Nothing to call through; the platform would have skipped onCreate too, so
+            // call it directly rather than leaving the guest un-started.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "INSTRUMENTATION_MISSING",
+                mapOf("detail" to "ActivityThread.mInstrumentation is null; calling onCreate directly"),
+            )
+            application.onCreate()
+            return
+        }
+        val method = Reflect.findMethod(
+            instrumentation.javaClass, "callApplicationOnCreate", Application::class.java,
+        )
+        if (method == null) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "INSTRUMENTATION_NO_ON_CREATE",
+                mapOf("class" to instrumentation.javaClass.name),
+            )
+            application.onCreate()
+            return
+        }
+        method.isAccessible = true
+        method.invoke(instrumentation, application)
     }
 
     private fun rootCause(t: Throwable): String {

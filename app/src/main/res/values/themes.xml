@@ -33,7 +33,31 @@
       on the device, so the fallback matches the platform instead of matching UNIQUE.
     -->
     <style name="Theme.Unique.Stub" parent="@android:style/Theme.DeviceDefault.NoActionBar">
-        <item name="android:windowAnimationStyle">@null</item>
-        <item name="android:windowDisablePreview">true</item>
+        <!--
+          No overrides, and that is the change.
+
+          This theme used to set `windowAnimationStyle` to @null and `windowDisablePreview`
+          to true. Neither was ever explained, and both were almost certainly meant to hide
+          a stub window from the user - except there is no stub window to hide. The launch
+          transaction is rewritten before `performLaunchActivity` constructs anything, so
+          the window the system creates from this theme *is* the guest's window. Suppressing
+          its animation and its starting window suppresses the guest's.
+
+          Together they produce exactly what a device tester reported as "the screen is
+          laggy": tap, nothing at all appears - no starting window, because previews are
+          off - then the content snaps in with no transition, after however long a JIT-only
+          cold start takes. Nothing is dropping frames; the log for that run contains a
+          single skipped-frame event in 37,775 lines. It is a launch with the two things
+          that normally cover a launch turned off.
+
+          So the platform's own behaviour is restored: a starting window appears
+          immediately, drawn from DeviceDefault, which is what an app with no theme of its
+          own gets on this device; and activities animate like every other app's.
+
+          The residual cost is honest and small: the starting window is UNIQUE's neutral
+          background rather than the guest's own splash colour, because the system draws it
+          from this manifest entry before the guest's process exists. A brief neutral frame
+          is better than a frozen one.
+        -->
     </style>
 </resources>

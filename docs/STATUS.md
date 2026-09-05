@@ -407,6 +407,70 @@ Two more, from the same log:
 none has been back on the phone. `docs/COMPATIBILITY.md` is unchanged for the same reason
 it was unchanged after the second run.
 
+### The fourth run: the fixes hold, and the ordering was wrong all along
+
+The third run's fixes, back on the same Redmi. What they were meant to do, they did:
+
+| | Run 3 | Run 4 |
+|---|---|---|
+| Launches reaching the guest's Activity | 7 of 10 | **8 of 8** |
+| `SLOT_ALREADY_BOUND` | 3 | **0** |
+| `INTERNET` / `ACCESS_NETWORK_STATE` denied | 46 times | **0** |
+
+`PERMISSIONS_BOUND` now says what it grants: ChatGPT, 31 declared — 24 at install, 7 for
+the user. The Play Store, 145 declared — 129 at install, 16 for the user.
+
+And ChatGPT still died, on a call to a service that **was** proxied:
+
+```
+SecurityException: Caller not system or systemui or same package: uid 10302 does not have
+    android.permission.STATUS_BAR_SERVICE
+  at NotificationManager.areNotificationsEnabled
+SecurityException: Package com.openai.chatgpt does not belong to 10302
+  at ConnectivityManager.getNetworkCapabilities                    (statsig, on a worker)
+```
+
+Both services are in `TARGETS` and both hooks install. The hooks just arrived too late.
+`makeApplication` ran the guest's `Application.onCreate` at line 349 of `AppBootstrap`;
+the identity hooks land at 416 and the notification hook at 434. A guest's `onCreate` is
+not a quiet moment — it starts analytics, opens a network stack, asks whether
+notifications are enabled — and `NotificationManager.sService` is a **static** field, so
+the raw interface it captured there outlived the hook that came sixty lines later.
+
+The same ordering explains a provider failure nobody had connected to it:
+
+```
+PROVIDER_PUBLISH_FAILED provider=androidx.startup.InitializationProvider
+    error=IllegalStateException: WorkManager is already initialized.
+```
+
+`androidx.startup` is built on the platform's guarantee that providers are published
+*before* `Application.onCreate`. UNIQUE was publishing them after.
+
+Both are one fix. `makeApplicationInner` uses its `Instrumentation` argument for exactly
+one thing — `callApplicationOnCreate` — so it is passed null, and `onCreate` is called
+explicitly at the end of the graft. That is `handleBindApplication`'s own order: make the
+Application, install the providers, then start it.
+
+Three more faults from the same log, all now closed:
+
+- **`IStorageManager.getVolumeList`** — `callingPackage does not match UID`, reached from
+  `Environment.isExternalStorageManager`, killed `clear.una` on its first frame. `mount`
+  is proxied.
+- **`IAccountManager`** — declared in `TARGETS` since forever and installed by nothing, so
+  the Play Store died asking about accounts. Now installed.
+- **`search`** — the caller-package shim bound to *nothing*, nine times per run:
+  `ISearchManager` on API 35 declares seven methods and not one takes a String. It carries
+  no caller identity, so it is removed rather than left looking installed.
+
+**"The screen is laggy"**, reported by the tester, is a launch with both of the things
+that normally cover a launch switched off. `Theme.Unique.Stub` set `windowDisablePreview`
+to true and `windowAnimationStyle` to `@null`, neither ever explained — so a tap produced
+no starting window, then content snapped in with no transition, after however long a
+JIT-only cold start takes. Nothing was dropping frames: that run has **one** skipped-frame
+event in 37,775 lines. Both overrides are gone; the platform's own behaviour is back.
+Unconfirmed on hardware, like everything else here.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -440,6 +504,12 @@ visible to unit tests:
 | UNIQUE's own App Details screen threw on every open: `as bool?` throws on a `String` in Dart, so the tolerant fallback beside it never ran | fixed (type-test instead of cast, with tests for both shapes) |
 | A guest with no libraries loaded yet reported `IO_REDIRECT_INSTALLED status=NOT_IMPLEMENTED`, which reads as a missing subsystem | fixed (`NOTHING_TO_HOOK`; a failed dlopen watch is `kFailed`) |
 | The 131 JVM tests could not be run without a 1 GB Flutter SDK, because `settings.gradle.kts` refused to configure without it | fixed (a build without Flutter configures `core/` and says loudly that `:app` is not in it) |
+| **The guest's `Application.onCreate` ran in the middle of the graft**, before the identity hooks and before its own providers, so anything it touched cached an unproxied interface — which is why `connectivity` and `notification` were still refused after both were proxied | fixed (null `Instrumentation` into `makeApplicationInner`; `callApplicationOnCreate` last, as `handleBindApplication` does it) |
+| `androidx.startup`'s `InitializationProvider` failed with "WorkManager is already initialized", because providers were published after `onCreate` rather than before | fixed by the same reordering |
+| `IStorageManager.getVolumeList` refused, killing a guest through `Environment.isExternalStorageManager` | fixed (`mount` proxied) |
+| `IAccountManager` was declared in `TARGETS` and installed by nothing, so the Play Store died asking about accounts — and a guest saw the host's real Google accounts | fixed (installed; the accounts a guest *should* see is a separate open question) |
+| The `search` hook bound to nothing nine times a run: `ISearchManager` takes no String on API 35 | fixed (removed, and recorded as a deliberate omission the survey no longer nags about) |
+| A guest's launch had no starting window and no transition animation, from two undocumented overrides on the stub theme | fixed (both removed; the platform's own behaviour) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step

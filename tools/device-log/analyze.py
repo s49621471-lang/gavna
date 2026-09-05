@@ -155,6 +155,8 @@ INTERFACE_TO_SERVICE = {
     "IMediaRouterService": "media_router",
     "ITelecomService": "telecom",
     "IDownloadManager": "download",
+    "IStorageManager": "mount",
+    "ISearchManager": "search",
 }
 
 _STUB_PROXY = re.compile(r"\b(?:[\w.]+\.)?(I[A-Za-z0-9_]+)\$Stub\$Proxy\.([A-Za-z0-9_]+)\(")

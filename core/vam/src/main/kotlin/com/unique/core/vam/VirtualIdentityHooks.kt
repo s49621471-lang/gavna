@@ -86,8 +86,54 @@ object VirtualIdentityHooks {
         "netstats" to "data-usage queries carry the caller's package",
         "content" to "notifyChange and sync registration carry the caller's package",
         "shortcut" to "dynamic shortcuts are keyed by the caller's package",
-        "search" to "the searchable metadata lookup carries the caller's package",
+
+        // A second device run and a survey of 63 real apps (tools/apk-survey) added these.
+        // `mount` is the one with a body on the floor:
+        //
+        //   SecurityException: callingPackage does not match UID
+        //     at IStorageManager$Stub$Proxy.getVolumeList
+        //     at Environment.isExternalStorageManager    -> clear.una died on its first frame
+        "mount" to "getVolumeList is refused, and Environment.isExternalStorageManager " +
+            "goes through it, so a guest asking about storage at all is killed",
+        "account" to "getAccountsAsUser carries the caller's package; without it a guest " +
+            "asking about accounts is refused, which killed the Play Store on launch",
+        "phone" to "34 of 63 surveyed apps call TelephonyManager, and its queries carry " +
+            "the caller's package",
+        "download" to "enqueue and query carry the caller's package",
+        "device_policy" to "policy queries carry the caller's package",
+        "media.camera" to "connectDevice carries the client package and is checked against the uid",
+        "telecom" to "every call-capability query carries the caller's package",
+        "media_router" to "registerClientAsUser carries the caller's package",
+        "media_session" to "createSession carries the caller's package, so a guest that " +
+            "publishes playback controls is refused without it",
     )
+
+    /**
+     * Services deliberately left alone, and why — so the absence is a decision, not a gap.
+     *
+     * `search`: `ISearchManager` on API 35 declares `getSearchableInfo`,
+     * `getGlobalSearchActivity`, `launchAssist` and three siblings, and **not one of them
+     * takes a String**. The caller-package shim therefore bound to nothing, and said so
+     * nine times in one device run:
+     *
+     * ```
+     * HOOK_MATCHED_NOTHING service=search interface=android.app.ISearchManager
+     *   methods=asBinder,getGlobalSearchActivities,getGlobalSearchActivity,
+     *           getSearchableInfo,getSearchablesInGlobalSearch,getWebSearchActivity,launchAssist
+     * ```
+     *
+     * It carries no caller identity, so there is nothing here to correct. Removed rather
+     * than left binding to nothing, because a hook that matches nothing looks exactly like
+     * one that works — which is this project's own rule 8.
+     *
+     * `window`: 60 of 63 surveyed apps reference `WindowManager`, and almost none of that
+     * reaches `IWindowManager` with a package name — `addView` and `getDefaultDisplay` go
+     * through `IWindowSession` and the display manager instead. Rewriting strings on the
+     * interface that builds windows, to fix calls the survey cannot show are being made,
+     * is risk without evidence. It stays in `TARGETS` and uninstalled until a log shows a
+     * refusal that names it.
+     */
+    private val NOT_PROXIED_ON_PURPOSE = setOf("search", "window")
 
     /**
      * Installs the caller-package rewrite on every service in [CALLER_PACKAGE_SERVICES].
@@ -97,6 +143,21 @@ object VirtualIdentityHooks {
      * explicitly, because a hook that binds to nothing looks exactly like one that works.
      */
     fun installAll(virtualPackage: String, hostPackage: String) {
+        // A name in both lists is a contradiction: one of the two was edited without the
+        // other, and the deliberate-omission note has quietly become false. Cheap to check
+        // and it keeps NOT_PROXIED_ON_PURPOSE a statement rather than a comment.
+        val contradictions = CALLER_PACKAGE_SERVICES.map { it.first }
+            .filter { it in NOT_PROXIED_ON_PURPOSE }
+        if (contradictions.isNotEmpty()) {
+            Diagnostics.warn(
+                DiagChannel.HOOK, "IDENTITY_HOOK_LIST_CONTRADICTS",
+                mapOf(
+                    "services" to contradictions.joinToString(","),
+                    "detail" to "listed both as proxied and as deliberately not proxied",
+                ),
+            )
+        }
+
         val ok = ArrayList<String>()
         val skipped = ArrayList<String>()
         for ((service, cost) in CALLER_PACKAGE_SERVICES) {

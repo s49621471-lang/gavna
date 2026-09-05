@@ -83,6 +83,7 @@ MANAGER_TO_SERVICE: Dict[str, str] = {
     "android.media.session.MediaSessionManager": "media_session",
     "android.media.MediaRouter": "media_router",
     "android.os.PowerManager": "power",
+    "android.os.storage.StorageManager": "mount",
     "android.os.Vibrator": "vibrator_manager",
     "android.os.VibratorManager": "vibrator_manager",
     "android.accounts.AccountManager": "account",
@@ -145,6 +146,21 @@ def installed_services() -> Set[str]:
     return found
 
 
+def deliberate_omissions() -> Set[str]:
+    """Services `VirtualIdentityHooks` records as *deliberately* not proxied.
+
+    Without this the survey nags for ever about two names that were considered and
+    declined — `search`, whose interface carries no caller package at all, and `window`,
+    where the evidence for hooking it does not exist. A tool that keeps reporting a
+    decision as a defect is one people stop reading.
+    """
+    source = _read("core/vam/src/main/kotlin/com/unique/core/vam/VirtualIdentityHooks.kt")
+    block = re.search(r"NOT_PROXIED_ON_PURPOSE\s*=\s*setOf\(([^)]*)\)", source)
+    if not block:
+        return set()
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
 def survey(paths: List[str]) -> Dict[str, Dict[str, object]]:
     """For each framework manager: which apps reference it, and which methods."""
     found: Dict[str, Dict[str, object]] = defaultdict(
@@ -170,8 +186,10 @@ def report(
     total: int,
     installed: Set[str],
     declared: Set[str] | None = None,
+    by_design: Set[str] | None = None,
 ) -> str:
     declared = declared if declared is not None else installed
+    by_design = by_design if by_design is not None else deliberate_omissions()
     rows = sorted(found.items(), key=lambda kv: -len(kv[1]["apps"]))  # type: ignore[arg-type]
     out: List[str] = [f"{total} app(s) surveyed", ""]
 
@@ -185,6 +203,8 @@ def report(
         where = f"{cls.rsplit('.', 1)[-1]}, {apps}/{total} apps"
         if service in installed:
             mark = "yes"
+        elif service in by_design:
+            mark = "by design"
         elif service in declared:
             mark = "DECLARED ONLY"
             dead.append(f"{service} ({where})")
@@ -239,7 +259,7 @@ def main(argv: List[str] | None = None) -> int:
                 print(f"  {name}")
         return 0
 
-    print(report(found, len(paths), installed, declared))
+    print(report(found, len(paths), installed, declared, deliberate_omissions()))
     return 1 if any(MANAGER_TO_SERVICE[c] not in installed for c in found) else 0
 
 

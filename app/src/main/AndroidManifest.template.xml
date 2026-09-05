@@ -51,16 +51,103 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!--
+      Install-time permissions a virtual app may need.
+
+      UNIQUE can only ever narrow: a permission the host does not declare can never reach
+      a guest, whatever the guest's own manifest asks for. So the host has to declare the
+      superset - but a superset chosen from evidence, not "everything there is".
+
+      This list is what 59 real applications actually declare, measured with
+      `tools/apk-survey`, minus the ones below that a blanket declaration would not help
+      with anyway. Install-time permissions cost nothing at runtime: the platform grants
+      them at install and no dialog exists for them, which is exactly why a guest denied
+      one has no way to recover.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
+
+    <!--
+      Legacy external storage, capped at the API where it still meant anything.
+
+      19 of 59 surveyed apps declare WRITE_EXTERNAL_STORAGE and 17 READ_EXTERNAL_STORAGE,
+      almost all with `maxSdkVersion`. Declaring them unbounded on Android 13+ would show
+      the user a storage prompt that grants nothing, because scoped storage replaced them
+      with the READ_MEDIA_* family already declared below. The cap is what an ordinary app
+      does and what keeps the permission screen honest.
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- Runtime permissions a virtual app may request. UNIQUE can only ever narrow
-         these: it cannot grant a virtual app something the user has not granted UNIQUE. -->
+         these: it cannot grant a virtual app something the user has not granted UNIQUE.
+         Declaring one does *not* grant it - the user is still asked, once, for UNIQUE. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+
+    <!--
+      Deliberately NOT declared, and why - because "declare everything" is the obvious
+      answer and it is wrong in four different ways.
+
+      MANAGE_EXTERNAL_STORAGE (7/59 apps), SYSTEM_ALERT_WINDOW (4/59), WRITE_SETTINGS
+      (2/59): these are *special access*, not permissions. Declaring one grants nothing;
+      the user must find a separate Settings screen and turn it on. Declaring them anyway
+      would add three entries to UNIQUE's permission list that do nothing until somebody
+      does that, and the failure they are meant to fix would still happen.
+
+      REQUEST_INSTALL_PACKAGES, REQUEST_DELETE_PACKAGES: UNIQUE never installs or removes
+      a package on the device - importing an APK is a file copy into its own storage. A
+      guest that wants to install something is doing a thing UNIQUE does not do, and
+      holding the permission would not change that.
+
+      SMS, CALL_LOG and CALL_PHONE: no surveyed app needed them, they are the most
+      sensitive groups Android has, and a virtualization tool asking for SMS access is a
+      thing a user is right to refuse. Left out until an app that needs them is named.
+
+      AUTHENTICATE_ACCOUNTS, GET_TASKS and friends: deprecated or signature-level. The
+      platform ignores them.
+    -->
 
     <!--
       Package visibility.

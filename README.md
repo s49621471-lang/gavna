@@ -37,7 +37,7 @@ never written as `SUPPORTED` because something ought to work.
 |---|---|
 | **Off-device tests** | 162 JVM tests, 34 native checks, 15 Dart tests, 41 tool tests — all passing |
 | **On-device suite** | **38 of 38** instrumented tests pass, on an Android 14 x86_64 emulator, against the exact APK in `dist/` |
-| **On a real phone** | UNIQUE installs and runs, imports apps, starts virtual processes, grafts, publishes providers, launches the activity — **and the guest then crashes.** Three runs, nine causes found and fixed, none yet re-tested on hardware |
+| **On a real phone** | Four runs. The fourth launched **8 of 8** apps into their own Activity with no slot failures and no permission denials — and one guest still crashed, on a service that was proxied too late. Fifteen causes found and fixed across the four; the last six are not yet back on hardware |
 
 **A virtual app has never yet run to a usable screen on physical hardware.** That is the
 single most important fact about this project's status, and every other claim here is
@@ -71,7 +71,7 @@ per-capability matrix.
 
 | Problem | Where it stands |
 |---|---|
-| **Guests crash on a real Android 15 device** | Nine faults found across three phone logs, all fixed and none re-tested on hardware. The third run explains the two symptoms actually reported — *nothing launches after the first app* (a released process slot was never ended, so every later launch was refused) and *ChatGPT dies on its first screen* (three system services that validate the caller's package were not proxied) — and found a third nobody had noticed: every guest was running with `INTERNET` denied. `docs/STATUS.md` has each one with its log line. **Not yet confirmed working on hardware.** |
+| **Guests crash on a real Android 15 device** | Fifteen faults across four phone logs. The fourth run confirms the big ones are gone — 8 of 8 launches reached the guest's Activity, no slot failures, no denied install-time permissions — and found the reason two proxied services were still refused: the guest's `Application.onCreate` ran *in the middle* of the graft, before the hooks it needed, and `NotificationManager` caches its interface in a static field. `onCreate` now runs last, which is the platform's own order. `docs/STATUS.md` has each fault with its log line. **The last six fixes are not yet back on hardware.** |
 | **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. |
 | **Play Integrity, Play Games, Play Billing** | Expected not to work. UNIQUE is not an attestation bypass and will not pretend to be one. |
 | **A broadcast arriving while UNIQUE itself is not running is missed** | The registrations live in UNIQUE's main process. Closing this needs static registrations in the host manifest, which needs the actions known at build time. |
