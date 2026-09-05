@@ -16,7 +16,18 @@ enum class InstallStatus(val code: Int) {
     FAILED(3),
 
     /** Installed earlier in this process. Not an error, and not a second install. */
-    ALREADY_INSTALLED(4);
+    ALREADY_INSTALLED(4),
+
+    /**
+     * Installed, and nothing in scope was loaded to hook *yet*.
+     *
+     * Not an error. A guest with no native code never has anything to hook, and one that
+     * loads its libraries from its own engine's initialiser - Unity, most obviously - has
+     * nothing to hook at bootstrap and is covered by the dlopen watch a moment later.
+     * This used to be reported as [NOT_IMPLEMENTED], which said the subsystem did not
+     * exist when in fact it was working.
+     */
+    NOTHING_TO_HOOK(5);
 
     companion object {
         fun of(code: Int) = entries.firstOrNull { it.code == code } ?: FAILED

@@ -28,6 +28,12 @@ with the guest's own package name and needs `DUMP` for any package but the calle
 are fixed and neither is re-tested here — an emulator that never reproduced them cannot
 confirm them either. They stay `BROKEN` until a phone says otherwise.
 
+A third ARM64 run, on the same phone, covered seven real apps rather than the probe. Its
+log is checked in at `tools/device-log/fixtures/redmi-android15.log` and read by
+`tools/device-log/analyze.py`; `docs/STATUS.md` has the findings. Everything it produced is
+recorded below as `BROKEN` or `PARTIAL` and **nothing is moved up**: every fix that came
+out of it is reasoned from the log and has not been back on the phone.
+
 Every result below was produced by the **debug** build. The minified release build is a
 separate question and is answered separately, in the first row of the next table.
 
@@ -141,6 +147,10 @@ separate question and is answered separately, in the first row of the next table
 | OpenGL / Vulkan samples | Rendering path | `PARTIAL` | `NOT_TESTED` | The probe covers both (`t20`, `t28`), on software drivers. A real engine sample is still `NOT_TESTED` |
 | Firebase Auth sample | Google | `NOT_TESTED` | `NOT_TESTED` | Phase 6 |
 | Google Sign-In sample | Google | `NOT_TESTED` | `NOT_TESTED` | Phase 6 |
+| ChatGPT `com.openai.chatgpt` | Real shipping app, Compose, native libs, Firebase | `NOT_TESTED` | `BROKEN` | Grafts, publishes thirteen providers, rewrites the launch transaction — then dies in `MainActivity.onCreate` on `RestrictionsManager.getApplicationRestrictions`, and again on a background thread on `LocaleManager.getApplicationLocales`. Three unproxied services, all now proxied and **none re-tested** |
+| Gemini `com.google.android.apps.bard` | Shell app: its launcher activity hands off to another installed app | `NOT_TESTED` | `PARTIAL` | It launches and draws, but what the user sees is the *host's* Gemini with the host's account: `BardEntryPointActivity` fires an implicit `ACTION_VIEW` within 50 ms that no guest activity matches, and the host's Google app answers it. Faithful — a real device does the same — and it means **a second instance of a shell app is not a second account.** Now reported as `ACTIVITY_IMPLICIT_LEFT_GUEST` with the packages that answered |
+| 1Tap Cleaner `com.a0soft.gphone.acc.free` | Real shipping app, pairip-protected | `NOT_TESTED` | `PARTIAL` | Grafts and runs its `com.pairip.application.Application`; the launch transaction is rewritten. What it drew was not recorded |
+| Unity app `com.gordey.standarling` | Real IL2CPP app, 1.6 GB, 16 native libraries | `NOT_TESTED` | `PARTIAL` | Imports and grafts in 4.3 s and the transaction is rewritten. Its `.so` files are not loaded at bootstrap — Unity loads them from its own initialiser — so libc redirection reports nothing to hook and the dlopen watch is what must cover them. **Whether it rendered is not recorded** |
 
 ## How to reproduce
 

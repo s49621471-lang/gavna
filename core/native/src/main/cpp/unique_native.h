@@ -21,6 +21,21 @@ enum class InstallStatus : int {
     kUnsupportedDevice = 2,
     kFailed = 3,
     kAlreadyInstalled = 4, // installed earlier in this process; nothing to do
+
+    // Installed correctly, and no library in scope was loaded to hook *yet*.
+    //
+    // Distinct from kNotImplemented, which it used to be reported as, and the difference
+    // matters to whoever reads the log. A Unity app loads its `.so` files from
+    // `UnityPlayer`'s own initialiser, long after `Application.onCreate` where the
+    // initial scan runs, so a healthy run of one reports zero patched slots here and is
+    // covered a moment later by the dlopen watcher:
+    //
+    //   IO_REDIRECT_INSTALLED status=NOT_IMPLEMENTED watch=OK rules=8 slots=0
+    //
+    // Reading that as "the subsystem is not implemented" is wrong twice over: it is, and
+    // the guest's libraries do get hooked. Only `watch` failing alongside this means the
+    // guest's paths are genuinely unredirected.
+    kNothingToHook = 5,
 };
 
 namespace io_redirect {

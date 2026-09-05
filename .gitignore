@@ -31,3 +31,7 @@ Thumbs.db
 
 # Probe signing key: generated locally, never shared.
 tools/testapp/.keystore/
+
+# Python bytecode (the device-log analyzer)
+__pycache__/
+*.pyc

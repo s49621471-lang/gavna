@@ -1,6 +1,7 @@
 package com.unique.core.vpermission
 
 import android.content.pm.PackageManager
+import com.unique.core.common.permission.PlatformPermissions
 
 /** A permission group as the UI presents it. Maps to one or more Android permissions. */
 enum class PermissionGroup(val label: String, val permissions: List<String>) {
@@ -42,8 +43,30 @@ enum class PermissionState { GRANTED, DENIED, ASK }
  * granting one the host itself lacks does nothing until the user grants it to UNIQUE.
  * [effectiveState] encodes exactly that, so the UI can show "needs UNIQUE permission"
  * instead of a switch that appears on but does not work.
+ *
+ * ## Undecided does not mean denied
+ *
+ * Only a *runtime* permission is the user's to decide. Everything else a manifest asks
+ * for is granted at install time, has no dialog and is never requested — and treating it
+ * as undecided-so-denied left every guest without `INTERNET` or `ACCESS_NETWORK_STATE`,
+ * which is not a permission model but a phone with the network switched off. See
+ * [PlatformPermissions] for the split and the evidence.
+ *
+ * @param hostGrants what UNIQUE itself holds, from the platform.
+ * @param isRuntimePermission whether a permission is the user's decision. The default is
+ *   the static AOSP list; the caller replaces it with one that asks this device first,
+ *   which is more accurate on an OEM build and for permissions newer than this code.
+ * @param isSelfDefined whether the guest's own manifest defines the permission with a
+ *   non-dangerous protection level. The platform always grants an app the permissions it
+ *   defines itself, and UNIQUE must too — otherwise an app that guards its own provider
+ *   with its own permission cannot reach it, and the host obviously does not hold a
+ *   permission that only the guest defines.
  */
-class PermissionStore(private val hostGrants: (String) -> Int) {
+class PermissionStore(
+    private val hostGrants: (String) -> Int,
+    private val isRuntimePermission: (String) -> Boolean = PlatformPermissions::isRuntime,
+    private val isSelfDefined: (String) -> Boolean = { false },
+) {
 
     private val states = HashMap<Key, PermissionState>()
 
@@ -63,15 +86,32 @@ class PermissionStore(private val hostGrants: (String) -> Int) {
     fun stored(vuid: Int, packageName: String, permission: String): PermissionState =
         states[Key(vuid, packageName, permission)] ?: PermissionState.ASK
 
-    /** What the virtual app actually observes, after the host's own grants are applied. */
+    /**
+     * What the virtual app actually observes, after the host's own grants are applied.
+     *
+     * The order of the checks is the whole model:
+     *
+     *  1. A permission the guest itself defines is granted, as at install. It is checked
+     *     first because the host cannot hold a permission only the guest declares, so any
+     *     later check would deny it.
+     *  2. A permission UNIQUE does not hold is denied, and reported as the host's fault.
+     *     UNIQUE narrows; it cannot widen.
+     *  3. A decision the user has already made stands.
+     *  4. Otherwise: a runtime permission is still the user's to make, and an install-time
+     *     permission is granted because the manifest asked for it.
+     */
     fun effectiveState(vuid: Int, packageName: String, permission: String): EffectivePermission {
+        if (isSelfDefined(permission)) {
+            return EffectivePermission(PermissionState.GRANTED, blockedByHost = false)
+        }
         val hostHolds = hostGrants(permission) == PackageManager.PERMISSION_GRANTED
         val stored = stored(vuid, packageName, permission)
         return when {
             !hostHolds -> EffectivePermission(PermissionState.DENIED, blockedByHost = true)
             stored == PermissionState.GRANTED -> EffectivePermission(PermissionState.GRANTED, false)
             stored == PermissionState.DENIED -> EffectivePermission(PermissionState.DENIED, false)
-            else -> EffectivePermission(PermissionState.ASK, false)
+            isRuntimePermission(permission) -> EffectivePermission(PermissionState.ASK, false)
+            else -> EffectivePermission(PermissionState.GRANTED, false)
         }
     }
 

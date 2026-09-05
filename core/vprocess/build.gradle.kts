@@ -8,6 +8,8 @@ android {
 }
 
 dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
     api(project(":core:common"))
     implementation(libs.androidx.annotation)
     implementation(libs.kotlinx.coroutines.core)

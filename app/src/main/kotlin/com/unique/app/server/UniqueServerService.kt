@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.IBinder
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
-import com.unique.core.vprocess.ProcessPool
 
 /**
  * The VirtualCore server.
@@ -16,11 +15,14 @@ import com.unique.core.vprocess.ProcessPool
  */
 class UniqueServerService : Service() {
 
-    private lateinit var processPool: ProcessPool
+    // No ProcessPool here yet, deliberately. One used to be constructed and never read,
+    // which is worse than none: a pool that cannot end a `:vappN` process hands the next
+    // app a slot someone else is still grafted into, and the field was positioned to be
+    // "wired up later" with exactly that defect. The live pool is VirtualLauncher's, in
+    // the UI process, and it is given the process control it needs.
 
     override fun onCreate() {
         super.onCreate()
-        processPool = ProcessPool(capacity = VAPP_SLOTS)
         Diagnostics.info(
             DiagChannel.PROCESS, "SERVER_STARTED",
             mapOf("slots" to VAPP_SLOTS.toString()),

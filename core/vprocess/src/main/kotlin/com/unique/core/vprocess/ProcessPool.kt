@@ -29,8 +29,54 @@ data class Occupant(val vuid: Int, val packageName: String, val processName: Str
  * Android does not let an app create processes on demand: a process exists only because
  * a manifest component declares `android:process`. So the pool is declared statically at
  * build time and assigned dynamically here.
+ *
+ * ## Why the pool has to know about processes at all
+ *
+ * The obvious design — a pool that is pure bookkeeping, with process lifetime someone
+ * else's problem — is the one that shipped, and it is wrong in both directions. A slot
+ * record and the `:vappN` process behind it are two facts that can disagree, and every
+ * way they disagree breaks a launch:
+ *
+ *  - **The record is freed and the process lives on.** Removing an instance called
+ *    `releaseAll`, which cleared the occupant and killed nothing. The next app was
+ *    assigned the same slot, the platform routed its stub activity into the surviving
+ *    process, and [the graft refused to rebind][ProcessPool]:
+ *
+ *    ```
+ *    BOOTSTRAP_FAILED package=clear.una code=SLOT_ALREADY_BOUND
+ *        message=Slot 0 already serves com.google.android.apps.bard (u0)
+ *    ACTIVITY_HANDOFF_DID_NOT_HAPPEN slot=0 component=clear.una.MainActivity
+ *    ```
+ *
+ *    Every app launched after that one failed identically, because slot 0 was picked
+ *    first every time. On the device this reads as "UNIQUE stopped launching anything
+ *    after Gemini", which is exactly how it was reported.
+ *
+ *  - **The process dies and the record lives on.** Nothing called [release] on a crash
+ *    or a low-memory kill, despite the doc saying so, so a crashed guest kept its slot
+ *    forever and the pool ran out of capacity with sixteen dead processes.
+ *
+ * Both are closed by making the pool ask, rather than assume: [alive] answers whether a
+ * slot's process actually exists, [stop] ends it. Liveness is re-checked at every
+ * allocation instead of relying on a death callback, because a callback that does not
+ * fire is indistinguishable from a process that is still running, and that is precisely
+ * the failure above.
+ *
+ * Both are required rather than defaulted. A default would have to guess, and the two
+ * questions the pool asks want opposite guesses — "is my occupant still running" wants
+ * yes, "is this free slot really empty" wants no — so any single default is wrong for one
+ * of them. Requiring them makes every construction site say which processes it means,
+ * which is the one thing the version that shipped never had to do.
+ *
+ * @param alive whether a `:vappN` process is currently running for this slot index.
+ * @param stop ends the process serving a slot index. Called before a slot with a live
+ *   process is handed to a new occupant, and when a slot is released.
  */
-class ProcessPool(private val capacity: Int) {
+class ProcessPool(
+    private val capacity: Int,
+    private val alive: (Int) -> Boolean,
+    private val stop: (Int, String) -> Unit,
+) {
 
     private val slots = (0 until capacity).map {
         ProcessSlot(it, ":vapp$it", null, 0L)
@@ -50,13 +96,23 @@ class ProcessPool(private val capacity: Int) {
      * Returns null when the pool is full of live processes: the caller reports
      * `PROCESS_POOL_EXHAUSTED` and refuses the launch rather than evicting a running app
      * out from under the user.
+     *
+     * A slot is only ever handed out clean. Slots whose process has died are reclaimed
+     * first, and a free slot that still has a process in it — the state that broke every
+     * launch after the first — has that process stopped before the caller gets it.
      */
     @Synchronized
     fun acquire(occupant: Occupant, now: Long = System.currentTimeMillis()): ProcessSlot? {
         byOccupant[occupant]?.let { idx ->
-            slots[idx] = slots[idx].copy(lastUsedMillis = now)
-            return slots[idx]
+            // An occupant that is still running keeps its slot; one whose process died
+            // must not, or the guest is never started again and the slot never freed.
+            if (alive(idx)) {
+                slots[idx] = slots[idx].copy(lastUsedMillis = now)
+                return slots[idx]
+            }
+            release(idx, "process gone")
         }
+        reclaimDead()
         val free = slots.firstOrNull { it.isFree }
             ?: run {
                 Diagnostics.warn(
@@ -65,6 +121,20 @@ class ProcessPool(private val capacity: Int) {
                 )
                 return null
             }
+        // Free by the pool's own record, but the process may still be there: the record
+        // is dropped synchronously and a process dies whenever the platform gets round to
+        // it. Handing this slot over as-is is what produced SLOT_ALREADY_BOUND.
+        if (alive(free.index)) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SLOT_PROCESS_STALE",
+                mapOf(
+                    "slot" to free.processSuffix,
+                    "requested" to occupant.packageName,
+                    "detail" to "a process was still running in a slot the pool had freed",
+                ),
+            )
+            runCatching { stop(free.index, "stale process in a free slot") }
+        }
         val taken = free.copy(occupant = occupant, lastUsedMillis = now)
         slots[free.index] = taken
         byOccupant[occupant] = free.index
@@ -79,10 +149,41 @@ class ProcessPool(private val capacity: Int) {
         return taken
     }
 
-    /** Called when a `:vappN` process dies, whether cleanly or by crash. */
+    /**
+     * Frees slots whose process is gone.
+     *
+     * This is the death observation the pool never had. Doing it at allocation time
+     * rather than from a callback is deliberate: `ActivityManager` offers an app no
+     * reliable notification of its own subprocess dying, and the one signal that is
+     * always available — asking whether the pid is still there — is only needed at the
+     * moment the answer matters.
+     */
+    private fun reclaimDead() {
+        for (slot in slots.toList()) {
+            if (slot.occupant == null) continue
+            if (alive(slot.index)) continue
+            release(slot.index, "process gone")
+        }
+    }
+
+    /**
+     * Gives up a slot, ending the process that serves it.
+     *
+     * The kill is the point. A released slot whose process survives is worse than one
+     * that was never released: the pool believes it is free, hands it to the next app,
+     * and that app cannot start because the surviving process is already grafted to
+     * someone else. [stop] is called before the record is cleared so that a caller
+     * implementing it can still see which slot it is ending.
+     */
     @Synchronized
     fun release(index: Int, reason: String) {
         val slot = slots.getOrNull(index) ?: return
+        runCatching { stop(index, reason) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SLOT_STOP_FAILED",
+                mapOf("slot" to slot.processSuffix, "error" to it.toString()),
+            )
+        }
         slot.occupant?.let { byOccupant.remove(it) }
         slots[index] = slot.copy(occupant = null)
         Diagnostics.info(

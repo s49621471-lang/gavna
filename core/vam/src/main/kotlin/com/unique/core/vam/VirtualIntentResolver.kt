@@ -91,7 +91,20 @@ object VirtualIntentResolver {
      * implicit start nowhere. So is the resolver activity, which is not a handler but the
      * chooser standing in for the absence of one.
      */
-    fun hostCanHandle(context: Context, intent: Intent, hostPackage: String): Boolean {
+    fun hostCanHandle(context: Context, intent: Intent, hostPackage: String): Boolean =
+        hostHandlersFor(context, intent, hostPackage).isNotEmpty()
+
+    /**
+     * The installed packages, other than UNIQUE itself, that would take [intent].
+     *
+     * Named rather than merely counted because "the guest opened something and it was not
+     * the guest" is a question somebody always ends up asking. A physical run had Gemini's
+     * shell activity fire an implicit `ACTION_VIEW` within fifty milliseconds of starting,
+     * which the host's own Google app answered — so the user saw their real account inside
+     * what they had launched as a fresh instance, and the only trace was a debug line that
+     * did not say where the intent went.
+     */
+    fun hostHandlersFor(context: Context, intent: Intent, hostPackage: String): List<String> {
         val probe = Intent(intent).apply { setPackage(null) }
         val resolved = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -102,11 +115,10 @@ object VirtualIntentResolver {
                 @Suppress("DEPRECATION")
                 context.packageManager.queryIntentActivities(probe, 0)
             }
-        }.getOrElse { return false }
-        return resolved.any { info ->
-            val pkg = info.activityInfo?.packageName
-            pkg != null && pkg != hostPackage && pkg != "android"
-        }
+        }.getOrElse { return emptyList() }
+        return resolved.mapNotNull { it.activityInfo?.packageName }
+            .filter { it != hostPackage && it != "android" }
+            .distinct()
     }
 
     /**

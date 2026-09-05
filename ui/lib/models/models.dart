@@ -294,8 +294,30 @@ class GoogleStatus {
   /// to answer. The state that produces the most confusing app-side failures.
   bool get presentButUnusable => gmsPresent && !hostGmsAvailable;
 
-  static bool _flag(Map<Object?, Object?> m, String key) =>
-      (m[key] as bool?) ?? m[key]?.toString() == 'true';
+  /// Reads a flag that arrives as either a `bool` or the string `"true"`.
+  ///
+  /// Both shapes are real and neither is a mistake: the engine's `Report.toMap()` is a
+  /// `Map<String, String>` because the same map is written into Diagnostics and the device
+  /// report, while `bridgesImplemented` is added by the bridge as a genuine `bool`.
+  ///
+  /// The obvious spelling of "tolerate both" does not work in Dart, and this screen was
+  /// dead on a real device because of it:
+  ///
+  /// ```
+  /// Unhandled Exception: type 'String' is not a subtype of type 'bool?' in type cast
+  ///   #0 GoogleStatus._flag (package:unique_ui/models/models.dart:298)
+  ///   #1 GoogleStatus.fromMap
+  ///   #3 _AppDetailsScreenState._load
+  /// ```
+  ///
+  /// `m[key] as bool?` *throws* on a `String` rather than evaluating to null, so the `??`
+  /// fallback that was meant to catch it never ran. Every open of App Details threw on the
+  /// first field it read. Type-testing with `is` instead of casting is the difference.
+  static bool _flag(Map<Object?, Object?> m, String key) {
+    final value = m[key];
+    if (value is bool) return value;
+    return value?.toString().toLowerCase() == 'true';
+  }
 
   static String _text(Map<Object?, Object?> m, String key) =>
       m[key]?.toString() ?? '-';

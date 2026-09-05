@@ -224,6 +224,17 @@ object VirtualProviderRouter {
         return true
     }
 
+    /**
+     * The pid last reported by [slot], whether or not it is still running.
+     *
+     * Exposed for [SlotProcesses], which needs a slot's pid to end the process in it and
+     * cannot get one from the process list alone — that list has been seen to omit a
+     * process that was very much alive. Liveness is the caller's question, not this one's:
+     * the record is returned as recorded.
+     */
+    @Synchronized
+    fun pidOf(slot: Int): Int? = (ready[slot] ?: starting[slot])?.pid
+
     private fun processAlive(pid: Int): Boolean = try {
         Os.kill(pid, 0)
         true

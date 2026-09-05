@@ -11,19 +11,119 @@ import com.unique.core.hook.SystemServiceHook
 /**
  * System services a guest reaches with its own package name and nothing else.
  *
- * `IAlarmManager` and `IClipboard` both take a calling package that `system_server`
- * checks against the uid, and neither carries a component to route: an alarm's
- * `PendingIntent` was already pointed at a stub when the guest built it (§6.4.1), and a
- * clip is data. So the whole interception is the identity rewrite, and grouping them is
- * honest rather than lazy — a separate object per service would be three files that say
- * the same thing.
+ * Each takes a calling package that `system_server` checks against the uid, and none
+ * carries a component to route: an alarm's `PendingIntent` was already pointed at a stub
+ * when the guest built it (§6.4.1), a clip is data, a network query is a question. So the
+ * whole interception is the identity rewrite, and grouping them is honest rather than
+ * lazy — a file per service would be fifteen files that say the same thing.
  *
- * What each service still gets wrong is documented on its installer below, because
- * "the package name is right" is not the same as "the feature behaves as the app expects".
+ * [CALLER_PACKAGE_SERVICES] is the list, with the reason for each entry. What a service
+ * still gets wrong after the rewrite is documented at [guards], because "the package name
+ * is right" is not the same as "the feature behaves as the app expects".
  */
 object VirtualIdentityHooks {
 
     private val installed = HashSet<String>()
+
+    /**
+     * Every service whose interception is exactly the caller-package rewrite, and why.
+     *
+     * ## The rule these all share
+     *
+     * `system_server` validates a caller-supplied package name against the calling uid —
+     * `AppOpsService.checkPackage`, or an explicit "only the owner may ask" branch. UNIQUE's
+     * uid is the host's, so a guest calling one of these with its own name is refused. The
+     * refusal is a `SecurityException` that names the *guest's* package, which is why it
+     * reads as the app being broken rather than as UNIQUE missing a hook.
+     *
+     * ## Why the blanket rewrite is safe on these interfaces
+     *
+     * The virtual package is not installed, so the platform has never heard of it. Wherever
+     * that exact string appears in an outbound call it can only mean "me" — there is no
+     * other app it could be referring to. What makes the rewrite *unsafe* elsewhere is a
+     * method that takes another app's package as data and acts on it: `forceStopPackage` on
+     * `IActivityManager` would stop UNIQUE itself. None of the interfaces below has one,
+     * which is why `activity`, `package` and `appops` get their own targeted hooks instead.
+     *
+     * ## How this list was arrived at
+     *
+     * The first three are from a physical-device run and are not speculative:
+     *
+     * ```
+     * FATAL EXCEPTION: main   Process: com.openai.chatgpt
+     *   java.lang.SecurityException: Only system may: get application restrictions
+     *       for other user/app com.openai.chatgpt
+     *     at android.content.RestrictionsManager.getApplicationRestrictions
+     *     at com.openai.chatgpt.MainActivity.onCreate
+     *
+     * FATAL EXCEPTION: nfz Dispatcher
+     *   java.lang.SecurityException: getApplicationLocales: Neither user 10300 nor
+     *       current process has android.permission.READ_APP_SPECIFIC_LOCALES.
+     *     at android.app.LocaleManager.getApplicationLocales
+     *
+     * java.lang.SecurityException: Package com.openai.chatgpt does not belong to 10300
+     *     at android.net.ConnectivityManager.getNetworkCapabilities
+     * ```
+     *
+     * Two of those killed the app outright on its first screen. The rest of the list is the
+     * set of services an ordinary app touches while starting that validate the same way —
+     * each named with what a guest loses without it, so an entry can be argued with rather
+     * than trusted. A service missing on a device is skipped with a diagnostic, so listing
+     * one that a build does not have costs a log line.
+     */
+    private val CALLER_PACKAGE_SERVICES: List<Pair<String, String>> = listOf(
+        "alarm" to "an alarm's PendingIntent was pointed at a stub when the guest built it",
+        "clipboard" to "a clip is data; only the caller's identity is checked",
+        "restrictions" to "getApplicationRestrictions crashed a guest in Activity.onCreate",
+        "locale" to "getApplicationLocales crashed a guest on a background thread",
+        "connectivity" to "getNetworkCapabilities is refused, so the guest sees no network",
+        "power" to "acquireWakeLock carries the caller's package; without it, no wake locks",
+        "wifi" to "connection and scan queries carry the caller's package",
+        "location" to "every location request carries the caller's package",
+        "audio" to "focus, mode and volume changes carry the caller's package",
+        "vibrator_manager" to "vibrate carries the caller's package for the appop",
+        "usagestats" to "app-standby and usage queries carry the caller's package",
+        "netstats" to "data-usage queries carry the caller's package",
+        "content" to "notifyChange and sync registration carry the caller's package",
+        "shortcut" to "dynamic shortcuts are keyed by the caller's package",
+        "search" to "the searchable metadata lookup carries the caller's package",
+    )
+
+    /**
+     * Installs the caller-package rewrite on every service in [CALLER_PACKAGE_SERVICES].
+     *
+     * Reports the outcome once rather than per service: sixteen lines saying "installed"
+     * bury the one that says a service was missing. The names that did not bind are listed
+     * explicitly, because a hook that binds to nothing looks exactly like one that works.
+     */
+    fun installAll(virtualPackage: String, hostPackage: String) {
+        val ok = ArrayList<String>()
+        val skipped = ArrayList<String>()
+        for ((service, cost) in CALLER_PACKAGE_SERVICES) {
+            val bound = runCatching { install(service, virtualPackage, hostPackage) }
+                .getOrDefault(false)
+            if (bound) {
+                ok += service
+            } else {
+                skipped += service
+                // The reason is carried in the table precisely so it can be said here.
+                // "skipped=wifi" leaves the reader to work out what a guest has lost;
+                // this says it.
+                Diagnostics.warn(
+                    DiagChannel.HOOK, "IDENTITY_HOOK_UNAVAILABLE",
+                    mapOf("service" to service, "consequence" to cost),
+                )
+            }
+        }
+        Diagnostics.info(
+            DiagChannel.HOOK, "IDENTITY_HOOKS_INSTALLED",
+            mapOf(
+                "package" to virtualPackage,
+                "installed" to ok.joinToString(","),
+                "skipped" to skipped.joinToString(","),
+            ),
+        )
+    }
 
     /**
      * Installs the plain package rewrite on [serviceName].
@@ -40,7 +140,10 @@ object VirtualIdentityHooks {
         if (key in installed) return true
         val target = SystemServiceHook.TARGETS.firstOrNull { it.serviceName == serviceName }
             ?: return false
-        val report = SystemServiceHook.install(target, shims(virtualPackage, hostPackage))
+        val report = SystemServiceHook.install(
+            target,
+            guards(serviceName) + shims(virtualPackage, hostPackage),
+        )
         if (!report.installed) {
             Diagnostics.warn(
                 DiagChannel.HOOK, "IDENTITY_HOOK_FAILED",
@@ -66,6 +169,42 @@ object VirtualIdentityHooks {
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
         },
     )
+
+    /**
+     * Calls that must not go through even with the caller's name corrected.
+     *
+     * The rewrite turns "the guest is asking about itself" into "UNIQUE is asking about
+     * itself", which is right for a read and wrong for a write: a guest calling
+     * `setApplicationLocales` would then be setting *UNIQUE's* app language, and the user
+     * would find UNIQUE's own interface in a language they never chose. There is no
+     * correct target for that call — a per-instance app locale is a platform record keyed
+     * by an installed package, and the guest is not one — so it is refused and reported
+     * rather than aimed at the nearest package that would accept it.
+     *
+     * Registered before the rewrite so it binds first; the guard replaces the call
+     * entirely, so nothing reaches the platform.
+     *
+     * Reads are untouched: `getApplicationLocales` returns UNIQUE's, which is the device
+     * default, which is what the guest would have seen before it ever set one.
+     */
+    private fun guards(serviceName: String): List<MethodShim> = when (serviceName) {
+        "locale" -> listOf(
+            shim("setApplicationLocales") {
+                replaceWith {
+                    Diagnostics.warn(
+                        DiagChannel.HOOK, "APP_LOCALE_SET_UNSUPPORTED",
+                        mapOf(
+                            "detail" to "a guest asked to set its own app locale; UNIQUE " +
+                                "cannot store one for a package the platform has not " +
+                                "installed, and applying it would change UNIQUE's own",
+                        ),
+                    )
+                    null
+                }
+            },
+        )
+        else -> emptyList()
+    }
 
     /**
      * Reports what a guest's alarms can and cannot do on this device.

@@ -2,26 +2,32 @@
 // `flutter pub get` maintains. It is read twice because `pluginManagement` is evaluated
 // in an isolated scope that cannot see top-level declarations, and it has to be the very
 // first block in this file.
-fun readFlutterSdk(dir: java.io.File): String {
+//
+// Null when Flutter is not installed. That case is not an error, and making it one was a
+// real obstacle: the engine's 131 JVM tests live in `core/`, none of them touch Flutter,
+// and requiring a 1 GB SDK to run them meant they were not run by anyone who did not
+// already have it. A build without Flutter configures `core/` and says loudly that it
+// has left `:app` out — see the bottom of this file.
+fun readFlutterSdk(dir: java.io.File): String? {
     val f = java.io.File(dir, "ui/.android/local.properties")
-    require(f.exists()) {
-        "ui/.android/local.properties is missing. Run `flutter pub get` in ui/ first."
-    }
+    if (!f.exists()) return null
     val props = java.util.Properties()
     f.inputStream().use { props.load(it) }
-    return requireNotNull(props.getProperty("flutter.sdk")) {
-        "flutter.sdk not set in ui/.android/local.properties"
-    }
+    return props.getProperty("flutter.sdk")
 }
 
 pluginManagement {
     val sdk = run {
         val f = java.io.File(rootDir, "ui/.android/local.properties")
-        val props = java.util.Properties()
-        f.inputStream().use { props.load(it) }
-        props.getProperty("flutter.sdk")
+        if (!f.exists()) {
+            null
+        } else {
+            val props = java.util.Properties()
+            f.inputStream().use { props.load(it) }
+            props.getProperty("flutter.sdk")
+        }
     }
-    includeBuild("$sdk/packages/flutter_tools/gradle")
+    if (sdk != null) includeBuild("$sdk/packages/flutter_tools/gradle")
     repositories {
         google {
             content {
@@ -61,7 +67,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "unique"
 
-include(":app")
 include(":core:common")
 include(":core:hook")
 include(":core:compat")
@@ -78,7 +83,23 @@ include(":core:native")
 // Flutter add-to-app, inlined rather than applying ui/.android/include_flutter.groovy:
 // that script wants to configure pluginManagement itself, which Gradle only permits in
 // the first block of this file. Doing it explicitly keeps both requirements satisfied.
+//
+// `:app` is included alongside it because it depends on `:flutter`. Without the SDK both
+// are left out, and the omission is announced rather than inferred: a build that quietly
+// skipped the host application would report "BUILD SUCCESSFUL" for a tree in which
+// nothing UNIQUE ships had been compiled, which is exactly the kind of green that this
+// project's rules exist to prevent.
 val flutterSdkPath = readFlutterSdk(rootDir)
-include(":flutter")
-project(":flutter").projectDir = file("ui/.android/Flutter")
-apply(from = "$flutterSdkPath/packages/flutter_tools/gradle/module_plugin_loader.gradle")
+if (flutterSdkPath != null) {
+    include(":app")
+    include(":flutter")
+    project(":flutter").projectDir = file("ui/.android/Flutter")
+    apply(from = "$flutterSdkPath/packages/flutter_tools/gradle/module_plugin_loader.gradle")
+} else {
+    logger.lifecycle(
+        "UNIQUE: ui/.android/local.properties is missing, so the Flutter SDK is unknown.\n" +
+            "UNIQUE: configuring core/ only — :app and :flutter are NOT in this build, and\n" +
+            "UNIQUE: neither the host application nor the instrumented suite can be built.\n" +
+            "UNIQUE: run `flutter pub get` in ui/ to get the whole project back."
+    )
+}

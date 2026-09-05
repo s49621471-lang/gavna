@@ -87,6 +87,7 @@ object AppBootstrap {
             // A slot must never serve two instances: their data directories differ, and a
             // second graft would leave the first instance's objects pointing at the wrong
             // one. The launch is refused instead.
+            surrenderSlot(existing, params)
             return Result.Failed(
                 "SLOT_ALREADY_BOUND",
                 "Slot ${params.slot} already serves ${existing.params.packageName} " +
@@ -112,6 +113,48 @@ object AppBootstrap {
             Result.Failed("BOOTSTRAP_FAILED", t.toString(), t)
         }
     }
+
+    /**
+     * Ends this process after a slot it holds has been given to somebody else.
+     *
+     * Refusing the rebind protects the running instance, but on its own it poisons the
+     * slot: the pool has already committed it to [wanted], so every later launch that
+     * lands here is refused for the same reason and the app never starts. That is what a
+     * physical-device run looked like — three different apps in a row, each refused
+     * because slot 0 still held Gemini's graft, with no way back short of force-stopping
+     * UNIQUE.
+     *
+     * The disagreement is between UNIQUE's main process, which believes this slot is
+     * free, and this process, which knows it is not. The main process is the one that
+     * allocates, so this one yields: it dies, the platform starts `:vappN` clean for the
+     * next attempt, and the guest that was already running here would have been stopped by
+     * the reallocation anyway.
+     *
+     * [ProcessPool][com.unique.core.vprocess.ProcessPool] now ends a slot's process when
+     * it releases it, so reaching here at all means the liveness check missed — the
+     * process list lagging behind reality, which it does. This is the second line, not the
+     * first, and it costs the user one tap rather than every launch from here on.
+     *
+     * Off the caller's thread and after a beat, so the refusal is recorded and the Binder
+     * reply is sent before the process stops existing.
+     */
+    private fun surrenderSlot(existing: Result.Ready, wanted: VirtualLaunchParams) {
+        Diagnostics.warn(
+            DiagChannel.PROCESS, "SLOT_SURRENDERED",
+            mapOf(
+                "slot" to wanted.slot.toString(),
+                "serving" to "${existing.params.packageName}/u${existing.params.vuid}",
+                "wanted" to "${wanted.packageName}/u${wanted.vuid}",
+                "detail" to "this process is ending so the slot can be re-grafted",
+            ),
+        )
+        Thread({
+            runCatching { Thread.sleep(SURRENDER_DELAY_MILLIS) }
+            Process.killProcess(Process.myPid())
+        }, "unique-slot-surrender").start()
+    }
+
+    private const val SURRENDER_DELAY_MILLIS = 250L
 
     /**
      * Tells UNIQUE's main process that this slot now serves this instance.
@@ -233,6 +276,7 @@ object AppBootstrap {
             vuid = effective.vuid,
             packageName = effective.packageName,
             declared = manifest.usesPermissions,
+            defined = manifest.declaredPermissions,
             context = hostContext,
         )
 
@@ -365,17 +409,16 @@ object AppBootstrap {
             )
         }
 
-        // Alarms and the clipboard need nothing but the caller's identity: an alarm's
-        // PendingIntent was pointed at a stub when the guest built it, and a clip is data.
-        for (service in listOf("alarm", "clipboard")) {
-            runCatching {
-                VirtualIdentityHooks.install(service, params.packageName, hostContext.packageName)
-            }.onFailure {
-                Diagnostics.warn(
-                    DiagChannel.HOOK, "IDENTITY_HOOK_INSTALL_FAILED",
-                    mapOf("service" to service, "error" to it.toString()),
-                )
-            }
+        // Every service whose interception is nothing but the caller's identity. The list
+        // and the reason for each entry are in VirtualIdentityHooks; three of them are
+        // there because a guest crashed on this device without them.
+        runCatching {
+            VirtualIdentityHooks.installAll(params.packageName, hostContext.packageName)
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.HOOK, "IDENTITY_HOOK_INSTALL_FAILED",
+                mapOf("error" to it.toString()),
+            )
         }
         runCatching { VirtualIdentityHooks.reportAlarmCapability(hostContext) }
 

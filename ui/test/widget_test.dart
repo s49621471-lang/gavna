@@ -117,6 +117,55 @@ void main() {
     expect(find.text('Launch unavailable'), findsOneWidget);
     expect(find.textContaining('next milestone'), findsOneWidget);
   });
+  group('GoogleStatus', () {
+    // The engine's Report.toMap() is a Map<String, String> because the same map is
+    // written into Diagnostics and the device report; the bridge then adds one genuine
+    // bool. Parsing has to survive both, and on a real device it did not: every open of
+    // App Details threw "type 'String' is not a subtype of type 'bool?' in type cast"
+    // before the first field was read.
+    Map<Object?, Object?> engineShape() => {
+          'gmsPresent': 'true',
+          'gmsEnabled': 'true',
+          'gmsVersionCode': '263234035',
+          'gmsVersionName': '26.32.34',
+          'vendingPresent': 'true',
+          'gsfPresent': 'true',
+          'customTabs': 'com.android.chrome',
+          'hostGmsAvailable': 'true',
+          'virtualGmsInstalled': 'false',
+          'customTabsAvailable': 'true',
+          'bridgesImplemented': false,
+          'note': 'no flow is implemented',
+        };
+
+    test('parses the map the engine actually sends', () {
+      final status = GoogleStatus.fromMap(engineShape());
+      expect(status.gmsPresent, isTrue);
+      expect(status.virtualGmsInstalled, isFalse);
+      expect(status.bridgesImplemented, isFalse);
+      expect(status.gmsVersionName, '26.32.34');
+      expect(status.customTabsPackage, 'com.android.chrome');
+      expect(status.presentButUnusable, isFalse);
+    });
+
+    test('parses real booleans too, so either shape is safe', () {
+      final status = GoogleStatus.fromMap({
+        ...engineShape(),
+        'gmsPresent': true,
+        'hostGmsAvailable': false,
+      });
+      expect(status.gmsPresent, isTrue);
+      expect(status.hostGmsAvailable, isFalse);
+      expect(status.presentButUnusable, isTrue);
+    });
+
+    test('a missing or unparseable flag is false, not an exception', () {
+      final status = GoogleStatus.fromMap(const {'gmsPresent': 'yes'});
+      expect(status.gmsPresent, isFalse);
+      expect(status.gmsEnabled, isFalse);
+      expect(status.gmsVersionName, '-');
+    });
+  });
 }
 
 void _localisationTests() {

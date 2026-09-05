@@ -176,9 +176,30 @@ object VirtualActivityTaskManagerHook {
         val guestPackage = ready.params.packageName
         val matches = VirtualIntentResolver.matchingActivities(ready.manifest, intent)
         if (matches.isEmpty()) {
-            Diagnostics.event(
-                DiagChannel.LAUNCH, DiagLevel.DEBUG, "ACTIVITY_IMPLICIT_NO_GUEST_MATCH",
-                mapOf("action" to (intent.action ?: "-"), "package" to guestPackage),
+            // Left to the platform, which is right — an app opening a browser or a share
+            // sheet does exactly this on a real device, and trapping it inside the guest
+            // would break behaviour that works.
+            //
+            // But it is the one path by which a guest's intent reaches an *installed* app,
+            // with that app's data, so it is reported at INFO with the packages that could
+            // answer it. Gemini's shell activity fires an implicit ACTION_VIEW within fifty
+            // milliseconds of starting; the host's Google app answers it, and the user sees
+            // their real account in what they launched as a fresh instance. That is faithful
+            // to the app and confusing to the person, and the only thing that makes it
+            // legible afterwards is this line naming where the intent went.
+            val handlers = AppBootstrap.hostContext?.let {
+                VirtualIntentResolver.hostHandlersFor(it, intent, hostPackage)
+            }.orEmpty()
+            Diagnostics.info(
+                DiagChannel.LAUNCH, "ACTIVITY_IMPLICIT_LEFT_GUEST",
+                mapOf(
+                    "action" to (intent.action ?: "-"),
+                    "data" to (intent.data?.scheme ?: "-"),
+                    "package" to guestPackage,
+                    "handledByHost" to handlers.joinToString(",").ifEmpty { "nothing" },
+                    "detail" to "no activity of the guest matches; the host's own apps " +
+                        "answer this intent, with the host's data",
+                ),
             )
             return intent
         }

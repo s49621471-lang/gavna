@@ -64,7 +64,7 @@ object UniqueEngine {
         database = db
         storageRef = storage
         managerRef = InstanceManager(app, db, storage)
-        launcherRef = VirtualLauncher(app.packageName, SLOT_COUNT)
+        launcherRef = VirtualLauncher(app.packageName, SLOT_COUNT, app)
     }
 
     val storage: VirtualStorage get() = requireNotNull(storageRef) { "UniqueEngine.init not called" }
@@ -221,7 +221,18 @@ object UniqueEngine {
     }
 
     /**
-     * Kills the virtual processes serving a package.
+     * Kills **every** virtual process before a package is updated, not only that
+     * package's.
+     *
+     * The name and the old doc both said "serving a package" and the code never did: a
+     * process name is `com.unique:vappN` and carries no package, so there is nothing here
+     * to filter on. Overshooting is the safe direction for an update — a guest holding an
+     * APK that is about to be replaced must not survive it — and the cost is that
+     * unrelated guests are restarted. Said plainly rather than left as a comment that
+     * describes a filter nobody wrote.
+     *
+     * The pool is not told. It does not need to be: it re-checks liveness when it next
+     * allocates and reclaims whatever these kills emptied.
      *
      * Only UNIQUE's own `:vappN` processes, found through `getRunningAppProcesses`, which
      * lists this app's processes and no others. `/proc` cannot be used for this: it is

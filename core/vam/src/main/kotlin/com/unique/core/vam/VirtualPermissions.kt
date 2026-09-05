@@ -2,10 +2,12 @@ package com.unique.core.vam
 
 import android.content.Context
 import android.content.pm.PackageManager
+import com.unique.core.common.apk.DeclaredPermission
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.shim.shim
 import com.unique.core.common.path.VirtualPathModel
+import com.unique.core.common.permission.PlatformPermissions
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.Reflect
 import com.unique.core.hook.SystemServiceHook
@@ -46,6 +48,14 @@ object VirtualPermissions {
         val vuid: Int,
         val packageName: String,
         val declared: Set<String>,
+        /**
+         * Permissions the guest's own manifest defines at a non-dangerous level.
+         *
+         * The platform grants an app every permission it defines itself, and nothing else
+         * on the device holds them. Without this set they fail the host-grant check and a
+         * guest cannot reach a component it guarded with its own permission.
+         */
+        val selfDefined: Set<String>,
         val stateFile: File,
     )
 
@@ -63,18 +73,52 @@ object VirtualPermissions {
      */
     private val resolvingHostGrant = ThreadLocal.withInitial { false }
 
-    private val store = PermissionStore { permission ->
-        val context = hostContext
-        if (context == null) {
-            PackageManager.PERMISSION_DENIED
-        } else {
-            resolvingHostGrant.set(true)
-            try {
-                context.checkSelfPermission(permission)
-            } finally {
-                resolvingHostGrant.set(false)
+    private val store = PermissionStore(
+        hostGrants = { permission ->
+            val context = hostContext
+            if (context == null) {
+                PackageManager.PERMISSION_DENIED
+            } else {
+                resolvingHostGrant.set(true)
+                try {
+                    context.checkSelfPermission(permission)
+                } finally {
+                    resolvingHostGrant.set(false)
+                }
             }
+        },
+        isRuntimePermission = ::isRuntimePermission,
+        isSelfDefined = { permission -> permission in (binding?.selfDefined ?: emptySet()) },
+    )
+
+    /** Answers already read from the platform. A permission's protection level never changes. */
+    private val protectionCache = HashMap<String, Boolean>()
+
+    /**
+     * Whether [permission] is the user's decision, asking this device before guessing.
+     *
+     * `PackageManager.getPermissionInfo` is the only source that is right about an OEM's
+     * own permissions and about permissions added after this code was written, so it goes
+     * first. It throws `NameNotFoundException` for a permission no installed package
+     * defines, and for that case — and only that case — the static AOSP list answers.
+     *
+     * Cached because this is on the path of every permission check the guest makes, and
+     * `getPermissionInfo` is a Binder call. The value cannot go stale: a permission's
+     * protection level is fixed by whoever defines it, and a package being installed or
+     * removed mid-run cannot change an answer already given.
+     */
+    private fun isRuntimePermission(permission: String): Boolean {
+        synchronized(protectionCache) { protectionCache[permission] }?.let { return it }
+        val fromPlatform = hostContext?.let { context ->
+            runCatching {
+                val info = context.packageManager.getPermissionInfo(permission, 0)
+                @Suppress("DEPRECATION")
+                PlatformPermissions.isDangerousProtectionLevel(info.protectionLevel)
+            }.getOrNull()
         }
+        val answer = fromPlatform ?: PlatformPermissions.isRuntime(permission)
+        synchronized(protectionCache) { protectionCache[permission] = answer }
+        return answer
     }
 
     /** Permissions this process's guest declares. Empty until [bind]. */
@@ -88,17 +132,31 @@ object VirtualPermissions {
      * `Application.onCreate` - and plenty do - must already get its instance's answer.
      */
     @Synchronized
-    fun bind(vuid: Int, packageName: String, declared: Collection<String>, context: Context) {
+    fun bind(
+        vuid: Int,
+        packageName: String,
+        declared: Collection<String>,
+        defined: Collection<DeclaredPermission> = emptyList(),
+        context: Context,
+    ) {
         val host = context.applicationContext ?: context
         hostContext = host
         val model = VirtualPathModel(host.filesDir.absolutePath)
         val b = Binding(
-            vuid, packageName, declared.toSet(),
-            File(model.permissionsFile(vuid, packageName)),
+            vuid = vuid,
+            packageName = packageName,
+            declared = declared.toSet(),
+            selfDefined = defined
+                .filterNot { PlatformPermissions.isDangerousProtectionLevel(it.protectionLevel) }
+                .map { it.name }
+                .toSet(),
+            stateFile = File(model.permissionsFile(vuid, packageName)),
         )
         binding = b
+        synchronized(protectionCache) { protectionCache.clear() }
         disableClientSideCaches()
         val restored = restore(b)
+        val runtime = b.declared.count { it !in b.selfDefined && isRuntimePermission(it) }
         Diagnostics.info(
             DiagChannel.PROCESS, "PERMISSIONS_BOUND",
             mapOf(
@@ -106,6 +164,13 @@ object VirtualPermissions {
                 "vuid" to vuid.toString(),
                 "declared" to declared.size.toString(),
                 "restored" to restored.toString(),
+                // Split out because "declared=31, restored=0" reads like a working
+                // install-time grant and was in fact 31 permissions denied. These two
+                // numbers say which of the declared ones the user actually decides, and
+                // therefore how many are granted before anyone is asked anything.
+                "runtime" to runtime.toString(),
+                "installTime" to (b.declared.size - runtime).toString(),
+                "selfDefined" to b.selfDefined.size.toString(),
             ),
         )
     }

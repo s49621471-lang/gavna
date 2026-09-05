@@ -69,6 +69,24 @@ object SystemServiceHook {
         ServiceTarget("account", "android.accounts.IAccountManager\$Stub"),
         ServiceTarget("permissionmgr", "android.permission.IPermissionManager\$Stub"),
         ServiceTarget("media_session", "android.media.session.ISessionManager\$Stub"),
+
+        // Services that take the caller's own package name and check it against the
+        // calling uid. A guest reaching one of these unproxied gets a SecurityException
+        // naming its own package, which reads as the app being broken; see
+        // VirtualIdentityHooks.CALLER_PACKAGE_SERVICES for the evidence and the rule.
+        ServiceTarget("connectivity", "android.net.IConnectivityManager\$Stub"),
+        ServiceTarget("restrictions", "android.content.IRestrictionsManager\$Stub"),
+        ServiceTarget("locale", "android.app.ILocaleManager\$Stub"),
+        ServiceTarget("power", "android.os.IPowerManager\$Stub"),
+        ServiceTarget("wifi", "android.net.wifi.IWifiManager\$Stub"),
+        ServiceTarget("location", "android.location.ILocationManager\$Stub"),
+        ServiceTarget("audio", "android.media.IAudioService\$Stub"),
+        ServiceTarget("vibrator_manager", "android.os.IVibratorManagerService\$Stub"),
+        ServiceTarget("usagestats", "android.app.usage.IUsageStatsManager\$Stub"),
+        ServiceTarget("netstats", "android.net.INetworkStatsService\$Stub"),
+        ServiceTarget("content", "android.content.IContentService\$Stub"),
+        ServiceTarget("shortcut", "android.content.pm.IShortcutService\$Stub"),
+        ServiceTarget("search", "android.app.ISearchManager\$Stub"),
     )
 
     data class InstallReport(

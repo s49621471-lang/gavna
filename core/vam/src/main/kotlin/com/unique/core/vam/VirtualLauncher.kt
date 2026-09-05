@@ -22,15 +22,33 @@ sealed interface LaunchResult {
  * [LaunchInterceptor] rewrites the transaction.
  *
  * @param slotCount must match `vappProcessCount` in the root build script.
+ * @param context UNIQUE's own application context. Required, and not defaulted to null:
+ *   without it the pool cannot end a `:vappN` process, and a pool that cannot do that
+ *   hands the next app a slot someone else is still grafted into — which is how a device
+ *   run ended with three apps in a row refusing to launch.
  */
 class VirtualLauncher(
     private val hostPackage: String,
     slotCount: Int,
+    context: Context,
 ) {
-    private val pool = ProcessPool(slotCount)
+    private val processes = SlotProcesses(context.applicationContext ?: context, hostPackage)
+
+    private val pool = ProcessPool(
+        capacity = slotCount,
+        alive = processes::alive,
+        stop = processes::stop,
+    )
 
     fun snapshot() = pool.snapshot()
 
+    /**
+     * Gives up every slot held by an instance, ending the processes serving them.
+     *
+     * Called when an instance is removed or updated. Before the pool ended the process
+     * itself this returned with the guest still running, and the slot it had been using
+     * was unusable by anything else for as long as UNIQUE stayed up.
+     */
     fun release(vuid: Int, reason: String) = pool.releaseAll(vuid, reason)
 
     /**

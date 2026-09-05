@@ -318,6 +318,90 @@ Two more faults from the same log:
 **Still not confirmed working on hardware.** None of this is re-marked in
 `docs/COMPATIBILITY.md`: an emulator that never reproduced these cannot confirm them.
 
+### The third run: what a whole session on the phone looks like
+
+The first two runs each read one crash. This one is a whole session — seven apps imported
+and launched on a Redmi Note 12 (Android 15, `sea_ru`, HyperOS), 26,950 lines of log, of
+which 545 are UNIQUE's own. It is checked in at
+`tools/device-log/fixtures/redmi-android15.log`, and
+[`tools/device-log/analyze.py`](../tools/device-log/README.md) is what reads it, because
+finding thirty lines in twenty-seven thousand by eye is not a method.
+
+The reported symptom was **"Gemini started, and after that nothing launches at all."**
+Both halves have a cause and neither is the app's.
+
+**Nothing launched after Gemini.** `ProcessPool.release()` freed a slot's record and
+killed nothing. Removing an instance called it, the `:vapp0` process kept running with
+Gemini's graft still installed, and the next three apps were each assigned slot 0:
+
+```
+BOOTSTRAP_FAILED package=clear.una        code=SLOT_ALREADY_BOUND
+    message=Slot 0 already serves com.google.android.apps.bard (u0)
+BOOTSTRAP_FAILED package=com.f0x1d.logfox code=SLOT_ALREADY_BOUND
+BOOTSTRAP_FAILED package=bin.mt.plus      code=SLOT_ALREADY_BOUND
+```
+
+Slot 0 is the first free slot, so it was picked every time and every launch from then on
+failed identically. The pool now ends a slot's process when it releases it, checks
+liveness before handing a slot to a new occupant, and reclaims slots whose process has
+died — the death observation the doc comment claimed and nothing performed. A `:vappN`
+that still finds itself double-booked ends itself rather than refusing forever, which
+costs one tap instead of every launch after it.
+
+**ChatGPT crashed on its first screen**, twice, and a third refusal killed its network
+thread:
+
+```
+SecurityException: Only system may: get application restrictions for other user/app com.openai.chatgpt
+    at android.content.RestrictionsManager.getApplicationRestrictions
+    at com.openai.chatgpt.MainActivity.onCreate
+SecurityException: getApplicationLocales: Neither user 10300 nor current process has READ_APP_SPECIFIC_LOCALES.
+SecurityException: Package com.openai.chatgpt does not belong to 10300
+    at android.net.ConnectivityManager.getNetworkCapabilities
+```
+
+Three spellings of one fault: a call carrying a package name that does not belong to
+UNIQUE's uid, to a service that was not proxied. `restrictions`, `locale` and
+`connectivity` are now in `SystemServiceHook.TARGETS`, along with the rest of the set an
+ordinary app touches while starting — each listed with what a guest loses without it in
+`VirtualIdentityHooks.CALLER_PACKAGE_SERVICES`. A guest asking to set its *own* app locale
+is refused rather than aimed at UNIQUE's, which is the only other place that call could
+land.
+
+**And every guest was running with no network permission.** Not from any of the crashes —
+from the permission model:
+
+```
+PERMISSION_CHECK permission=android.permission.ACCESS_NETWORK_STATE result=DENIED   (x36)
+PERMISSION_CHECK permission=android.permission.INTERNET              result=DENIED   (x10)
+PERMISSION_CHECK permission=android.permission.WAKE_LOCK             result=DENIED   (x4)
+```
+
+`PermissionStore` treated every undecided permission as denied. That is the right rule for
+a runtime permission and meaningless for an install-time one: `INTERNET` has no dialog,
+no app requests it, and there was no action any user could have taken to grant it. Install-
+time permissions are now granted because the manifest asked for them, as at install, and
+only dangerous ones are the user's decision. A permission the guest defines itself is
+granted too — the host cannot hold one only the guest declares.
+
+Two more, from the same log:
+
+- **UNIQUE's own App Details screen was dead.** `GoogleStatus.fromMap` threw
+  `type 'String' is not a subtype of type 'bool?' in type cast` on the first field it read,
+  fifteen times. The engine sends `Map<String, String>` because the same map goes into
+  Diagnostics; the Dart was written to tolerate that and `as bool?` *throws* on a `String`
+  rather than evaluating to null, so the `??` fallback meant to catch it never ran.
+- **`IO_REDIRECT_INSTALLED status=NOT_IMPLEMENTED`** on the Unity app and on Gemini, which
+  read as a missing subsystem and was not one. It means zero PLT slots were patched
+  because the guest had not loaded its libraries yet — Unity loads them from its own
+  initialiser, long after `Application.onCreate` — and `watch=OK` says the dlopen watch
+  will catch them. That state is now `NOTHING_TO_HOOK`, and the watch matching nothing is
+  `kFailed`, which is what it always was.
+
+**Still not confirmed working on hardware.** Every fix above is reasoned from this log and
+none has been back on the phone. `docs/COMPATIBILITY.md` is unchanged for the same reason
+it was unchanged after the second run.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -341,6 +425,16 @@ visible to unit tests:
 | All of a guest's activities share one stub pool, so with `FLAG_ACTIVITY_NEW_TASK` the task system saw the *same component* and answered `START_DELIVERED_TO_TOP` instead of starting the requested screen — and two `PendingIntent`s for two screens compared equal | fixed (`Intent.setIdentifier` on the stub intent; the guest's own identifier is restored on unwrap) |
 | `stageProbeApk` declared no inputs, so the suite ran an old probe against a new engine while reporting green | fixed (probe sources are inputs; the APK is rebuilt, not reused) |
 | `verify-device.sh` piped `adb install` into `tail`, discarding its exit status — a failed install ran the suite against whatever was installed before | fixed |
+| **A released slot's process was never ended, so every app launched after it got `SLOT_ALREADY_BOUND` and never started.** Three apps in a row on a real phone | fixed (the pool ends the process, checks liveness before reassigning, and reclaims dead slots) |
+| Nothing ever called `ProcessPool.release` on a crash or a low-memory kill, despite the doc saying so, so a crashed guest kept its slot for as long as UNIQUE stayed up | fixed (liveness is re-checked at allocation instead of relying on a callback) |
+| **Install-time permissions were denied to every guest** — `INTERNET`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK` — with no user action that could have granted them | fixed (`PlatformPermissions` splits runtime from install-time; only dangerous ones are the user's decision) |
+| A permission the guest's own manifest defines was denied, because the host does not hold a permission only the guest declares | fixed (self-defined non-dangerous permissions are granted, as at install) |
+| `RestrictionsManager.getApplicationRestrictions` refused, killing ChatGPT in `Activity.onCreate` | fixed (`restrictions` proxied) |
+| `LocaleManager.getApplicationLocales` refused, killing ChatGPT's network thread | fixed (`locale` proxied; `setApplicationLocales` refused rather than applied to UNIQUE) |
+| `ConnectivityManager.getNetworkCapabilities` refused, so a guest saw no network | fixed (`connectivity` proxied, with eleven more services that validate the same way) |
+| UNIQUE's own App Details screen threw on every open: `as bool?` throws on a `String` in Dart, so the tolerant fallback beside it never ran | fixed (type-test instead of cast, with tests for both shapes) |
+| A guest with no libraries loaded yet reported `IO_REDIRECT_INSTALLED status=NOT_IMPLEMENTED`, which reads as a missing subsystem | fixed (`NOTHING_TO_HOOK`; a failed dlopen watch is `kFailed`) |
+| The 131 JVM tests could not be run without a 1 GB Flutter SDK, because `settings.gradle.kts` refused to configure without it | fixed (a build without Flutter configures `core/` and says loudly that `:app` is not in it) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step

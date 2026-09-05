@@ -332,9 +332,11 @@ InstallStatus install_locked() {
     }
 
     // Zero patched slots is not a failure on its own - a guest with no native code has
-    // nothing to hook - but it must not be reported as a working interception.
+    // nothing to hook, and one that loads its libraries later has nothing to hook *yet* -
+    // but it must not be reported as a working interception either. kNothingToHook says
+    // both, where kNotImplemented used to say neither.
     g_installed = report.slots_patched > 0;
-    return report.slots_patched > 0 ? InstallStatus::kOk : InstallStatus::kNotImplemented;
+    return report.slots_patched > 0 ? InstallStatus::kOk : InstallStatus::kNothingToHook;
 }
 
 InstallStatus install() { return install_locked(); }
@@ -381,7 +383,12 @@ InstallStatus watch_library_loads() {
     for (const auto& name : report.sample) {
         ULOGW("io_redirect: watch saw but did not match: %s", name.c_str());
     }
-    return g_watching ? InstallStatus::kOk : InstallStatus::kNotImplemented;
+    // Not kNothingToHook: the scope here is libnativeloader.so and libart.so, which are
+    // loaded in every process there has ever been. Matching nothing means the hook did
+    // not work, and the consequence is specific - a library the guest loads after
+    // bootstrap is never redirected - so it is reported as a failure and not as an empty
+    // scan.
+    return g_watching ? InstallStatus::kOk : InstallStatus::kFailed;
 }
 
 bool watching() { return g_watching; }

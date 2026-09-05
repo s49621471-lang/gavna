@@ -130,6 +130,33 @@ dying remains.
 
 ---
 
+## 3b. Reading what came back
+
+Send the zip, or just `unique.log` from inside it. Whoever reads it runs:
+
+```bash
+tools/device-log/analyze.py unique.log --device environment.txt
+```
+
+Ten checks, exit status 0 or 1, no SDK and no device needed. It answers the questions a
+person scrolling a 27,000-line log is trying to answer and usually cannot: did every
+launch reach the guest's own Activity, was every process slot handed over clean, did any
+call go out under the guest's name and get refused — and *which system service to hook*
+when one did.
+
+That last one is why this exists. A `SecurityException` inside a guest names the guest's
+package, so it reads as the app misbehaving; it almost never is. It means a call carried a
+package name that does not belong to UNIQUE's uid, and the tool reads the
+`IRestrictionsManager$Stub$Proxy` frame out of the stack to say which service was missing.
+
+It works on a recorder app's export too, so a run can be diagnosed from a phone with no
+computer near it. `tools/device-log/README.md` has the details.
+
+**It does not look at pixels**, which is why `s04` below is a step a person performs and
+not a check. A guest that draws a black screen and logs nothing passes all ten.
+
+---
+
 ## 4. What a phone can prove that the emulator could not
 
 Five things, and they are the reason this document exists.

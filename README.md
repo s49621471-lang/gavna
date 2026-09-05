@@ -35,9 +35,9 @@ never written as `SUPPORTED` because something ought to work.
 
 | | |
 |---|---|
-| **Off-device tests** | 131 JVM tests, 34 native checks, 9 Dart tests — all passing |
+| **Off-device tests** | 131 JVM tests, 34 native checks, 12 Dart tests, 25 log-analyzer tests — all passing |
 | **On-device suite** | **38 of 38** instrumented tests pass, on an Android 14 x86_64 emulator, against the exact APK in `dist/` |
-| **On a real phone** | UNIQUE installs and runs, imports apps, starts virtual processes, grafts, publishes providers, launches the activity — **and the guest then crashes.** Two causes found and fixed; a third is under investigation |
+| **On a real phone** | UNIQUE installs and runs, imports apps, starts virtual processes, grafts, publishes providers, launches the activity — **and the guest then crashes.** Three runs, nine causes found and fixed, none yet re-tested on hardware |
 
 **A virtual app has never yet run to a usable screen on physical hardware.** That is the
 single most important fact about this project's status, and every other claim here is
@@ -71,7 +71,7 @@ per-capability matrix.
 
 | Problem | Where it stands |
 |---|---|
-| **Guests crash on a real Android 15 device** | Three faults found from one phone log. Two fixed (a settings read refused because the provider was cached before the graft; `getHistoricalProcessExitReasons` going out under the guest's name). A third — the guest's network security policy being UNIQUE's — is fixed but unproven. **Not yet confirmed working on hardware.** |
+| **Guests crash on a real Android 15 device** | Nine faults found across three phone logs, all fixed and none re-tested on hardware. The third run explains the two symptoms actually reported — *nothing launches after the first app* (a released process slot was never ended, so every later launch was refused) and *ChatGPT dies on its first screen* (three system services that validate the caller's package were not proxied) — and found a third nobody had noticed: every guest was running with `INTERNET` denied. `docs/STATUS.md` has each one with its log line. **Not yet confirmed working on hardware.** |
 | **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. |
 | **Play Integrity, Play Games, Play Billing** | Expected not to work. UNIQUE is not an attestation bypass and will not pretend to be one. |
 | **A broadcast arriving while UNIQUE itself is not running is missed** | The registrations live in UNIQUE's main process. Closing this needs static registrations in the host manifest, which needs the actions known at build time. |
@@ -122,6 +122,7 @@ what broke, and why the current shape is the one that survived.
 | [`docs/PHYSICAL_DEVICE_TEST.md`](docs/PHYSICAL_DEVICE_TEST.md) | The twelve-step sequence for testing on a phone, with no `adb`, no root and no computer |
 | [`docs/GOOGLE_DEVICE_TEST.md`](docs/GOOGLE_DEVICE_TEST.md) | The procedure for a device with a Google stack, in the order that makes one failure explain the next |
 | [`dist/README.md`](dist/README.md) | The downloadable APKs, which to install and why |
+| [`tools/device-log/README.md`](tools/device-log/README.md) | Reading a run from a phone: ten checks over a device log, no SDK and no device |
 
 ---
 
@@ -142,7 +143,7 @@ core/google     the three-mode Google router and its (unimplemented) bridges
 core/native     C++ redirect table, PLT/GOT hooking, crash handler, Vulkan probe
 ui/             Flutter interface (add-to-app module), English and Russian
 tools/          the probe application, fixture generation, host-side native tests,
-                the on-device verification harness
+                the on-device verification harness, the device-log analyzer
 dist/           the ARM64 APKs a tester installs
 ```
 
@@ -179,13 +180,37 @@ Three build types, and the difference matters:
 ```bash
 ./gradlew test                    # 131 JVM tests
 ./tools/native-test/run.sh        # 34 host-side native checks, no device needed
-(cd ui && flutter test)           # 9 Dart tests
+(cd ui && flutter test)           # 12 Dart tests
+./tools/device-log/self_test.py   # 25 tests for the device-log analyzer, no toolchain
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface
 
 # The on-device suite: builds, installs, runs 38 instrumented tests, saves everything.
 export ANDROID_HOME=/path/to/android-sdk
 BUILD_TYPE=verify ./tools/verify-device.sh
 ```
+
+`./gradlew test` needs the Android SDK but **not** Flutter: without `ui/.android/local.properties`
+the build configures `core/` alone and says so, rather than refusing. `:app` and the
+instrumented suite still need the Flutter SDK, and a build that has left them out announces
+it instead of reporting a green that covers nothing UNIQUE ships.
+
+### Reading a run from a phone
+
+The four things that matter most — ARM64 guest code, a real GPU, an OEM framework fork, an
+app that was not written to be tested — only a phone can answer, and what comes back from
+one is a log of tens of thousands of lines in which about thirty matter. Those thirty are
+found mechanically:
+
+```bash
+tools/device-log/analyze.py recorded.log --device device.txt
+```
+
+Ten checks, exit status 0 or 1, no SDK and no device: did every launch reach the guest's
+own Activity, was every process slot handed over clean, did any call go out under the
+guest's name and get refused — and *which service to hook* when one did. It reads UNIQUE's
+own diagnostics export, a recorder app's log, or `adb logcat`, and it is regression-tested
+against a real Android 15 run in which three apps in a row failed to launch. See
+[`tools/device-log/README.md`](tools/device-log/README.md).
 
 The parser and ELF tests run against fixtures produced by real `aapt2` and real NDK clang,
 regenerated with `tools/gen-fixtures.sh` — checked-in bytes nobody can reproduce are not
