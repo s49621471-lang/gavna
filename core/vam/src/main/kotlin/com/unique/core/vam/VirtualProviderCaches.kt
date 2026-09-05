@@ -1,6 +1,8 @@
 package com.unique.core.vam
 
+import android.content.AttributionSource
 import android.content.Context
+import android.provider.Settings
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.Reflect
@@ -61,16 +63,128 @@ internal object VirtualProviderCaches {
         "android.provider.Settings\$Config",
     )
 
-    fun evict(context: Context) {
+    fun evict(context: Context, hostSource: AttributionSource) {
         val providers = evictActivityThreadProviders(context)
+        val refCounts = evictProviderRefCounts()
         val settings = evictSettingsCaches()
+        val wrapped = installIntoSettingsCaches(context, hostSource)
         Diagnostics.info(
             DiagChannel.PROCESS, "PROVIDER_CACHES_EVICTED",
             mapOf(
                 "activityThreadProviders" to providers.toString(),
+                "providerRefCounts" to refCounts.toString(),
                 "settingsCaches" to settings.toString(),
+                "settingsWrapped" to wrapped.toString(),
+                // The one fact that decides whether any of this can work. If this is not
+                // the host's package name, every substitution below puts the wrong name in
+                // and the guest is refused exactly as before.
+                "hostSource" to hostSource.packageName.orEmpty(),
+                "hostSourceUid" to hostSource.uid.toString(),
             ),
         )
+    }
+
+    /**
+     * Puts UNIQUE's wrapper *into* each `Settings` cache, rather than hoping for one.
+     *
+     * Emptying the caches was supposed to be enough: the next read would re-acquire through
+     * `IActivityManager.getContentProvider`, which is hooked, and get a wrapped provider. On
+     * a Xiaomi Android 15 device it was not enough — the guest still reached
+     * `ContentProviderProxy.call` directly, with no wrapper in the stack, and was refused:
+     *
+     * ```
+     * SecurityException: Package com.openai.chatgpt does not belong to 10300
+     *     at android.content.ContentProviderProxy.call
+     *     at android.provider.Settings$NameValueCache.getStringForUser
+     * ```
+     *
+     * So the wrapper is installed by hand instead of arranged for. One read through the
+     * *host's* own resolver — which is still UNIQUE's, because the service context this
+     * runs on was never grafted — forces the holder to be populated, and whatever it holds
+     * is then wrapped in place. Nothing is left depending on which path a later acquisition
+     * happens to take.
+     *
+     * The value cache is cleared again afterwards. The priming read filled it under
+     * UNIQUE's identity, and a guest asking for `ANDROID_ID` must reach the shim that
+     * answers from its own device profile rather than a value already in a map.
+     */
+    private fun installIntoSettingsCaches(context: Context, hostSource: AttributionSource): Int {
+        val resolver = context.contentResolver
+        // A key that exists on every device and means nothing, read only to make the
+        // platform acquire the provider.
+        runCatching { Settings.Global.getString(resolver, Settings.Global.DEVICE_NAME) }
+        runCatching { Settings.Secure.getString(resolver, "unique_priming_read") }
+        runCatching { Settings.System.getString(resolver, "unique_priming_read") }
+
+        var wrapped = 0
+        var alreadyWrapped = 0
+        var empty = 0
+        for (className in SETTINGS_CLASSES) {
+            val cls = Reflect.findClass(className) ?: continue
+            val cache = runCatching {
+                cls.getDeclaredField("sNameValueCache").apply { isAccessible = true }.get(null)
+            }.getOrNull() ?: continue
+            runCatching {
+                val holderField = cache.javaClass.getDeclaredField("mProviderHolder")
+                    .apply { isAccessible = true }
+                val holder = holderField.get(cache) ?: return@runCatching
+                val providerField = holder.javaClass.getDeclaredField("mContentProvider")
+                    .apply { isAccessible = true }
+                synchronized(holder) {
+                    val provider = providerField.get(holder)
+                    if (provider == null) {
+                        // The priming read did not populate it — `Settings.Config` has no
+                        // public accessor, so this is expected there and a finding anywhere
+                        // else.
+                        empty++
+                        return@synchronized
+                    }
+                    if (VirtualProviderProxy.isWrapped(provider)) {
+                        // The happy path: re-acquisition went through the hook and came
+                        // back wrapped. Counted separately from `wrapped` because "zero
+                        // wrapped" otherwise reads the same whether everything was already
+                        // right or nothing was there at all.
+                        alreadyWrapped++
+                        return@synchronized
+                    }
+                    val proxy = VirtualProviderProxy.wrap(provider, hostSource)
+                        ?: return@synchronized
+                    providerField.set(holder, proxy)
+                    wrapped++
+                }
+            }.onFailure {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "SETTINGS_CACHE_WRAP_FAILED",
+                    mapOf("class" to className, "error" to it.toString()),
+                )
+            }
+            clearValues(cache)
+        }
+        Diagnostics.info(
+            DiagChannel.PROCESS, "SETTINGS_CACHES_PRIMED",
+            mapOf(
+                "wrappedByHand" to wrapped.toString(),
+                "alreadyWrapped" to alreadyWrapped.toString(),
+                "empty" to empty.toString(),
+            ),
+        )
+        return wrapped + alreadyWrapped
+    }
+
+    /** Drops whatever a `NameValueCache` has memorised, values and generation alike. */
+    private fun clearValues(cache: Any) {
+        runCatching {
+            val values = cache.javaClass.getDeclaredField("mValues")
+                .apply { isAccessible = true }.get(cache) as? MutableMap<*, *>
+            values?.let { synchronized(it) { it.clear() } }
+        }
+        // Android 12 added a generation tracker that lets the cache skip a read entirely.
+        // Left in place it can answer from what UNIQUE read, which is the same leak as the
+        // value map and harder to see.
+        runCatching {
+            cache.javaClass.getDeclaredField("mGenerationTracker")
+                .apply { isAccessible = true }.set(cache, null)
+        }
     }
 
     /**
@@ -85,6 +199,53 @@ internal object VirtualProviderCaches {
      * ActivityManager's own reference counts as they are; they are reclaimed when the
      * process dies, which for a `:vappN` is soon and certain.
      */
+    /**
+     * The second map, and the one that actually decided the outcome.
+     *
+     * `ActivityThread.installProvider` does this with a provider handed back by
+     * `getContentProvider`:
+     *
+     * ```java
+     * IBinder jBinder = provider.asBinder();
+     * ProviderRefCount prc = mProviderRefCountMap.get(jBinder);
+     * if (prc != null) {
+     *     provider = prc.holder.provider;   // the wrapper is dropped here
+     * }
+     * ```
+     *
+     * UNIQUE's wrapper answers `asBinder()` with the *raw* binder — it has to, that is what
+     * makes it a usable `IContentProvider` — so a provider this process had acquired before
+     * the graft is found in this map by its own binder, and the wrapper is thrown away in
+     * favour of the record already there. Clearing `mProviderMap` alone was therefore not
+     * enough, and the guest kept reaching `ContentProviderProxy.call` directly:
+     *
+     * ```
+     * SecurityException: Package com.openai.chatgpt does not belong to 10300
+     *   at android.content.ContentProviderProxy.call
+     *   at android.provider.Settings$NameValueCache.getStringForUser
+     * ```
+     *
+     * The reference counts belong to acquisitions this process made as UNIQUE and will
+     * never release as the guest; the process's death reclaims them, and for a `:vappN`
+     * that is soon and certain.
+     */
+    private fun evictProviderRefCounts(): Int {
+        val activityThreadClass = Reflect.findClass("android.app.ActivityThread") ?: return 0
+        val activityThread = runCatching {
+            Reflect.findMethod(activityThreadClass, "currentActivityThread")?.invoke(null)
+        }.getOrNull() ?: return 0
+        val map = runCatching {
+            Reflect.get(activityThreadClass, "mProviderRefCountMap", activityThread)
+        }.getOrNull() as? MutableMap<*, *> ?: return 0
+        return runCatching {
+            synchronized(map) {
+                val size = map.size
+                map.clear()
+                size
+            }
+        }.getOrDefault(0)
+    }
+
     private fun evictActivityThreadProviders(context: Context): Int {
         val activityThreadClass = Reflect.findClass("android.app.ActivityThread") ?: return 0
         val activityThread = runCatching {
@@ -144,11 +305,7 @@ internal object VirtualProviderCaches {
             // The value cache too. It was filled with what UNIQUE's own identity could
             // read, and a guest asking for `android_id` must reach the shim that answers
             // from its own device profile rather than a value already in a map.
-            runCatching {
-                val values = cache.javaClass.getDeclaredField("mValues")
-                    .apply { isAccessible = true }.get(cache) as? MutableMap<*, *>
-                values?.let { synchronized(it) { it.clear() } }
-            }
+            clearValues(cache)
             if (holderCleared) cleared++
         }
         return cleared

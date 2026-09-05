@@ -30,7 +30,8 @@ class GoogleCompatRouterTest {
             minSdk = 26, targetSdk = 35, sharedUserId = null, splitName = null,
             isFeatureSplit = false, applicationClassName = null,
             applicationProcess = "com.example.app", appComponentFactory = null,
-            hasCode = true, extractNativeLibs = null, label = null, labelResId = 0, iconResId = 0, themeResId = 0,
+            hasCode = true, extractNativeLibs = null, label = null, labelResId = 0, iconResId = 0,
+            networkSecurityConfigResId = 0, usesCleartextTraffic = null, themeResId = 0,
             usesPermissions = emptyList(), declaredPermissions = emptyList(),
             components = listOf(
                 ComponentEntry(ComponentKind.ACTIVITY, "com.example.app.Auth", "com.example.app",

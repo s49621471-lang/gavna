@@ -97,6 +97,19 @@ data class ApkManifest(
      */
     val labelResId: Int,
     val iconResId: Int,
+    /**
+     * `android:networkSecurityConfig`, the resource that decides what the guest may
+     * connect to and how.
+     *
+     * A virtual process inherits UNIQUE's policy, installed by `handleBindApplication`
+     * before the graft, and that is both wrong and — on Android 15 — fatal: Conscrypt asks
+     * the policy about a domain and, when the guest's own config was never installed,
+     * dereferences null on the way out of a TLS socket. Cleartext rules and certificate
+     * pinning are the guest's decisions, not the host's.
+     */
+    val networkSecurityConfigResId: Int,
+    /** `android:usesCleartextTraffic`, when the app states it. Null means unstated. */
+    val usesCleartextTraffic: Boolean?,
     val themeResId: Int,
     val usesPermissions: List<String>,
     val declaredPermissions: List<DeclaredPermission>,

@@ -182,7 +182,7 @@ object VirtualActivityManagerHook {
         val target = SystemServiceHook.TARGETS.first { it.serviceName == "activity" }
         val report = SystemServiceHook.install(
             target,
-            shims(virtualPackage, hostPackage, hostContext.attributionSource),
+            shims(virtualPackage, hostPackage, hostSourceFor(hostContext, hostPackage)),
         )
         if (!report.installed) {
             Diagnostics.error(
@@ -200,10 +200,41 @@ object VirtualActivityManagerHook {
                 "methods" to (report.bind?.bound?.size?.toString() ?: "0"),
                 // The concrete names, not the shim labels: a shim that binds to nothing
                 // the platform still calls is the failure mode this hook already had once.
-                "matched" to (report.bind?.describeMatches()?.take(400) ?: "-"),
+                // Long enough to name every shim. It was 400, and a truncated list left it
+                // an open question whether `getContentProvider` had bound at all — which is
+                // exactly the question a physical-device log needed to answer.
+                "matched" to (report.bind?.describeMatches()?.take(1600) ?: "-"),
             ),
         )
         return true
+    }
+
+    /**
+     * The `AttributionSource` every outbound provider call will carry.
+     *
+     * Normally the host `Context`'s own, which is already valid for this uid and carries a
+     * token the system registered. But this runs *inside* a `:vappN` that is in the middle
+     * of becoming a guest, and a context whose source has already been rebuilt from the
+     * grafted `LoadedApk` would name the guest — substituting that changes nothing and is
+     * invisible, because the call fails exactly as it would have anyway.
+     *
+     * So the name is checked, and a plain source for this uid and this package is built if
+     * it is wrong. An untokened source is what an ordinary app has; the token matters for
+     * permission delegation, and none is being delegated here.
+     */
+    internal fun hostSourceFor(hostContext: Context, hostPackage: String): AttributionSource {
+        val existing = runCatching { hostContext.attributionSource }.getOrNull()
+        if (existing != null && existing.packageName == hostPackage) return existing
+        Diagnostics.warn(
+            DiagChannel.LAUNCH, "HOST_ATTRIBUTION_REBUILT",
+            mapOf(
+                "was" to (existing?.packageName ?: "null"),
+                "host" to hostPackage,
+            ),
+        )
+        return AttributionSource.Builder(android.os.Process.myUid())
+            .setPackageName(hostPackage)
+            .build()
     }
 
     private fun shims(
@@ -694,31 +725,7 @@ object VirtualActivityManagerHook {
             return holder
         }
         val provider = runCatching { providerField.get(holder) }.getOrNull() ?: return holder
-        if (Proxy.isProxyClass(provider.javaClass)) return holder // already wrapped
-
-        val iface = Reflect.findClass("android.content.IContentProvider") ?: return holder
-        val wrapped = Proxy.newProxyInstance(
-            iface.classLoader, arrayOf(iface),
-        ) { _, method, args ->
-            val rewritten = args?.map { arg ->
-                if (arg is AttributionSource) hostSource else arg
-            }?.toTypedArray()
-            // A settings read is answered from the instance's own device profile. This is
-            // the point where "two clones look like one installation to anything that
-            // fingerprints" is fixed, and it belongs here because Settings.Secure reads
-            // through the provider rather than through a system-service interface.
-            val answered = if (method.name == "call" && rewritten != null) {
-                VirtualSettings.answerSettingsCall(rewritten)
-            } else {
-                null
-            }
-            if (answered != null) return@newProxyInstance answered
-            try {
-                method.invoke(provider, *(rewritten ?: emptyArray()))
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw e.targetException
-            }
-        }
+        val wrapped = VirtualProviderProxy.wrap(provider, hostSource) ?: return holder
         runCatching { providerField.set(holder, wrapped) }
         return holder
     }

@@ -44,6 +44,8 @@ object ManifestReader {
         var hasCode = true
         var extractNativeLibs: Boolean? = null
         var label: String? = null
+        var networkSecurityConfigResId = 0
+        var usesCleartextTraffic: Boolean? = null
         var labelResId = 0
         var iconResId = 0
         var themeResId = 0
@@ -71,6 +73,20 @@ object ManifestReader {
         fun flushComponent() {
             flushFilter()
             val c = cur ?: return
+            // A component with no `android:name` is not a component. Real APKs contain
+            // them — a `<provider>` left behind by a manifest merge, its name stripped by a
+            // build tool — and qualifying an empty name against the package produces
+            // `com.example.app.`, which the class loader answers with
+            //
+            //   ClassNotFoundException: Invalid name: com.openai.chatgpt.
+            //
+            // once per publish attempt, forever. Dropping it here is what the platform
+            // does too, and it keeps the noise out of every layer downstream.
+            if (c.name.isBlank()) {
+                cur = null
+                curDepth = -1
+                return
+            }
             components += c.build(packageName)
             cur = null
             curDepth = -1
@@ -117,6 +133,10 @@ object ManifestReader {
                     labelResId = labelAttr?.takeIf { it.dataType == BinaryXml.TYPE_REFERENCE }
                         ?.rawData ?: 0
                     iconResId = el.attr(AndroidAttrs.ICON, "icon")?.rawData ?: 0
+                    networkSecurityConfigResId =
+                        el.attrByName("networkSecurityConfig")?.rawData ?: 0
+                    usesCleartextTraffic =
+                        el.attrByName("usesCleartextTraffic")?.asBoolean(true)
                     themeResId = el.attr(AndroidAttrs.THEME, "theme")?.rawData ?: 0
                 }
                 "activity", "activity-alias", "service", "receiver", "provider" -> {
@@ -176,6 +196,8 @@ object ManifestReader {
             label = label,
             labelResId = labelResId,
             iconResId = iconResId,
+            networkSecurityConfigResId = networkSecurityConfigResId,
+            usesCleartextTraffic = usesCleartextTraffic,
             themeResId = themeResId,
             usesPermissions = usesPermissions.toList(),
             declaredPermissions = declaredPermissions,

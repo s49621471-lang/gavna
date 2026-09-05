@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-115145-10161`, the `verify` build a tester is handed, Android 14 x86_64,
+Run `20260905-125829-4200`, the `verify` build a tester is handed, Android 14 x86_64,
 probe **not installed on the device**. **38 of 38 pass.**
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
@@ -263,6 +263,60 @@ before the failure. That is now a build-type flag of its own, on for the `verify
 
 `t38` covers the settings read and the label, and the probe was given a real resource table
 and a localized name so both are exercised rather than asserted.
+
+### The second run: further in, still not launching
+
+Same phone, same day, with the fixes above installed and full logging on. The graft now
+**completes**: `BOOTSTRAP_OK`, fifteen of ChatGPT's providers published, the launch
+transaction rewritten to `com.openai.chatgpt.MainActivity`. Then the guest crashes, and it
+crashes reading a setting again:
+
+```
+SecurityException: Package com.openai.chatgpt does not belong to 10300
+  at android.content.ContentProviderProxy.call        ← the raw binder, not UNIQUE's wrapper
+  at android.provider.Settings$NameValueCache.getStringForUser
+  at android.database.sqlite.SQLiteCompatibilityWalFlags.initIfNeeded
+```
+
+Emptying the caches was not enough, and the log says why by what is *missing* from the
+stack: no wrapper frame. `ActivityThread.installProvider` does this with whatever
+`getContentProvider` hands back:
+
+```java
+IBinder jBinder = provider.asBinder();
+ProviderRefCount prc = mProviderRefCountMap.get(jBinder);
+if (prc != null) {
+    provider = prc.holder.provider;   // the wrapper is dropped here
+}
+```
+
+UNIQUE's wrapper answers `asBinder()` with the *raw* binder — it has to, that is what makes
+it a usable `IContentProvider` — so a provider this process acquired before the graft is
+found in that second map by its own binder and the wrapper is discarded in favour of the
+record already there. `mProviderRefCountMap` is now evicted alongside `mProviderMap`, and
+the wrapper is additionally installed into each `Settings` holder **by hand** rather than
+arranged for, so nothing depends on which path a later acquisition takes.
+
+The log also settled a question that had been guesswork: `hostSource=com.unique
+hostSourceUid=10108`. The identity being substituted was right all along; it was simply
+never reaching the call.
+
+Two more faults from the same log:
+
+- **`FATAL EXCEPTION: nfz Dispatcher`** — Conscrypt dereferencing a null
+  `NetworkSecurityPolicy` while closing a TLS socket. A `:vappN` inherits the policy the
+  platform installed for *UNIQUE* during `handleBindApplication`, because the guest did not
+  exist yet. That is wrong even when nothing crashes: cleartext rules and certificate
+  pinning are the guest's security decisions, and running its traffic under the host's
+  either relaxes them or breaks them. The guest's own config is now installed after its
+  Application is created.
+- **`ClassNotFoundException: Invalid name: com.openai.chatgpt.`**, six times per launch. A
+  `<provider>` with no `android:name` — real APKs contain them, left behind by a manifest
+  merge — and qualifying an empty name against the package produces `<pkg>.`. Components
+  with a blank name are now dropped at parse time, as the platform drops them.
+
+**Still not confirmed working on hardware.** None of this is re-marked in
+`docs/COMPATIBILITY.md`: an emulator that never reproduced these cannot confirm them.
 
 ## Previously blocking, now fixed
 

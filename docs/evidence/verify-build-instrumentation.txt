@@ -533,7 +533,7 @@ INSTRUMENTATION_STATUS: test=t38_theGuestReadsASettingAndIsCalledByItsOwnName
 INSTRUMENTATION_STATUS_CODE: 0
 INSTRUMENTATION_RESULT: stream=
 
-Time: 758
+Time: 586.041
 
 OK (38 tests)
 

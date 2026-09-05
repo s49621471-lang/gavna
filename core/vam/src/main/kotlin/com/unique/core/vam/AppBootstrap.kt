@@ -297,7 +297,10 @@ object AppBootstrap {
         // sit in front of the wrapper that rewrites the caller's identity, so a guest
         // reading a setting gets `Package … does not belong to <uid>`. `Application.onCreate`
         // is the first place a guest reads one, so the eviction has to precede it.
-        VirtualProviderCaches.evict(hostContext)
+        VirtualProviderCaches.evict(
+            hostContext,
+            VirtualActivityManagerHook.hostSourceFor(hostContext, hostContext.packageName),
+        )
 
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {
@@ -309,6 +312,18 @@ object AppBootstrap {
         }
 
         Reflect.set(activityThreadClass, "mInitialApplication", activityThread, application)
+
+        // The guest's own network security policy, replacing the one the platform installed
+        // for UNIQUE before this process was anybody. Cleartext rules and pinning are the
+        // guest's decisions; running its traffic under the host's policy is wrong even when
+        // nothing crashes, and on Android 15 something does.
+        runCatching {
+            VirtualNetworkSecurity.install(
+                (application as android.app.Application).applicationContext ?: hostContext,
+                appInfo,
+                manifest.networkSecurityConfigResId,
+            )
+        }
 
         VirtualServiceRouter.bindSlot(params.slot)
 
@@ -745,6 +760,11 @@ object AppBootstrap {
             // the app's resources and falls back to `packageName` when it is zero. Apps
             // do ask — an about screen, a notification title, a share sheet.
             labelRes = manifest.labelResId
+            // Read by NetworkSecurityConfigProvider to find the guest's own config.
+            Reflect.set(
+                ApplicationInfo::class.java, "networkSecurityConfigRes", this,
+                manifest.networkSecurityConfigResId,
+            )
             if (manifest.labelResId == 0 && manifest.label != null) {
                 // The minority that spell their name out in the manifest. `loadLabel`
                 // prefers this over `labelRes` when it is set, which is the right order.
@@ -755,6 +775,16 @@ object AppBootstrap {
             // framework paths that treat an uninstalled package as absent.
             flags = ApplicationInfo.FLAG_HAS_CODE or FLAG_INSTALLED
             if (manifest.hasCode.not()) flags = flags and ApplicationInfo.FLAG_HAS_CODE.inv()
+            // After the assignment above, not before it: an earlier version set this first
+            // and the line below wiped it, which is the quiet kind of wrong — the app runs
+            // and its cleartext policy is the host's.
+            manifest.usesCleartextTraffic?.let { cleartext ->
+                val flag = runCatching {
+                    ApplicationInfo::class.java
+                        .getDeclaredField("FLAG_USES_CLEARTEXT_TRAFFIC").getInt(null)
+                }.getOrNull() ?: return@let
+                flags = if (cleartext) flags or flag else flags and flag.inv()
+            }
 
             // Setting this by reflection: the field is hidden, and its absence makes
             // ContextImpl fall back to a null volume, which breaks getDataDir() on some
