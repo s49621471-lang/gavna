@@ -110,8 +110,18 @@ abstract class StubServiceBase(private val slot: Int) : Service() {
         // this one is *meant* to: the stub exists to bring the process up, and the guest
         // has no service to swap in. See VirtualBroadcastRouter.
         if (params != null && params.kind == VirtualComponentKind.RECEIVER) {
-            VirtualColdBroadcast.deliver(this, params, intent)
-            stopSelf(startId)
+            // Posted, not run inline. Delivering means grafting the guest first, which on
+            // a cold process takes tens of seconds — and a background service whose
+            // onStartCommand does not return is ANR'd out of existence:
+            //
+            //   Killing …:com.unique:vapp2 (adj 0): bg anr
+            //
+            // The post lands on the very next turn of this same looper, so the graft still
+            // happens on the thread a guest's Application.onCreate must run on.
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                VirtualColdBroadcast.deliver(this, params, intent)
+                stopSelf(startId)
+            }
             return START_NOT_STICKY
         }
 

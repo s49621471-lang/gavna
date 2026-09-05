@@ -109,8 +109,12 @@ object VirtualActivityTaskManagerHook {
      * components share this process, and a guest may legitimately start a *host* activity
      * — a share sheet, a browser — which must reach the real one.
      */
-    internal fun routeActivity(hostPackage: String, intent: Intent): Intent {
-        val ready = AppBootstrap.current ?: return intent
+    internal fun routeActivity(hostPackage: String, rawIntent: Intent): Intent {
+        val ready = AppBootstrap.current ?: return rawIntent
+        // Before anything else: a `content://` URI belonging to this guest is unusable to
+        // anyone outside UNIQUE, and this is the last point at which it can be made usable.
+        // See VirtualUriGrants.
+        val intent = VirtualUriGrants.rewriteOutgoing(hostPackage, rawIntent, ready)
         val component = intent.component
         if (component == null) return routeImplicit(hostPackage, intent, ready)
         if (component.packageName != ready.params.packageName) return intent

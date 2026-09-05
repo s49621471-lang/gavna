@@ -86,6 +86,15 @@ class UniqueBridgeClient {
     return DiagnosticsExportResult.fromMap(result ?? const {});
   }
 
+  /// How each Google flow would be served for one instance, and why.
+  Future<List<GoogleRoute>> googleRouting(int vuid) async {
+    final result =
+        await _method.invokeListMethod<Object?>('googleRouting', {'vuid': vuid});
+    return (result ?? const [])
+        .map((e) => GoogleRoute.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
   /// The permission groups this instance's app actually asks for, and their state.
   Future<List<InstancePermission>> instancePermissions(int vuid) async {
     final result = await _method.invokeListMethod<Object?>(

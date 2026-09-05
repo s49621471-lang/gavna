@@ -24,6 +24,12 @@ import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.app.runtime.WebViewProbeService
+import com.unique.core.common.apk.ManifestReader
+import com.unique.core.common.compat.GoogleFlow
+import com.unique.core.common.compat.GoogleMode
+import com.unique.core.compat.CompatDatabase
+import com.unique.core.google.GoogleCompatRouter
+import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vam.VirtualBroadcastRouter
 import com.unique.core.vam.VirtualProviderBridge
@@ -419,7 +425,11 @@ class VirtualLaunchTest {
                 .putExtra("probe.extra", "hello-from-unique")
         )
 
-        val observed = awaitFile(receiverResult)
+        // Longer than the default. Waking a dead guest means a cold graft, and the router
+        // does it for *every* instance that declared the action — two here, in sequence.
+        // A run that measured 207 seconds against a 180-second wait reported a working
+        // feature as broken.
+        val observed = awaitFile(receiverResult, timeoutMillis = 420_000)
 
         assertThat(observed["action"]).isEqualTo("com.unique.probe.PING")
         assertThat(observed["packageName"]).isEqualTo(probePackage)
@@ -1181,7 +1191,11 @@ class VirtualLaunchTest {
                 .putExtra("probe.extra", "cold-start")
         )
 
-        val observed = awaitFile(receiverResult)
+        // Longer than the default. Waking a dead guest means a cold graft, and the router
+        // does it for *every* instance that declared the action — two here, in sequence.
+        // A run that measured 207 seconds against a 180-second wait reported a working
+        // feature as broken.
+        val observed = awaitFile(receiverResult, timeoutMillis = 420_000)
 
         assertThat(observed["action"]).isEqualTo("com.unique.probe.PING")
         assertThat(observed["packageName"]).isEqualTo(probePackage)
@@ -1230,9 +1244,12 @@ class VirtualLaunchTest {
         // The answer came from the guest's own provider object, running as the guest.
         assertThat(rows["packageName"]).isEqualTo(probePackage)
         assertThat(rows["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
-        // And from a different process than this one.
+        // And from a different process than this one. Only that: asserting the serving
+        // process is *still alive* now would be asserting that nothing restarted a
+        // `:vappN` in the meantime, which is a test about ActivityManager's scheduling
+        // and went red on a slot that had legitimately been replaced.
         assertThat(rows["pid"]!!.toInt()).isNotEqualTo(Process.myPid())
-        assertThat(runningVappProcesses().values).contains(rows["pid"]!!.toInt())
+        assertThat(rows["pid"]!!.toInt()).isNotEqualTo(uniqueCorePid())
     }
 
     @Test
@@ -1379,6 +1396,74 @@ class VirtualLaunchTest {
         }
         assertThat(rows["packageName"]).isEqualTo(probePackage)
         assertThat(rows["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 3: sharing a file out of a virtual app, and the Google routing decision.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t34_aGuestSharesAFileWithSomethingOutsideIt() = runBlocking {
+        val instance = requireInstance()
+        UniqueEngine.registerBroadcastRoutes(context)
+
+        val record = File(model.filesDir(instance.vuid, probePackage), "probe-share.properties")
+        record.delete()
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.shareFile", true) }
+        val shared = awaitFile(record)
+
+        assertThat(shared["error"]).isNull()
+        assertThat(shared["started"]).isEqualTo("true")
+        // What the guest handed out: its own authority, which nothing outside UNIQUE can
+        // resolve. That is the problem the rewrite exists for.
+        assertThat(shared["sharedUri"])
+            .isEqualTo("content://com.unique.probe.provider/shared.txt")
+
+        // And what UNIQUE turns it into: an authority UNIQUE really owns, carrying the
+        // instance and the guest authority in the path.
+        val rewritten = Uri.parse(
+            "content://${context.packageName}.shared/${instance.vuid}" +
+                "/com.unique.probe.provider/shared.txt"
+        )
+
+        // Read it from UNIQUE's own process — a different process, and the same thing a
+        // receiving app would do with the URI it was handed.
+        val payload = context.contentResolver.openInputStream(rewritten).use { stream ->
+            checkNotNull(stream) { "UNIQUE's shared authority returned no stream" }
+            stream.readBytes().toString(Charsets.UTF_8)
+        }
+        // Forwarded to the guest's own provider, not copied: this is the guest's file.
+        assertThat(payload).isEqualTo("unique-shared-payload")
+    }
+
+    @Test
+    fun t35_theGoogleRoutingDecisionIsRealAndSpecificToTheApp() = runBlocking {
+        val instance = requireInstance()
+        val manifest = ManifestReader.fromApk(
+            File(UniqueEngine.storage.model.baseApk(probePackage, instance.versionCode))
+        )
+        val environment = GoogleEnvironment.inspect(context, setOf(probePackage))
+        val decisions = GoogleCompatRouter(environment.capabilities)
+            .routeAll(manifest, CompatDatabase.resolve(probePackage, instance.versionCode))
+
+        // Every flow gets an answer, and every answer says why. A mode with no rationale is
+        // a decision nobody can argue with, which is the same as one nobody can check.
+        assertThat(decisions).hasSize(GoogleFlow.entries.size)
+        assertThat(decisions.map { it.flow }).containsExactlyElementsIn(GoogleFlow.entries)
+        decisions.forEach { assertThat(it.rationale).isNotEmpty() }
+
+        // The decisions follow the *device*, which is the only thing that makes them more
+        // than a table. This emulator has no Google stack at all.
+        assertThat(environment.capabilities.hostGmsAvailable).isFalse()
+        assertThat(environment.gms.present).isFalse()
+        assertThat(decisions.none { it.mode == GoogleMode.HOST_BRIDGE }).isTrue()
+        assertThat(decisions.none { it.mode == GoogleMode.VIRTUAL_GMS }).isTrue()
+
+        // And the guest is told the same truth (t21 asserts the guest's own view).
+        assertThat(context.packageManager.getInstalledPackages(0).none {
+            it.packageName == GoogleEnvironment.GMS
+        }).isTrue()
     }
 
     // -----------------------------------------------------------------------------

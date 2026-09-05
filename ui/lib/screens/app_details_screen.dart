@@ -30,6 +30,7 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   /// an empty list means it asks for none, which is a different thing and shown as such.
   List<InstancePermission>? _permissions;
   GoogleStatus? _google;
+  List<GoogleRoute>? _routes;
   String? _busyGroup;
 
   @override
@@ -41,10 +42,12 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   Future<void> _load() async {
     final permissions = await state.instancePermissions(app.vuid);
     final google = await state.googleStatus();
+    final routes = await state.googleRouting(app.vuid);
     if (!mounted) return;
     setState(() {
       _permissions = permissions;
       _google = google;
+      _routes = routes;
     });
   }
 
@@ -266,17 +269,26 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     const Divider(),
                     const SectionRow(
                       label: 'Sign-in flows',
-                      value: 'Not implemented. UNIQUE decides how each flow would be '
-                          'routed and records it, but no route has a body yet',
+                      value: 'Not implemented yet. What follows is how each flow *would* '
+                          'be routed for this app, and on what evidence',
                       trailing: _StatusDot(tone: NoticeTone.warning),
                     ),
-                    const Divider(),
-                    const SectionRow(
-                      label: 'Play Games, Billing, Integrity',
-                      value: 'Expected not to work: they bind to an attested, installed '
-                          'app identity. Not yet measured',
-                      trailing: _StatusDot(tone: NoticeTone.error),
-                    ),
+                    // The router's real decisions for this app's own manifest, not a
+                    // fixed list. Two apps get different answers, which is the point.
+                    if (_routes == null)
+                      const SectionRow(label: 'Reading...', value: '')
+                    else
+                      for (final r in _routes!) ...[
+                        const Divider(),
+                        SectionRow(
+                          label: r.flowLabel,
+                          value: '${r.modeLabel}  -  ${r.why}',
+                          valueColor: r.unsupported ? UniqueColors.warning : null,
+                          trailing: _StatusDot(
+                            tone: r.unsupported ? NoticeTone.error : NoticeTone.info,
+                          ),
+                        ),
+                      ],
                   ],
                 ),
 

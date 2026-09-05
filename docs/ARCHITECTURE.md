@@ -703,6 +703,44 @@ cannot kill another, and a guest cannot kill UNIQUE. Nothing a guest writes can 
 another instance's authority, and UNIQUE's own process reaches guest providers through
 `acquireUnstableContentProviderClient`. `t32` kills a provider's process and watches both.
 
+#### 6.4.1 Sharing a file out of a virtual app
+
+**Implemented; `t34` covers it.** A guest that shares a photo hands out
+`content://com.example.app.fileprovider/…`, and nothing outside UNIQUE can do anything
+with it — AMS resolves authorities against installed packages. The receiving app gets a
+URI it cannot open, which is the failure mode of every share button in every virtualized
+app that has not solved this.
+
+Outgoing intents are therefore rewritten, at the last point UNIQUE sees them:
+
+```
+content://com.example.app.fileprovider/images/a.jpg
+  →  content://com.unique.shared/0/com.example.app.fileprovider/images/a.jpg
+```
+
+`UniqueSharedProvider` owns that authority for real, and forwards every call back to the
+guest's own provider over the path §6.4.0 built. The receiver sees an ordinary provider of
+an installed app and gets an ordinary temporary grant — UNIQUE borrows the platform's
+permission model rather than inventing one.
+
+Three choices worth stating.
+
+**Forwarded, not copied.** A copy would double the storage, go stale, and quietly turn a
+revoked grant into a permanent one. Forwarding leaves the guest's provider in charge of
+what it hands out, including refusing.
+
+**Only the guest's *own* authorities are rewritten.** A guest passing on a `content://`
+URI it received from elsewhere — a photo picker, another app — is passing on a grant it
+was given, and rewriting that would break it.
+
+**`exported="false"` with `grantUriPermissions="true"`.** Nothing may open the shared
+authority by knowing its name; only by being handed a URI.
+
+Not covered: an explicit `grantUriPermission(package, uri, flags)` call from a guest, which
+names a package the platform must resolve, and the inbound direction — a host app returning
+a URI to a guest. The latter should already work, because the grant is to UNIQUE's uid and
+that is the uid the guest runs as, but it has not been exercised.
+
 **What is not covered.** A slot is leased per (instance, manifest process), so a guest
 whose provider process has been reaped and whose slot has been handed to another instance
 is refused with a diagnostic rather than grafted twice — `SLOT_ALREADY_BOUND`. And nothing

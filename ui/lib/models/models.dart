@@ -345,3 +345,44 @@ class InstancePermission {
         blockedByHost: (m['blockedByHost'] as bool?) ?? false,
       );
 }
+
+/// How one Google flow would be served for one instance, and on what evidence.
+///
+/// A mode is not a promise that the flow works — no bridge has an implementation yet.
+/// It is what UNIQUE *would* do and why, which is the difference between a layer you can
+/// reason about and a black box.
+class GoogleRoute {
+  const GoogleRoute({required this.flow, required this.mode, required this.why});
+
+  final String flow;
+  final String mode;
+  final String why;
+
+  /// A readable name for the flow, without shouting its enum at the user.
+  String get flowLabel => switch (flow) {
+        'SIGN_IN' => 'Google Sign-In (legacy)',
+        'CREDENTIAL_MANAGER' => 'Sign in with Google',
+        'ACCOUNT_MANAGER' => 'Account Manager',
+        'FIREBASE_AUTH' => 'Firebase Auth',
+        'OAUTH_WEB' => 'OAuth in a browser',
+        'FCM' => 'Push messages (FCM)',
+        'PLAY_GAMES' => 'Play Games',
+        _ => flow,
+      };
+
+  String get modeLabel => switch (mode) {
+        'VIRTUAL_GMS' => 'In-space Play services',
+        'HOST_BRIDGE' => "This device's Play services",
+        'PASSTHROUGH' => 'Browser',
+        'UNSUPPORTED' => 'Not served',
+        _ => mode,
+      };
+
+  bool get unsupported => mode == 'UNSUPPORTED';
+
+  static GoogleRoute fromMap(Map<Object?, Object?> m) => GoogleRoute(
+        flow: (m['flow'] as String?) ?? '',
+        mode: (m['mode'] as String?) ?? 'UNSUPPORTED',
+        why: (m['why'] as String?) ?? '',
+      );
+}

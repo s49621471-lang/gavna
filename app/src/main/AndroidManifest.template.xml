@@ -144,6 +144,15 @@
             android:process=":webviewprobe"
             android:exported="false" />
 
+        <!-- The authority UNIQUE lends to guests so a virtual app can share a file with
+             a real one. Not exported: nothing may open it by knowing its name, only by
+             being handed a URI, and that handing is the platform's own temporary grant. -->
+        <provider
+            android:name="com.unique.app.runtime.UniqueSharedProvider"
+            android:authorities="${applicationId}.shared"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <!-- The VirtualCore server. Single writer for the state database. -->
         <service
             android:name="com.unique.app.server.UniqueServerService"

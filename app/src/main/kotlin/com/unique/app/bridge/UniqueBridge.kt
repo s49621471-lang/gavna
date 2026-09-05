@@ -15,6 +15,8 @@ import com.unique.core.common.diag.DiagEvent
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
+import com.unique.core.compat.CompatDatabase
+import com.unique.core.google.GoogleCompatRouter
 import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
 import com.unique.app.engine.DiagnosticsExport
@@ -144,6 +146,7 @@ object UniqueBridge {
             "appIcon" -> appIcon(context, a["package"] as String)
             "diagnosticsSnapshot" -> Diagnostics.snapshot().map { it.toMap() }
             "googleStatus" -> googleStatus(context)
+            "googleRouting" -> googleRouting(context, (a["vuid"] as Number).toInt())
             "exportDiagnostics" -> exportDiagnostics(context)
 
             "listInstances" -> listInstances()
@@ -183,6 +186,34 @@ object UniqueBridge {
             "note" to "Routing is implemented and the device is read here; no Google " +
                 "flow has an implementation yet. See docs/GOOGLE_DEVICE_TEST.md.",
         )
+    }
+
+    /**
+     * How each Google flow would be served for one instance, and why.
+     *
+     * The router has always decided this and recorded it on the GOOGLE channel; nothing
+     * ever *showed* it. A mode is not a promise that the flow works — no bridge has a body
+     * — but "what UNIQUE would do, and on what evidence" is the difference between a
+     * layer you can reason about and a black box, and it is answerable today.
+     */
+    private suspend fun googleRouting(context: Context, vuid: Int): List<Map<String, Any?>> {
+        val instance = UniqueEngine.instances.instance(vuid) ?: return emptyList()
+        val manifest = runCatching {
+            com.unique.core.common.apk.ManifestReader.fromApk(
+                File(UniqueEngine.storage.model.baseApk(instance.packageName, instance.versionCode))
+            )
+        }.getOrNull() ?: return emptyList()
+
+        val imported = UniqueEngine.instances.instances().map { it.packageName }.toSet()
+        val capabilities = GoogleEnvironment.inspect(context, imported).capabilities
+        val profile = CompatDatabase.resolve(instance.packageName, instance.versionCode)
+        return GoogleCompatRouter(capabilities).routeAll(manifest, profile).map { decision ->
+            mapOf(
+                "flow" to decision.flow.name,
+                "mode" to decision.mode.name,
+                "why" to decision.rationale,
+            )
+        }
     }
 
     /**

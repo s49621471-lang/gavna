@@ -148,6 +148,11 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "starting an implicit intent by URI scheme");
             startImplicitByScheme();
         }
+
+        if (request != null && request.getBooleanExtra("probe.shareFile", false)) {
+            Log.i(TAG, "sharing a file by content:// URI");
+            shareOwnFile();
+        }
         if (request != null && request.getBooleanExtra("probe.identity", false)) {
             Log.i(TAG, "checking own signature and the Google stack");
             exercisePackageIdentity();
@@ -695,6 +700,40 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-alarm-clip.properties", out);
+    }
+
+    /**
+     * Shares one of this app's own files by content:// URI, the ordinary way.
+     *
+     * ACTION_SEND with EXTRA_STREAM and a read grant is what every share button in every
+     * app does. The URI names *this app's* provider, which nothing outside a virtualized
+     * app can resolve — so this is the whole question in one intent.
+     *
+     * The chosen target is this app's own deep-link activity rather than a chooser: a
+     * headless emulator has nowhere to put a chooser, and what is being tested is the URI,
+     * not the picker.
+     */
+    private void shareOwnFile() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            android.net.Uri uri = android.net.Uri.parse(
+                    "content://" + ProbeProvider.AUTHORITY + "/" + ProbeProvider.SHARED_FILE);
+            out.put("sharedUri", uri.toString());
+            Intent intent = new Intent(Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    .addCategory(Intent.CATEGORY_DEFAULT);
+            startActivity(intent);
+            out.put("started", "true");
+        } catch (Throwable t) {
+            out.put("started", "false");
+            out.put("error", t.toString());
+            Log.e(TAG, "share failed", t);
+        }
+        out.put("packageName", getPackageName());
+        out.put("callerPid", String.valueOf(android.os.Process.myPid()));
+        writeMap("probe-share.properties", out);
     }
 
     /**

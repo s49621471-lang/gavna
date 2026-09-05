@@ -140,6 +140,8 @@ class AppState extends ChangeNotifier {
 
   Future<GoogleStatus> googleStatus() => _bridge.googleStatus();
 
+  Future<List<GoogleRoute>> googleRouting(int vuid) => _bridge.googleRouting(vuid);
+
   Future<List<InstancePermission>> instancePermissions(int vuid) =>
       _bridge.instancePermissions(vuid);
 

@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-001207-14396`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260905-015331-19506`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -101,6 +101,8 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t31` the guest starts its own activity by an implicit intent | **PASS** |
 | `t32` killing a guest's provider process leaves UNIQUE alive and still able to read another | **PASS** |
 | `t33` a native crash leaves a diagnostic record UNIQUE wrote | **PASS** |
+| `t34` a guest shares one of its own files with something outside it | **PASS** |
+| `t35` the Google routing decision is real, and follows this device | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -227,8 +229,13 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Known limits that are not bugs
 
-- **A `:vappN` started to publish a provider must finish inside the platform's publish
-  timeout.** On the verification emulator a cold virtual process can take tens of seconds
+- **Any UNIQUE process started to publish a provider must finish inside the platform's
+  publish timeout**, and that now includes UNIQUE's own `:core`, which publishes the
+  router and shared authorities. On a badly loaded emulator `system_server` has killed it:
+  `Killing …:com.unique (adj 0): timeout publishing content providers`. The window is far
+  larger on hardware, but the ceiling belongs to the platform and grows with every
+  provider added to a process.
+- **A `:vappN` started to publish a provider must finish inside the same timeout.** On the verification emulator a cold virtual process can take tens of seconds
   to reach the graft, and `system_server` has been seen to give up on it:
   `Killing …:com.unique:vapp2 (adj 0): timeout publishing content providers`. On hardware
   the margin is far larger, but the ceiling is real and belongs to the platform.
@@ -246,8 +253,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. URI permission grants and `FileProvider` sharing across virtual processes — the last
-   Phase 3 gap now that implicit starts and cross-process providers are done.
+1. Sharing *into* a guest — a host app returning a `content://` URI the guest can open.
+   Sharing outward works (`t34`); the inbound direction has not been exercised.
 2. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
    only a physical device can answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
 3. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
