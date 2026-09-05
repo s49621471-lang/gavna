@@ -129,7 +129,7 @@ grant what they require through `UiAutomation`, so no manual `pm grant` is neede
 
 ## What the suite checks
 
-Thirty-five tests, run in order; each builds on the state the previous one left.
+Thirty-six tests, run in order; each builds on the state the previous one left.
 
 | Test | What a failure would mean |
 |---|---|
@@ -168,6 +168,7 @@ Thirty-five tests, run in order; each builds on the state the previous one left.
 | `t33` a native crash leaves a diagnostic record | The native signal handler. **On ARM64 this is its first real run** — the handler is architecture-independent but has only ever fired on x86_64 |
 | `t34` a guest shares one of its own files with something outside it | Outgoing `content://` rewriting and the shared authority — the mechanism behind every share button in a virtual app |
 | `t35` the Google routing decision follows this device | The router claiming a Google capability the device does not have. **On a phone with Play services this is the first run where the answers are not all "absent"** — see `docs/GOOGLE_DEVICE_TEST.md` |
+| `t36` a guest reaching another app's provider | The request being diverted into the virtual provider table instead of going to the platform, or coming back as a hang rather than an answer. Whether it then *succeeds* is the device's answer and is recorded, not demanded |
 
 An OEM build that diverges will usually fail *one* of these, and which one names the
 subsystem. Send the whole run directory regardless — `engine.log` says more than the

@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-015331-19506`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260905-032840-24481`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -103,6 +103,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t33` a native crash leaves a diagnostic record UNIQUE wrote | **PASS** |
 | `t34` a guest shares one of its own files with something outside it | **PASS** |
 | `t35` the Google routing decision is real, and follows this device | **PASS** |
+| `t36` a guest reaching another app's provider gets a well-formed answer | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -253,8 +254,10 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. Sharing *into* a guest — a host app returning a `content://` URI the guest can open.
-   Sharing outward works (`t34`); the inbound direction has not been exercised.
+1. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
+   Sharing outward works (`t34`) and the inbound request is at least well-formed (`t36`),
+   but arranging a real grant needs a third APK: instrumentation runs under the target
+   app's uid and can neither write another app's files nor grant for its authority.
 2. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
    only a physical device can answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
 3. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the

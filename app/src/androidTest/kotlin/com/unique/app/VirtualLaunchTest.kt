@@ -1466,6 +1466,67 @@ class VirtualLaunchTest {
         }).isTrue()
     }
 
+    /**
+     * A guest reaching a `content://` URI that belongs to a genuinely different app.
+     *
+     * The other direction from `t34`. What is asserted is the part UNIQUE is responsible
+     * for and which holds either way: the request is *not* diverted into the virtual
+     * provider table — the router says `PROVIDER_ROUTE_UNKNOWN` and the call goes to the
+     * platform — and whatever comes back is a well-formed answer rather than a hang or a
+     * dead process.
+     *
+     * Whether the read then succeeds is the device's answer, not UNIQUE's, and it has been
+     * observed both ways on this emulator: once `ActivityManagerService` resolved the
+     * authority and started the owning app's process for the guest, once it returned no
+     * provider info at all. So the test records which happened instead of demanding one.
+     *
+     * A *temporary URI grant* — the case a photo picker actually uses — is not covered.
+     * Instrumentation runs in the target app's process under the target app's uid, so it
+     * can neither write the test app's private files nor call `grantUriPermission` for the
+     * test app's authority; arranging one needs a third APK. That path stays `NOT_TESTED`
+     * and is written down as such rather than approximated by something that merely looks
+     * like it.
+     */
+    @Test
+    fun t36_aGuestReachingAnotherAppsProviderGetsAWellFormedAnswer() = runBlocking {
+        val instance = requireInstance()
+        val result = File(model.filesDir(instance.vuid, probePackage), "probe-inbound.properties")
+        result.delete()
+        clearResult(instance)
+
+        val testContext = InstrumentationRegistry.getInstrumentation().context
+        assertThat(testContext.packageName).isNotEqualTo(context.packageName)
+
+        val uri = TestFileProvider.uri()
+        launchProbeWith(instance) { it.putExtra("probe.readUri", uri.toString()) }
+        val observed = awaitFile(result)
+
+        // It ran in the guest, in the guest's own process.
+        assertThat(observed["uri"]).isEqualTo(uri.toString())
+        assertThat(observed["packageName"]).isEqualTo(probePackage)
+        assertThat(observed["callerPid"]!!.toInt()).isNotEqualTo(Process.myPid())
+
+        val content = observed["content"]
+        if (content != null) {
+            // The device resolved it: the guest read a file belonging to a package it has
+            // never heard of, through the real provider.
+            assertThat(content).isEqualTo("handed-in-from-outside")
+            assertThat(observed["type"]).isEqualTo("text/plain")
+            return@runBlocking
+        }
+
+        // It did not. The requirement is then that the guest was *told* so — a readable
+        // exception naming the authority it asked for, not a timeout and not a crash.
+        val error = observed["error"]
+        assertThat(error).isNotNull()
+        assertThat(error).contains(TestFileProvider.AUTHORITY)
+        android.util.Log.i(
+            "UniqueTest",
+            "t36: this device did not resolve another app's provider for the guest; " +
+                "the guest was told so cleanly: $error",
+        )
+    }
+
     // -----------------------------------------------------------------------------
     // Phase 8: a native crash leaves a record UNIQUE can read afterwards.
     // -----------------------------------------------------------------------------

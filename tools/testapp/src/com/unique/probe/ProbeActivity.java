@@ -153,6 +153,11 @@ public class ProbeActivity extends Activity {
             Log.i(TAG, "sharing a file by content:// URI");
             shareOwnFile();
         }
+
+        if (request != null && request.getStringExtra("probe.readUri") != null) {
+            Log.i(TAG, "reading a content:// URI handed in from outside");
+            readHandedInUri(request.getStringExtra("probe.readUri"));
+        }
         if (request != null && request.getBooleanExtra("probe.identity", false)) {
             Log.i(TAG, "checking own signature and the Google stack");
             exercisePackageIdentity();
@@ -700,6 +705,43 @@ public class ProbeActivity extends Activity {
         }
         out.put("packageName", getPackageName());
         writeMap("probe-alarm-clip.properties", out);
+    }
+
+    /**
+     * Opens a content:// URI this app was handed by something else.
+     *
+     * The other direction from {@link #shareOwnFile()}: an app receiving a file from a
+     * picker, a share, or a deep link. The URI belongs to a package this app has never
+     * heard of, and the only thing that makes it readable is the grant that came with it.
+     */
+    private void readHandedInUri(String uriString) {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        out.put("uri", String.valueOf(uriString));
+        java.io.InputStream in = null;
+        try {
+            android.net.Uri uri = android.net.Uri.parse(uriString);
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) {
+                out.put("error", "resolver returned no stream");
+            } else {
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096];
+                int n;
+                while ((n = in.read(chunk)) > 0) buffer.write(chunk, 0, n);
+                out.put("content", new String(buffer.toByteArray(), StandardCharsets.UTF_8));
+            }
+            out.put("type", String.valueOf(getContentResolver().getType(uri)));
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+            Log.e(TAG, "could not read the handed-in URI", t);
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (java.io.IOException ignored) { }
+            }
+        }
+        out.put("packageName", getPackageName());
+        out.put("callerPid", String.valueOf(android.os.Process.myPid()));
+        writeMap("probe-inbound.properties", out);
     }
 
     /**

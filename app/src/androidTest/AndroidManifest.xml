@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Components that exist only for the acceptance suite.
+
+  The test APK is a *separate package with a separate uid*, which is what makes it useful
+  here: it can act as a genuinely external app handing a URI grant to UNIQUE, which is
+  something no component of UNIQUE's own could stand in for.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Exported on purpose, and only ever present in the test APK.
+
+          A *temporary* URI grant cannot be arranged from instrumentation: the test code
+          runs in the target app's process under the target app's uid, so it can neither
+          write this app's private files nor grant permission for this app's authority.
+          Exporting makes the question that *can* be asked a real one — a guest reaching an
+          authority belonging to a genuinely different package and uid.
+        -->
+        <provider
+            android:name="com.unique.app.TestFileProvider"
+            android:authorities="com.unique.test.files"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>
