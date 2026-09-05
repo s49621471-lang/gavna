@@ -121,6 +121,7 @@ what broke, and why the current shape is the one that survived.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The decision record: every mechanism, and the failure that produced it |
 | [`docs/PHYSICAL_DEVICE_TEST.md`](docs/PHYSICAL_DEVICE_TEST.md) | The twelve-step sequence for testing on a phone, with no `adb`, no root and no computer |
 | [`docs/GOOGLE_DEVICE_TEST.md`](docs/GOOGLE_DEVICE_TEST.md) | The procedure for a device with a Google stack, in the order that makes one failure explain the next |
+| [`docs/EMULATOR.md`](docs/EMULATOR.md) | The verification emulator: exactly which one, how it is created and launched, and what it cannot answer |
 | [`dist/README.md`](dist/README.md) | The downloadable APKs, which to install and why |
 | [`tools/device-log/README.md`](tools/device-log/README.md) | Reading a run from a phone: eleven checks over a device log, no SDK and no device |
 | [`tools/apk-survey/README.md`](tools/apk-survey/README.md) | Which platform APIs real apps actually call, and which of them UNIQUE still does not proxy |
