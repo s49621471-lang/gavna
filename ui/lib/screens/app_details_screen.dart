@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../l10n/strings.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
@@ -63,7 +64,8 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
     });
     if (!result.ok && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message ?? 'That did not work.')),
+        SnackBar(
+            content: Text(result.message ?? Strings.of(context).t('common.failed'))),
       );
     }
   }
@@ -71,6 +73,7 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final s = Strings.of(context);
     final launchable = state.engine?.virtualLaunchImplemented ?? false;
 
     return Scaffold(
@@ -102,62 +105,62 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     Expanded(
                       child: FilledButton.icon(
                         onPressed: launchable
-                            ? () => _run(context, () => state.launch(app), 'Launching…')
+                            ? () => _run(
+                                context, () => state.launch(app), s.t('details.launching'))
                             : null,
                         icon: const Icon(Icons.play_arrow_rounded),
-                        label: const Text('Launch'),
+                        label: Text(s.t('details.launch')),
                       ),
                     ),
                     const SizedBox(width: UniqueSpace.md),
                     IconButton.filledTonal(
                       onPressed: null,
                       icon: const Icon(Icons.stop_rounded),
-                      tooltip: 'Stop',
+                      tooltip: s.t('details.stop'),
                     ),
                   ],
                 ),
                 if (!launchable) ...[
                   const SizedBox(height: UniqueSpace.md),
-                  const NoticeBanner(
+                  NoticeBanner(
                     tone: NoticeTone.warning,
-                    title: 'Launch unavailable',
-                    message: 'Running virtual apps is part of the next milestone.',
+                    title: s.t('details.launchUnavailable'),
+                    message: s.t('engine.degraded.body'),
                   ),
                 ],
 
                 SectionCard(
-                  title: 'General',
+                  title: s.t('details.general'),
                   children: [
-                    SectionRow(label: 'Package', value: app.packageName),
+                    SectionRow(label: s.t('details.package'), value: app.packageName),
                     const Divider(),
-                    SectionRow(label: 'Version code', value: '${app.versionCode}'),
+                    SectionRow(label: s.t('details.versionCode'), value: '${app.versionCode}'),
                     const Divider(),
-                    SectionRow(label: 'Instance', value: app.profileName),
+                    SectionRow(label: s.t('details.instance'), value: app.profileName),
                   ],
                 ),
 
                 SectionCard(
-                  title: 'Permissions',
+                  title: s.t('details.permissions'),
                   children: [
                     if (_permissions == null)
-                      const SectionRow(label: 'Reading...', value: '')
+                      SectionRow(label: s.t('common.reading'), value: '')
                     else if (_permissions!.isEmpty)
-                      const SectionRow(
-                        label: 'None requested',
-                        value: 'This app asks for no runtime permissions',
+                      SectionRow(
+                        label: s.t('details.noPermissions'),
+                        value: s.t('details.noPermissionsBody'),
                       )
                     else
                       // Only the groups this app's own manifest asks for. Offering Camera
                       // to an app that cannot use it is a lie about the app.
                       for (final p in _permissions!) ...[
                         SectionRow(
-                          label: p.label,
+                          label: s.orElse('perm.${p.group}', p.label),
                           value: p.blockedByHost
-                              ? 'Grant it to UNIQUE first - it cannot pass on what it '
-                                  'does not hold'
+                              ? s.t('details.hostMissing')
                               : p.granted
-                                  ? 'Allowed'
-                                  : 'Not allowed',
+                                  ? s.t('details.allowed')
+                                  : s.t('details.notAllowed'),
                           valueColor:
                               p.blockedByHost ? UniqueColors.warning : null,
                           trailing: _busyGroup == p.group
@@ -180,23 +183,24 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                 ),
 
                 SectionCard(
-                  title: 'Storage',
+                  title: s.t('details.storage'),
                   children: [
-                    SectionRow(label: 'Data', value: formatBytes(app.dataBytes)),
+                    SectionRow(label: s.t('details.data'), value: formatBytes(app.dataBytes)),
                     const Divider(),
-                    SectionRow(label: 'Cache', value: formatBytes(app.cacheBytes)),
+                    SectionRow(label: s.t('details.cache'), value: formatBytes(app.cacheBytes)),
                     const Divider(),
-                    SectionRow(label: 'External', value: formatBytes(app.externalBytes)),
+                    SectionRow(label: s.t('details.external'), value: formatBytes(app.externalBytes)),
                     const Divider(),
                     SectionRow(
-                      label: 'Clear cache',
-                      onTap: () => _run(context, () => state.clearCache(app), 'Cache cleared'),
+                      label: s.t('details.clearCache'),
+                      onTap: () => _run(context, () => state.clearCache(app),
+                          s.t('details.cacheCleared')),
                       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                     ),
                     const Divider(),
                     SectionRow(
-                      label: 'Clear data',
-                      value: 'Removes everything this instance stores',
+                      label: s.t('details.clearData'),
+                      value: s.t('details.clearDataBody'),
                       valueColor: UniqueColors.warning,
                       onTap: () => _confirmClearData(context),
                       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
@@ -205,19 +209,20 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                 ),
 
                 SectionCard(
-                  title: 'Device profile',
+                  title: s.t('details.deviceProfile'),
                   children: [
                     SectionRow(
-                      label: 'Android ID',
+                      label: s.t('details.androidId'),
                       value: app.androidId,
                       monospaceValue: true,
                       trailing: IconButton(
-                        tooltip: 'Copy',
+                        tooltip: s.t('common.copy'),
                         icon: const Icon(Icons.copy_rounded, size: 18),
                         onPressed: () {
                           Clipboard.setData(ClipboardData(text: app.androidId));
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Android ID copied')),
+                            SnackBar(
+                                content: Text(s.t('details.androidIdCopied'))),
                           );
                         },
                       ),
@@ -225,38 +230,38 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     const Divider(),
                     const Divider(),
                     SectionRow(
-                      label: 'Instance ID',
+                      label: s.t('details.instanceId'),
                       value: app.instanceId,
                       monospaceValue: true,
                     ),
                     const Divider(),
                     SectionRow(
-                      label: 'Generation',
+                      label: s.t('details.generation'),
                       value: '${app.generation}',
                     ),
                     const Divider(),
                     SectionRow(
-                      label: 'Regenerate',
-                      value: 'Not available yet - lands with device profiles',
+                      label: s.t('details.regenerate'),
+                      value: s.t('details.regenerateBody'),
                       trailing: const Icon(Icons.refresh_rounded, size: 20),
                     ),
                   ],
                 ),
 
                 SectionCard(
-                  title: 'Google',
+                  title: s.t('details.google'),
                   children: [
                     // Read from the device. Nothing here claims a flow works, because
                     // none of them is implemented yet and saying otherwise would send a
                     // user chasing a failure that is not theirs.
                     SectionRow(
-                      label: 'Play services on this device',
+                      label: s.t('details.googlePresent'),
                       value: _google == null
-                          ? 'Reading...'
+                          ? s.t('common.reading')
                           : !_google!.gmsPresent
-                              ? 'Not installed'
+                              ? s.t('settings.notInstalled')
                               : _google!.presentButUnusable
-                                  ? 'Installed but not usable'
+                                  ? s.t('settings.presentUnusable')
                                   : 'Available  -  ${_google!.gmsVersionName}',
                       trailing: _StatusDot(
                         tone: _google == null
@@ -267,16 +272,15 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                       ),
                     ),
                     const Divider(),
-                    const SectionRow(
-                      label: 'Sign-in flows',
-                      value: 'Not implemented yet. What follows is how each flow *would* '
-                          'be routed for this app, and on what evidence',
-                      trailing: _StatusDot(tone: NoticeTone.warning),
+                    SectionRow(
+                      label: s.t('settings.signInFlows'),
+                      value: s.t('details.googleFlows'),
+                      trailing: const _StatusDot(tone: NoticeTone.warning),
                     ),
                     // The router's real decisions for this app's own manifest, not a
                     // fixed list. Two apps get different answers, which is the point.
                     if (_routes == null)
-                      const SectionRow(label: 'Reading...', value: '')
+                      SectionRow(label: s.t('common.reading'), value: '')
                     else
                       for (final r in _routes!) ...[
                         const Divider(),
@@ -293,11 +297,12 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                 ),
 
                 SectionCard(
-                  title: 'Diagnostics',
+                  title: s.t('settings.diagnostics'),
                   children: [
                     SectionRow(
-                      label: 'Recent events',
-                      value: '${state.diagnostics.length} recorded',
+                      label: s.t('settings.diagnostics'),
+                      value: s.t('settings.diagnosticsBody',
+                          {'count': state.diagnostics.length}),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => DiagnosticsScreen(state: state),
@@ -307,12 +312,10 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     ),
                     const Divider(),
                     SectionRow(
-                      label: _exporting
-                          ? 'Collecting from every running app...'
-                          : 'Export diagnostic package',
-                      value: _exportSummary ??
-                          'UNIQUE\'s logs and this device. Nothing from inside the app: '
-                              'no databases, no cookies, no tokens',
+                      label: s.t(_exporting
+                          ? 'settings.exporting'
+                          : 'settings.export'),
+                      value: _exportSummary ?? s.t('settings.exportBody'),
                       onTap: _exporting ? null : _export,
                       trailing: _exporting
                           ? const SizedBox(

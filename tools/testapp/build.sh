@@ -63,10 +63,17 @@ else
     echo "  no NDK found; the probe will carry no native code" >&2
 fi
 
-echo "[4/6] aapt2 link"
+echo "[4/6] aapt2 compile + link"
+# The probe has resources now, and specifically it has a *label* in one, because that is
+# how real apps name themselves: `android:label="@string/app_name"` is a reference into
+# the resource table. UNIQUE's manifest reader has no table to consult and spelled the
+# reference out, so every imported app on a phone was called `@7f010000`. Building the
+# probe with a real table is what makes that testable rather than a story.
+"$BUILD_TOOLS/aapt2" compile --dir "$here/res" -o "$out/res.zip"
 "$BUILD_TOOLS/aapt2" link -o "$out/unsigned.apk" \
     --manifest "$here/AndroidManifest.xml" -I "$PLATFORM" \
-    --min-sdk-version 26 --target-sdk-version 34
+    --min-sdk-version 26 --target-sdk-version 34 \
+    "$out/res.zip"
 
 echo "[5/6] package dex and native libraries"
 (cd "$out/dex" && zip -q "$out/unsigned.apk" classes.dex)
@@ -95,5 +102,5 @@ fi
     --out "$out/probe.apk" "$out/aligned.apk"
 "$BUILD_TOOLS/apksigner" verify --print-certs "$out/probe.apk" | head -2
 
-rm -f "$out/unsigned.apk" "$out/aligned.apk"
+rm -f "$out/unsigned.apk" "$out/aligned.apk" "$out/res.zip"
 echo "Built: $out/probe.apk ($(stat -c%s "$out/probe.apk") bytes)"

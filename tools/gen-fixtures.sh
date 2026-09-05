@@ -26,6 +26,16 @@ for name in base split-abi split-feature; do
     echo "  sample-$name.apk"
 done
 
+# One more with a *resource table*, because `android:label` in a real app is a reference
+# into it and every fixture above spells its name out as a literal. That difference is the
+# whole bug: a reader with no table hands back `@7f010000`, which is what a phone showed
+# for every imported app.
+"$BUILD_TOOLS/aapt2" compile --dir "$root/tools/fixtures/labelled-res" -o "$work/labelled-res.zip"
+"$BUILD_TOOLS/aapt2" link -o "$work/labelled.apk" \
+    --manifest "$root/tools/fixtures/labelled.xml" -I "$PLATFORM" "$work/labelled-res.zip"
+cp "$work/labelled.apk" "$dest/sample-labelled.apk"
+echo "  sample-labelled.apk"
+
 # Two arm64 libraries differing only in page alignment: one loadable on a 16 KB-page
 # device, one not. That difference is what ElfInspector exists to detect.
 cat > "$work/probe.c" <<'C'

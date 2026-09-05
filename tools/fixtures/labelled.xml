@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  An application that names itself the way real applications do: through a resource, not a
+  literal. `android:label="@string/app_name"` compiles to a *reference*, and a manifest
+  reader with no resource table can only spell the reference out. UNIQUE did exactly that,
+  and every imported app on a physical device was listed as `@7f010000`.
+
+  This fixture exists so the parser is held to reporting both halves — the raw reference for
+  what the manifest says, and the resource id the platform needs to resolve it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.labelled"
+    android:versionCode="9"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
+    <application android:label="@string/app_name" android:icon="@string/app_name">
+        <activity android:name=".MainActivity" android:exported="true" />
+    </application>
+</manifest>

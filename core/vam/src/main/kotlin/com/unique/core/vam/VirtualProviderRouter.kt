@@ -8,6 +8,7 @@ import android.system.OsConstants
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.diag.DiagLevel
 import com.unique.core.diagnostics.Diagnostics
 
 /**
@@ -46,10 +47,14 @@ object VirtualProviderRouter {
     /** A `:vappN` reporting that it has grafted and is ready to serve. */
     const val ROUTER_METHOD_SLOT_READY = "unique.slotReady"
 
+    /** A `:vappN` reporting that a graft has begun, so a caller stops asking again. */
+    const val ROUTER_METHOD_SLOT_STARTING = "unique.slotStarting"
+
     /** A caller asking whether a slot has got that far yet. */
     const val ROUTER_METHOD_SLOT_STATUS = "unique.slotStatus"
 
     const val KEY_READY = "unique.ready"
+    const val KEY_STARTING = "unique.starting"
     const val KEY_PID = "unique.pid"
 
     const val KEY_VUID = "unique.vuid"
@@ -113,6 +118,7 @@ object VirtualProviderRouter {
     fun reset() {
         targets.clear()
         ready.clear()
+        starting.clear()
     }
 
     /**
@@ -131,8 +137,49 @@ object VirtualProviderRouter {
 
     private val ready = HashMap<Int, Ready>()
 
+    /**
+     * Slots whose graft has begun and not yet finished.
+     *
+     * The difference between this and [ready] is the difference between "ask again" and
+     * "wait": a caller that re-issues a warm-up while a graft is running queues another
+     * `onStartCommand` behind a main thread that is busy for tens of seconds, and
+     * ActivityManager answers that with
+     *
+     * ```
+     * ANR in com.unique:vapp2
+     * Killing 3515:com.unique:vapp2 (adj 0): bg anr
+     * ```
+     *
+     * — killing the very process the caller was waiting for, sixteen seconds before it
+     * would have been ready. The re-warm exists for a process that died; without this
+     * record it could not tell that from one that is merely slow.
+     */
+    private val starting = HashMap<Int, Ready>()
+
+    @Synchronized
+    fun markStarting(slot: Int, vuid: Int, pid: Int) {
+        starting[slot] = Ready(vuid, pid)
+        Diagnostics.event(
+            DiagChannel.PROCESS, DiagLevel.DEBUG, "PROVIDER_SLOT_STARTING",
+            mapOf("slot" to slot.toString(), "vuid" to vuid.toString(), "pid" to pid.toString()),
+        )
+    }
+
+    /** Whether a graft is in flight in a process that is still alive. */
+    @Synchronized
+    fun isStarting(slot: Int, vuid: Int): Boolean {
+        val mark = starting[slot] ?: return false
+        if (mark.vuid != vuid) return false
+        if (!processAlive(mark.pid)) {
+            starting.remove(slot)
+            return false
+        }
+        return true
+    }
+
     @Synchronized
     fun markReady(slot: Int, vuid: Int, pid: Int) {
+        starting.remove(slot)
         ready[slot] = Ready(vuid, pid)
         Diagnostics.info(
             DiagChannel.PROCESS, "PROVIDER_SLOT_READY",
@@ -188,6 +235,7 @@ object VirtualProviderRouter {
     @Synchronized
     fun forgetSlot(slot: Int) {
         ready.remove(slot)
+        starting.remove(slot)
     }
 
     /** Answers [ROUTER_METHOD_SLOT_READY] and [ROUTER_METHOD_SLOT_STATUS]. */
@@ -200,11 +248,23 @@ object VirtualProviderRouter {
         return Bundle.EMPTY
     }
 
+    fun slotStarting(extras: Bundle?): Bundle? {
+        val slot = extras?.getInt(KEY_SLOT, -1) ?: -1
+        val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
+        val pid = extras?.getInt(KEY_PID, -1) ?: -1
+        if (slot < 0 || vuid < 0 || pid < 0) return null
+        markStarting(slot, vuid, pid)
+        return Bundle.EMPTY
+    }
+
     fun slotStatus(extras: Bundle?): Bundle? {
         val slot = extras?.getInt(KEY_SLOT, -1) ?: -1
         val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
         if (slot < 0 || vuid < 0) return null
-        return Bundle().apply { putBoolean(KEY_READY, isReady(slot, vuid)) }
+        return Bundle().apply {
+            putBoolean(KEY_READY, isReady(slot, vuid))
+            putBoolean(KEY_STARTING, isStarting(slot, vuid))
+        }
     }
 
     @Synchronized

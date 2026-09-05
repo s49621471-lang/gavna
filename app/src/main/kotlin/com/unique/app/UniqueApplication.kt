@@ -64,7 +64,10 @@ class UniqueApplication : Application() {
         processKind = UniqueProcess.of(processName, base.packageName)
         vappIndex = processName?.substringAfter(":vapp", "")?.toIntOrNull() ?: -1
 
-        Diagnostics.verbose = BuildConfig.DEBUG
+        // Mirrors every event to logcat, not just warnings and errors, so a tester with a
+        // logcat app on the phone sees the same trace the in-app export carries. See
+        // DIAGNOSTIC_LOGCAT in app/build.gradle.kts.
+        Diagnostics.verbose = BuildConfig.DIAGNOSTIC_LOGCAT
         CrashGuard.install { processName }
 
         Diagnostics.info(

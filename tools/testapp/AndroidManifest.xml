@@ -9,7 +9,7 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="37"
+    android:versionCode="38"
     android:versionName="1.0.8">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
@@ -24,13 +24,13 @@
 
     <application
         android:name="com.unique.probe.ProbeApplication"
-        android:label="UNIQUE Probe"
+        android:label="@string/app_name"
         android:allowBackup="false">
 
         <activity
             android:name="com.unique.probe.ProbeActivity"
             android:exported="true"
-            android:label="UNIQUE Probe">
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

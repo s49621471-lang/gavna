@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../l10n/strings.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
@@ -69,16 +70,17 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = Strings.of(context);
     final steps = _steps;
     final done = steps?.where((s) => s.done).length ?? 0;
     final total = steps?.length ?? 0;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Device test'),
+        title: Text(s.t('devtest.title')),
         actions: [
           IconButton(
-            tooltip: 'Re-read the device',
+            tooltip: s.t('devtest.reread'),
             onPressed: _load,
             icon: const Icon(Icons.refresh_rounded),
           ),
@@ -88,17 +90,15 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
         padding: const EdgeInsets.fromLTRB(
             UniqueSpace.lg, 0, UniqueSpace.lg, UniqueSpace.xxl),
         children: [
-          const NoticeBanner(
+          NoticeBanner(
             tone: NoticeTone.info,
-            title: 'Everything here happens on this phone',
-            message: 'No computer, no adb, no root. Work down the sequence in order — a '
-                'failure early on explains the ones after it — then send the diagnostics '
-                'package from the last step.',
+            title: s.t('devtest.notice.title'),
+            message: s.t('devtest.notice.body'),
           ),
 
           if (steps != null)
             SectionCard(
-              title: 'Sequence  ·  $done of $total recorded',
+              title: s.t('devtest.sequence', {'done': done, 'total': total}),
               children: [
                 for (final step in steps) ...[
                   _StepRow(
@@ -120,13 +120,11 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
             ),
 
           SectionCard(
-            title: 'Send the results',
+            title: s.t('devtest.send'),
             children: [
               SectionRow(
-                label: _sharing ? 'Collecting...' : 'Export and share diagnostics',
-                value: _shareSummary ??
-                    'The logs, this checklist and the device report. Nothing from inside '
-                        'any virtualized app.',
+                label: s.t(_sharing ? 'devtest.collecting' : 'devtest.share'),
+                value: _shareSummary ?? s.t('devtest.shareBody'),
                 valueColor: _shareFailed ? UniqueColors.error : null,
                 onTap: _sharing ? null : _share,
                 trailing: _sharing
@@ -137,8 +135,8 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
               ),
               const Divider(height: 1),
               SectionRow(
-                label: 'Clear the sequence',
-                value: 'Verdicts and notes only. Nothing else is touched.',
+                label: s.t('devtest.clear'),
+                value: s.t('devtest.clearBody'),
                 onTap: () async {
                   final updated = await widget.state.resetChecklist();
                   if (mounted) setState(() => _steps = updated);
@@ -149,7 +147,7 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
           ),
 
           if (_report == null)
-            const SectionCard(children: [SectionRow(label: 'Reading the device...')])
+            SectionCard(children: [SectionRow(label: s.t('devtest.readingDevice'))])
           else
             for (final section in _report!)
               SectionCard(
@@ -164,7 +162,9 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
                         Clipboard.setData(
                             ClipboardData(text: '${entry.key}=${entry.value}'));
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('${entry.key} copied')),
+                          SnackBar(
+                              content: Text(
+                                  s.t('devtest.copied', {'key': entry.key}))),
                         );
                       },
                     ),
@@ -267,14 +267,14 @@ class _StepRowState extends State<_StepRow> {
             child: Wrap(
               spacing: UniqueSpace.sm,
               children: [
-                for (final v in const [
-                  (StepVerdict.pass, 'Pass'),
-                  (StepVerdict.fail, 'Fail'),
-                  (StepVerdict.blocked, 'Blocked'),
-                  (StepVerdict.skipped, 'Skip'),
+                for (final v in [
+                  (StepVerdict.pass, 'devtest.pass'),
+                  (StepVerdict.fail, 'devtest.fail'),
+                  (StepVerdict.blocked, 'devtest.blocked'),
+                  (StepVerdict.skipped, 'devtest.skip'),
                 ])
                   ChoiceChip(
-                    label: Text(v.$2),
+                    label: Text(Strings.of(context).t(v.$2)),
                     selected: step.verdict == v.$1,
                     // The note is committed alongside the verdict: tapping a chip is the
                     // other way a tester finishes typing, and it does not blur the field.
@@ -297,10 +297,10 @@ class _StepRowState extends State<_StepRow> {
               textInputAction: TextInputAction.newline,
               keyboardType: TextInputType.multiline,
               style: theme.textTheme.bodySmall,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 isDense: true,
-                labelText: 'What happened',
-                hintText: 'Exact error text is worth more than a description of it',
+                labelText: Strings.of(context).t('devtest.note'),
+                hintText: Strings.of(context).t('devtest.noteHint'),
               ),
               onSubmitted: widget.onNote,
             ),

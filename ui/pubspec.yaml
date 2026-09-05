@@ -24,6 +24,11 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Material's own strings and date/number formats in Russian. Part of the Flutter SDK,
+  # so this adds a locale rather than a dependency to keep up to date.
+  flutter_localizations:
+    sdk: flutter
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8

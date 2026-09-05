@@ -17,7 +17,9 @@ sed "s/android:versionCode=\"$current\"/android:versionCode=\"$next\"/" \
     "$here/AndroidManifest.xml" > "$work/AndroidManifest.xml"
 
 # Build into a scratch directory so the current probe.apk is not disturbed.
-cp -r "$here/src" "$here/native" "$work/"
+# `res` travels too, and forgetting it broke this the moment the probe gained a resource
+# table: build.sh compiles `$here/res` and the scratch copy had no such directory.
+cp -r "$here/src" "$here/native" "$here/res" "$work/"
 cp "$here/build.sh" "$work/"
 mkdir -p "$work/.keystore" && cp "$here/.keystore/probe.keystore" "$work/.keystore/"
 # ANDROID_HOME passed explicitly: build.sh falls back to reading local.properties

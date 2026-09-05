@@ -20,6 +20,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import com.unique.app.engine.DeviceReport
+import com.unique.app.engine.GuestAppInfo
 import com.unique.app.engine.DiagnosticsExport
 import com.unique.app.engine.TestChecklist
 import com.unique.app.engine.UniqueEngine
@@ -2036,6 +2037,84 @@ class VirtualLaunchTest {
         assertThat(executed["className"]).isEqualTo("$probePackage.ProbeJobService")
         assertThat(executed["packageName"]).isEqualTo(probePackage)
         assertThat(executed["filesDir"]).isEqualTo(dir)
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 8: what a real device found that this emulator never did.
+
+    /**
+     * A guest reads a setting, and is called by its own name.
+     *
+     * Both of these were reported as working and were not. They are here together because
+     * they failed for the same reason — the emulator answers a question the phone asks
+     * differently — and because a physical-device run is what found each of them.
+     *
+     * **The settings read.** `Settings.Global` and `Settings.Secure` are content-provider
+     * calls carrying an `AttributionSource`, and the provider checks it against the uid.
+     * UNIQUE wraps the provider to substitute the host's — but the framework reads a
+     * setting during `handleBindApplication`, before any guest code exists, and the raw
+     * provider it acquires is cached process-wide in `ActivityThread.mProviderMap` and in
+     * each `Settings` class's own static holder. Nothing acquires it again, so the wrapper
+     * never gets in front of it, and on a Xiaomi Android 15 device every guest died with
+     *
+     * ```
+     * SecurityException: Package com.example does not belong to 10300
+     *     at android.provider.Settings$NameValueCache.getStringForUser
+     *     at android.database.sqlite.SQLiteCompatibilityWalFlags.initIfNeeded
+     *     at android.database.sqlite.SQLiteDatabase.<init>
+     * ```
+     *
+     * — an app that cannot open a database, which is every app. It passed here because
+     * this emulator's settings provider is laxer about the caller.
+     *
+     * **The label.** `android:label` is a *reference* into the APK's resource table, and
+     * UNIQUE's binary-XML reader has no table, so it spelled the reference out: every
+     * imported app on the phone was called `@7f010000`. The probe now names itself through
+     * `@string/app_name`, in two languages, so this asserts resolution rather than the
+     * absence of a bug nobody wrote a test for.
+     */
+    @Test
+    fun t38_theGuestReadsASettingAndIsCalledByItsOwnName() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        launchProbeWith(instance) { }
+        val observed = awaitResult(instance)
+
+        // The read has to have happened, not merely not-thrown somewhere else.
+        assertThat(observed["globalSettingError"]).isNull()
+        assertThat(observed["globalSettingRead"]).isEqualTo("true")
+        assertThat(observed["secureSettingError"]).isNull()
+        assertThat(observed["secureSettingRead"]).isEqualTo("true")
+
+        // And the eviction that makes it possible is recorded rather than inferred.
+        val evictions = Diagnostics.snapshot(DiagChannel.PROCESS)
+            .filter { it.code == "PROVIDER_CACHES_EVICTED" }
+        android.util.Log.i("UniqueTest", "t38: provider cache evictions seen: ${evictions.size}")
+
+        // The platform's own answer for what this app is called, read through the guest's
+        // resources. A reference would mean the resource table never reached the loader.
+        val label = observed["resolvedLabel"]
+        assertThat(label).isNotNull()
+        assertThat(label).doesNotContain("@")
+        assertThat(label).isNotEmpty()
+
+        // UNIQUE's own answer, from the stored APK, for the same app. This is what the
+        // list on Home shows, and it is a different code path from the one above: the
+        // guest asked its own PackageManager, this asks the host's about an archive.
+        val resolved = GuestAppInfo.of(context, probePackage, instance.versionCode)
+        assertThat(resolved.label).isNotNull()
+        assertThat(resolved.label!!).doesNotContain("@")
+        // Both routes must agree on the name, or one of them is reading the wrong table.
+        assertThat(resolved.label).isEqualTo(label)
+        Diagnostics.info(
+            DiagChannel.STORAGE, "LABEL_AGREEMENT",
+            mapOf("guest" to label!!, "host" to resolved.label!!),
+        )
+
+        // And the icon, which had the same shape of bug for a different reason:
+        // `getApplicationIcon(packageName)` answers only for installed packages, and an
+        // imported app is by definition not one.
+        assertThat(resolved.icon).isNotNull()
     }
 
     // -----------------------------------------------------------------------------

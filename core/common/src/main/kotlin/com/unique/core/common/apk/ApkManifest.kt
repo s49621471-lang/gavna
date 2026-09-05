@@ -86,6 +86,16 @@ data class ApkManifest(
     val hasCode: Boolean,
     val extractNativeLibs: Boolean?,
     val label: String?,
+    /**
+     * `android:label` when it is a *reference*, which is almost always.
+     *
+     * Kept as the resource id alongside the textual [label] because they answer different
+     * questions. [label] is what the manifest literally says — `@7f010000` for any app
+     * that names itself properly — and this is what the platform needs to resolve it:
+     * `ApplicationInfo.labelRes`, without which a guest asking its own PackageManager what
+     * it is called gets its package name back.
+     */
+    val labelResId: Int,
     val iconResId: Int,
     val themeResId: Int,
     val usesPermissions: List<String>,

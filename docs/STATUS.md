@@ -63,9 +63,8 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-093631-18438` (debug) and `20260905-100430-21731` (the `verify` build a
-tester is handed), Android 14 x86_64, probe **not installed on the device**.
-**37 of 37 pass, in both.**
+Run `20260905-115145-10161`, the `verify` build a tester is handed, Android 14 x86_64,
+probe **not installed on the device**. **38 of 38 pass.**
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -107,6 +106,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t35` the Google routing decision is real, and follows this device | **PASS** |
 | `t36` a guest reaching another app's provider gets a well-formed answer | **PASS** |
 | `t37` the device report, the checklist and an export that carries no app data | **PASS** |
+| `t38` a guest reads a setting, and is called by its own name | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -198,6 +198,71 @@ Three things are worth reading carefully:
 - **`uid` is UNIQUE's.** This is correct and permanent: UNIQUE is not a privilege
   boundary. The guest's *package identity* is virtual; its *Linux identity* is the host's.
 
+
+## The first physical-device run
+
+**Xiaomi Redmi 23030RAC7Y, Android 15 (API 35), HyperOS, arm64-v8a, 4 KB pages.** Run by
+the phone's owner on 2026-09-05 and captured with a logcat app — no `adb`, no root, no
+computer, which is what the artifact was built for.
+
+**No app launched.** Two faults, both invisible to the verification emulator, both now
+fixed and neither re-proven on hardware.
+
+**A settings read from inside a guest was refused.**
+
+```
+SecurityException: Package com.gordey.standarling does not belong to 10300
+    at android.provider.Settings$NameValueCache.getStringForUser
+    at android.database.sqlite.SQLiteCompatibilityWalFlags.initIfNeeded
+    at android.database.sqlite.SQLiteDatabase.<init>
+```
+
+A settings read is a content-provider `call` carrying an `AttributionSource`, and the
+provider checks it against the uid. UNIQUE wraps the provider precisely to substitute the
+host's — but nothing acquires the settings provider *after* the graft. The framework reads
+one during `handleBindApplication`, before a line of guest code exists (`GraphicsEnvironment:
+Global.Settings values are invalid` is that read, in the log, at the top of the process's
+life), and the raw binder it gets is cached in `ActivityThread.mProviderMap` and in the
+static `NameValueCache` inside each of `Settings.Secure`, `Global` and `System`. The
+wrapper never got in front of them. Since `SQLiteDatabase` reads a setting before it opens
+anything, the guest could not open a database, could not attach an Activity, and never
+started. Fixed by evicting both caches at the end of the graft, before the guest's
+`Application.onCreate`.
+
+**`getHistoricalProcessExitReasons` went out under the guest's own name.**
+
+```
+SecurityException: Permission Denial: getHistoricalProcessExitReasons
+    from pid=22773, uid=10300 requires android.permission.DUMP
+```
+
+It needs `DUMP` only for a package that is not the caller's own, so a guest asking why it
+died last time was asking about a stranger — and Crashlytics-style startup code took the
+application down with it. The identity rewrite's allowlist did not name it. It now has a
+structural rule for the interrogative half of `IActivityManager` (`get`, `is`, `check`,
+`has`, `query`, `report`), with an explicit exclusion for verbs that *act* on a package,
+because rewriting `forceStopPackage` would turn "stop me" into "stop UNIQUE".
+
+**A guest could not read its own name either**, for the same reason one level deeper:
+`ApplicationInfo.labelRes` was never set, because the manifest reader kept `android:label`
+as text and not as a resource id, so `getApplicationLabel` fell back to the package name.
+An app's own about screen, notification title or share sheet would have shown
+`com.example.app`. Both halves are carried now.
+
+**Two things that were not launch failures but were plainly wrong.** Every imported app
+was listed as `@7f010000` — `android:label` is a reference into the APK's resource table
+and UNIQUE's binary-XML reader has none — and none of them had an icon, because
+`getApplicationIcon(packageName)` answers only for packages the device has installed.
+Both are now read from the stored APK through the platform's own parser, which also gets
+the label in the phone's language for free.
+
+**And the log was nearly empty of UNIQUE's own events.** The build a tester installs is not
+debuggable, `Diagnostics.verbose` was `BuildConfig.DEBUG`, and so a logcat capture from the
+phone held only warnings and errors: no `PROCESS_START`, no hook report, none of the trace
+before the failure. That is now a build-type flag of its own, on for the `verify` build.
+
+`t38` covers the settings read and the label, and the probe was given a real resource table
+and a localized name so both are exercised rather than asserted.
 
 ## Previously blocking, now fixed
 

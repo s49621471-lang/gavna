@@ -3,8 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:unique_ui/models/models.dart';
 import 'package:unique_ui/theme/unique_theme.dart';
 import 'package:unique_ui/widgets/common.dart';
+import 'package:unique_ui/l10n/strings.dart';
 
 void main() {
+  _localisationTests();
   group('formatBytes', () {
     test('renders human sizes with one decimal below ten', () {
       expect(formatBytes(0), '0 B');
@@ -114,5 +116,40 @@ void main() {
     ));
     expect(find.text('Launch unavailable'), findsOneWidget);
     expect(find.textContaining('next milestone'), findsOneWidget);
+  });
+}
+
+void _localisationTests() {
+  group('localisation', () {
+    test('every string exists in both languages', () {
+      // The whole reason the tables are plain maps rather than generated code. A key
+      // added to one language and forgotten in the other shows an English sentence in a
+      // Russian interface, which is the kind of thing nobody reports and everybody sees.
+      expect(Strings.missingKeys(), isEmpty);
+    });
+
+    test('a Russian string is actually Russian', () {
+      const en = Strings(Locale('en'));
+      const ru = Strings(Locale('ru'));
+      expect(en.t('settings.title'), 'Settings');
+      expect(ru.t('settings.title'), isNot('Settings'));
+      expect(ru.t('settings.title'), matches(RegExp(r'[А-Яа-я]')));
+    });
+
+    test('placeholders are filled, and an unknown key is returned as itself', () {
+      const ru = Strings(Locale('ru'));
+      expect(ru.t('settings.savedTo', {'path': '/x/y.zip'}), contains('/x/y.zip'));
+      expect(ru.t('no.such.key'), 'no.such.key');
+    });
+
+    test('a language names itself in its own language', () {
+      // A picker that renames Русский to "Russian" is unreadable to the person who needs
+      // it, so the names are deliberately not translated.
+      expect(AppLanguage.russian.nativeName, 'Русский');
+      expect(AppLanguage.english.nativeName, 'English');
+      expect(AppLanguage.fromCode('ru'), AppLanguage.russian);
+      expect(AppLanguage.fromCode(null), AppLanguage.system);
+      expect(AppLanguage.system.locale, isNull);
+    });
   });
 }

@@ -174,4 +174,13 @@ class UniqueBridgeClient {
   Stream<DiagRecord> diagnostics() => _events
       .receiveBroadcastStream()
       .map((e) => DiagRecord.fromMap(e as Map<Object?, Object?>));
+
+  /// Interface preferences, which persist on the engine side rather than in memory.
+  Future<Map<String, Object?>> uiSettings() async =>
+      (await _method.invokeMapMethod<Object?, Object?>('uiSettings'))
+          ?.map((k, v) => MapEntry(k.toString(), v)) ??
+      const {};
+
+  Future<void> setUiSetting(String key, Object value) =>
+      _method.invokeMethod<Object?>('setUiSetting', {'key': key, 'value': value});
 }

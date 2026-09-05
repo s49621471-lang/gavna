@@ -19,7 +19,14 @@ never tried" is the difference between a fact and a guess.
 | Id | Environment |
 |---|---|
 | `EMU34` | Android 14 (API 34), x86_64, `aosp_atd` emulator, software rendering, no KVM |
-| `ARM64` | Physical ARM64 Android 15 phone — **not yet run**, see `docs/PHYSICAL_DEVICE_TEST.md` |
+| `ARM64` | Xiaomi Redmi 23030RAC7Y, **Android 15 (API 35), HyperOS**, arm64-v8a, 4 KB pages. First run 2026-09-05, by the phone's owner, captured with a logcat app rather than `adb` |
+
+The ARM64 column is now partly filled, and mostly with `BROKEN`. That first run found two
+faults this emulator could not: a settings read from inside a guest was refused because the
+provider had been cached before the graft, and `getHistoricalProcessExitReasons` went out
+with the guest's own package name and needs `DUMP` for any package but the caller's. Both
+are fixed and neither is re-tested here — an emulator that never reproduced them cannot
+confirm them either. They stay `BROKEN` until a phone says otherwise.
 
 Every result below was produced by the **debug** build. The minified release build is a
 separate question and is answered separately, in the first row of the next table.
@@ -28,23 +35,28 @@ separate question and is answered separately, in the first row of the next table
 
 | Capability | EMU34 | ARM64 | Notes |
 |---|---|---|---|
-| The `verify` build (what a tester installs) | `SUPPORTED` | `NOT_TESTED` | The whole suite runs against the exact APK in `dist/`, not against a near neighbour of it: `BUILD_TYPE=verify ./tools/verify-device.sh`, 37 of 37, run `20260905-100430-21731`. Unminified engine, Flutter built ahead of time, non-debuggable — so ActivityManager holds it to the ordinary ten-second process-start budget a shipped app lives inside |
+| The `verify` build (what a tester installs) | `SUPPORTED` | `NOT_TESTED` | The whole suite runs against the exact APK in `dist/`, not against a near neighbour of it: `BUILD_TYPE=verify ./tools/verify-device.sh`, 38 of 38, run `20260905-115145-10161`. Unminified engine, Flutter built ahead of time, non-debuggable — so ActivityManager holds it to the ordinary ten-second process-start budget a shipped app lives inside |
 | Minified release build (R8) | `NOT_TESTED` | `NOT_TESTED` | It assembles, minifies and signs (18.6 MB, arm64-v8a, all libraries 16 KB-aligned). The keep rules hold *structurally*: the minified dex still carries `ActivityStub`, `ServiceStub_p0_s6`, `ProviderStub_p0`, `UniqueRouterProvider`, `UniqueSharedProvider`, `UniqueNative` and `nativeProbeVulkan`, and the manifest still declares 272 stub components — checked by hand on the artifact. That is not the same as running. The instrumented suite **cannot be run against it**: `androidx.tracing.Trace` reaches `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so no `-keep` rule applies and the runner dies with `NoClassDefFoundError` before the first test. A virtualization engine is nearly all reflection, so an unverified minified build is exactly the one to be suspicious of; everything else in this file is the debug build |
-| APK import (single APK) | `SUPPORTED` | `NOT_TESTED` | Probe imported from a file, package not installed on the host |
+| APK import (single APK) | `SUPPORTED` | `SUPPORTED` | Probe imported from a file, package not installed on the host. On the phone, ChatGPT and a Unity game were both imported and stored under `files/virtual/apk/…` |
 | Virtual package registration | `SUPPORTED` | `NOT_TESTED` | Room-backed, survives process death |
 | Instance creation | `SUPPORTED` | `NOT_TESTED` | Directories created, device profile generated |
-| `:vappN` process start | `SUPPORTED` | `NOT_TESTED` | Slot assigned per (instance, manifest process) |
-| Hidden-API access | `SUPPORTED` | `NOT_TESTED` | via `HiddenApiBypass` |
+| `:vappN` process start | `SUPPORTED` | `SUPPORTED` | Slot assigned per (instance, manifest process). `:vapp0` and `:vapp1` both started on the phone |
+| Hidden-API access | `SUPPORTED` | `SUPPORTED` | via `HiddenApiBypass`; granted on HyperOS 15, where the graft proceeded past every hook install |
 | Transaction interception | `SUPPORTED` | `NOT_TESTED` | `LaunchActivityItem` found and rewritten |
 | Virtual `PackageManager` | `SUPPORTED` | `NOT_TESTED` | 7 methods bound; required for uninstalled packages |
 | Outbound identity to system services | `SUPPORTED` | `NOT_TESTED` | Calling package and `AttributionSource` rewritten to the host |
-| `LoadedApk` graft | `SUPPORTED` | `NOT_TESTED` | Guest's own Application instantiated, `onCreate` before the Activity |
-| Activity launch | `SUPPORTED` | `NOT_TESTED` | Guest's real Activity class, correct `componentName` |
+| `LoadedApk` graft | `SUPPORTED` | `BROKEN` | Guest's own Application instantiated, `onCreate` before the Activity. On the phone it reached `makeApplication` and failed inside the guest's own constructor: `getHistoricalProcessExitReasons … requires android.permission.DUMP`, because the call went out naming the guest. Fixed, not re-proven |
+| Activity launch | `SUPPORTED` | `BROKEN` | Guest's real Activity class, correct `componentName`. On the phone a Unity app got as far as `Activity.attach` and died reading a setting: `SecurityException: Package … does not belong to 10300`. Fixed, not re-proven |
 | Activity start by the guest itself (explicit) | `SUPPORTED` | `NOT_TESTED` | Routed onto a stub matching the target's `launchMode`; correct component, extras, process and task (`t10`) |
 | Activity start by the guest itself (implicit) | `SUPPORTED` | `NOT_TESTED` | Resolved against the guest's own manifest filters with the platform's own `IntentFilter` matcher. Both a custom action and the app's own URI scheme reach the guest's activity with data and extras intact (`t31`) |
 | Implicit start the *host* can also serve | `PARTIAL` | `NOT_TESTED` | The host wins unless the intent is scoped to the guest with `setPackage`: an `https` VIEW belongs in a browser and a SEND in the chooser. UNIQUE cannot put a virtual activity in the system chooser, so it decides rather than asking; the rule that decided is recorded (`ACTIVITY_IMPLICIT_HOST_PREFERRED`) |
 | `PendingIntent` to a guest activity or service | `SUPPORTED` | `NOT_TESTED` | The stub is baked in at creation; `Intent.setIdentifier` keeps two screens' PendingIntents distinct (`t11`) |
 | `PendingIntent` broadcast to a guest receiver | `BROKEN` | `NOT_TESTED` | A dynamic receiver is matched by filter, never by component; needs a host stub receiver that re-dispatches. Reported as `PENDING_INTENT_RECEIVER_UNSUPPORTED`, never silently mis-pointed |
+| Guest reads `Settings.Global` / `Settings.Secure` | `SUPPORTED` | `BROKEN` | A settings read is a provider `call` carrying an `AttributionSource`. The provider UNIQUE wraps to rewrite it is never reached, because the framework acquires the settings provider during `handleBindApplication` — before any guest code — and the raw binder is cached in `ActivityThread.mProviderMap` and in each `Settings` class's static holder. Fixed by evicting both at the end of the graft (`PROVIDER_CACHES_EVICTED`), and asserted by `t38`. `BROKEN` on ARM64 until a phone says otherwise |
+| App name shown for an imported app | `SUPPORTED` | `BROKEN` | `android:label` is a reference into the APK's resource table, and UNIQUE's binary-XML reader has none — every imported app was listed as `@7f010000`. Resolved by handing the stored APK to the platform's own parser (`t38`); the probe now names itself through `@string/app_name` in two languages so the resolution is exercised |
+| Guest reads its own name (`getApplicationLabel`) | `SUPPORTED` | `NOT_TESTED` | Same root as the row above, one level deeper: `ApplicationInfo.labelRes` was never populated, because the manifest reader kept the reference as text and not as an id, so a guest asking its own PackageManager what it is called got its *package name*. Both are now carried (`ApkManifest.labelResId`), and `t38` asserts the guest and UNIQUE agree on the name |
+| App icon shown for an imported app | `SUPPORTED` | `BROKEN` | Same shape, different cause: `getApplicationIcon(packageName)` answers only for packages the *device* has installed, so every imported app fell back to a monogram. Read from the archive instead (`t38`) |
+| Interface language | `SUPPORTED` | `NOT_TESTED` | English and Russian, chosen in Settings or followed from the phone. Both tables are asserted to hold the same keys, so a string added to one and missed in the other fails the build |
 | Instance data isolation | `SUPPORTED` | `NOT_TESTED` | Every accessor resolves under `users/<vuid>/`; nothing leaks into UNIQUE's own dirs |
 | Persistence across restart | `SUPPORTED` | `NOT_TESTED` | SharedPreferences, file and SQLite all continued after a process kill |
 | Multiple instances | `SUPPORTED` | `NOT_TESTED` | Two instances of the same APK, independent data, both alive at once (`t05`) |
@@ -79,8 +91,8 @@ separate question and is answered separately, in the first row of the next table
 | AppOps | `PARTIAL` | `NOT_TESTED` | `checkPackage` and the op checks accept the guest's identity (`t14`). Ops are *attributed* to UNIQUE, because the uid is UNIQUE's — per-instance denial happens at the permission check instead |
 | Native library loading (JNI) | `SUPPORTED` | `NOT_TESTED` | `System.loadLibrary` from an APK the system never installed; the library runs in the guest's process and JNI works both directions (`t17`). **On x86_64** — the mechanism is architecture-independent, the ARM64 answer is not |
 | Native ABI selection | `SUPPORTED` | `NOT_TESTED` | The device's own `SUPPORTED_ABIS` order, as the platform does; an APK with no executable ABI is refused rather than started (`PACKAGE_IMPORTED … abi=x86_64`) |
-| Native ARM64 specifically | `NOT_TESTED` | `NOT_TESTED` | This emulator is x86_64. `docs/PHYSICAL_DEVICE_TEST.md` exists for exactly this |
-| 16 KB page size | `NOT_TESTED` | `NOT_TESTED` | Checked at import and at build time (`tools/check-abi.sh`), but this emulator reports 4096 so the large-page path is unexercised |
+| Native ARM64 specifically | `NOT_TESTED` | `PARTIAL` | UNIQUE's *own* `libunique_native.so` loads in an ARM64 `:vappN` — `libunique_native loaded (page size 4096)` on the phone — so the build, the packaging and `System.loadLibrary` are proven for arm64-v8a. A **guest's** native library has still never been loaded on ARM64, because no guest has started |
+| 16 KB page size | `NOT_TESTED` | `NOT_TESTED` | Checked at import and at build time (`tools/check-abi.sh`). Neither this emulator nor the phone that has run so far uses large pages — both report 4096 — so the path stays unexercised |
 | Native IO redirection | `PARTIAL` | `NOT_TESTED` | PLT/GOT hooking of the guest's own libraries. A path hard-coded as `/data/data/<pkg>/files/…` in native code lands inside the instance (`t17`). Limited to libraries loaded by the time the guest's `Application.onCreate` finishes, and to calls that cross a PLT — libc calling itself is invisible, correctly so |
 | Native IO redirection — late-loaded libraries | `SUPPORTED` | `NOT_TESTED` | `android_dlopen_ext` is watched in `libnativeloader`, so a library loaded from an Activity is hooked as it arrives: `1/318` → `2/319` libraries, and its hard-coded path lands in the instance (`t17`) |
 | Diagnostics — events from a virtual process | `SUPPORTED` | `NOT_TESTED` | Pulled from each live `:vappN` through that slot's stub provider when an export is written; crash records are pushed to UNIQUE's main process by the dying process itself |

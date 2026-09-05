@@ -200,6 +200,48 @@ public class ProbeActivity extends Activity {
         out.put("appInfoNativeLibraryDir", String.valueOf(getApplicationInfo().nativeLibraryDir));
         out.put("targetSdk", String.valueOf(getApplicationInfo().targetSdkVersion));
 
+        // A settings read, which is a content-provider call carrying this app's identity.
+        //
+        // Recorded on every launch because it is the single most load-bearing call an
+        // ordinary app makes without knowing it: SQLiteDatabase reads Settings.Global
+        // before it opens anything, so a guest that cannot do this cannot open a database,
+        // cannot attach an Activity, and never starts. On a Xiaomi Android 15 device that
+        // was exactly the failure -
+        //
+        //   SecurityException: Package com.example does not belong to 10300
+        //     at android.provider.Settings$NameValueCache.getStringForUser
+        //
+        // - and nothing in the suite noticed, because the emulator's own settings provider
+        // is laxer and the value had already been cached before the graft.
+        try {
+            out.put("globalSetting", String.valueOf(android.provider.Settings.Global.getString(
+                    getContentResolver(), android.provider.Settings.Global.DEVICE_NAME)));
+            out.put("globalSettingRead", "true");
+        } catch (Throwable t) {
+            out.put("globalSettingRead", "false");
+            out.put("globalSettingError", t.toString());
+        }
+        // And the same question through Settings.Secure, whose cache is a different static
+        // holder: one of the two working is not evidence that both do.
+        try {
+            android.provider.Settings.Secure.getString(
+                    getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+            out.put("secureSettingRead", "true");
+        } catch (Throwable t) {
+            out.put("secureSettingRead", "false");
+            out.put("secureSettingError", t.toString());
+        }
+
+        // What the platform itself calls this app, resolved from its own resource table.
+        // `android:label` is `@string/app_name`, so a reader with no table hands back
+        // `@7f010000` - which is what every imported app was called on a phone.
+        try {
+            out.put("resolvedLabel", String.valueOf(
+                    getPackageManager().getApplicationLabel(getApplicationInfo())));
+        } catch (Throwable t) {
+            out.put("resolvedLabelError", t.toString());
+        }
+
         // SharedPreferences: the counter is the persistence proof across restarts.
         SharedPreferences prefs = getSharedPreferences("probe", MODE_PRIVATE);
         int launchCount = prefs.getInt("launchCount", 0) + 1;

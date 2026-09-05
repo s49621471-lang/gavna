@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../bridge/unique_bridge.dart';
+import '../l10n/strings.dart';
 import '../models/models.dart';
 
 enum LoadState { idle, loading, ready, failed }
@@ -39,6 +40,7 @@ class AppState extends ChangeNotifier {
   set dynamicColor(bool value) {
     if (_dynamicColor == value) return;
     _dynamicColor = value;
+    _bridge.setUiSetting('dynamicColor', value);
     notifyListeners();
   }
 
@@ -47,13 +49,36 @@ class AppState extends ChangeNotifier {
   set reducedMotion(bool value) {
     if (_reducedMotion == value) return;
     _reducedMotion = value;
+    _bridge.setUiSetting('reducedMotion', value);
     notifyListeners();
+  }
+
+  /// The interface language, `system` unless the user chose otherwise.
+  ///
+  /// Persisted through the engine rather than held here: a language that resets every
+  /// time the app is opened is not a setting, it is a fault.
+  AppLanguage _language = AppLanguage.system;
+  AppLanguage get language => _language;
+  set language(AppLanguage value) {
+    if (_language == value) return;
+    _language = value;
+    _bridge.setUiSetting('language', value.code);
+    notifyListeners();
+  }
+
+  Future<void> _loadUiSettings() async {
+    final settings = await _bridge.uiSettings();
+    if (settings.isEmpty) return;
+    _language = AppLanguage.fromCode(settings['language'] as String?);
+    _dynamicColor = settings['dynamicColor'] as bool? ?? _dynamicColor;
+    _reducedMotion = settings['reducedMotion'] as bool? ?? _reducedMotion;
   }
 
   Future<void> load() async {
     _status = LoadState.loading;
     notifyListeners();
     try {
+      await _loadUiSettings();
       _engine = await _bridge.engineStatus();
       await _refreshInstances();
       _status = LoadState.ready;

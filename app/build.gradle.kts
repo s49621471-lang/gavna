@@ -177,6 +177,11 @@ val stageProbeApk by tasks.registering {
     inputs.file(rootProject.file("tools/testapp/build-next.sh"))
     inputs.dir(rootProject.file("tools/testapp/split"))
         .withPathSensitivity(PathSensitivity.RELATIVE)
+    // The resource table is an input too. It is where the probe's *name* lives, which is
+    // the whole point of it existing — `android:label="@string/app_name"` is what makes
+    // the label-resolution path testable rather than a story.
+    inputs.dir(rootProject.file("tools/testapp/res"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     outputs.dir(stagedProbeDir)
 
     doLast {
@@ -257,8 +262,18 @@ android {
     }
 
     buildTypes {
+        // `DIAGNOSTIC_LOGCAT` decides whether UNIQUE's structured events are *also* written
+        // to the system log, on top of the ring buffers the export reads.
+        //
+        // It is not `BuildConfig.DEBUG`, which is what this used to be, and the difference
+        // cost a physical-device run: the build a tester installs is not debuggable, so
+        // `DEBUG` was false, so a logcat capture from the phone contained only warnings and
+        // errors — no `PROCESS_START`, no `BOOTSTRAP_OK`, no hook report, none of the trace
+        // that says what happened before the failure. A tester recording with a logcat app
+        // instead of `adb` is the whole point of the artifact; the build has to talk to it.
         debug {
             isMinifyEnabled = false
+            buildConfigField("boolean", "DIAGNOSTIC_LOGCAT", "true")
         }
         // The build a physical-device tester actually gets.
         //
@@ -282,12 +297,17 @@ android {
             initWith(getByName("debug"))
             isMinifyEnabled = false
             isDebuggable = false
+            buildConfigField("boolean", "DIAGNOSTIC_LOGCAT", "true")
             signingConfig = signingConfigs.getByName("testSigned")
             matchingFallbacks += listOf("release", "debug")
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // Off in the shipped build. Every line still goes through the redactor
+            // (§14.2), but the system log is readable by anything with a log reader and a
+            // released app has no business filling it.
+            buildConfigField("boolean", "DIAGNOSTIC_LOGCAT", "false")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // The instrumentation APK's own problems stay in its own file; see
             // proguard-test-rules.pro.

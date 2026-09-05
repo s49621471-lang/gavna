@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/strings.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
@@ -23,18 +24,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final engine = widget.state.engine;
+    final s = Strings.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(s.t('settings.title'))),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(
             UniqueSpace.lg, 0, UniqueSpace.lg, UniqueSpace.xxl),
         children: [
           SectionCard(
-            title: 'Appearance',
+            title: s.t('settings.appearance'),
             children: [
               SectionRow(
-                label: 'Material You colours',
-                value: 'Follow the system wallpaper accent',
+                label: s.t('settings.language'),
+                value: widget.state.language == AppLanguage.system
+                    ? '${s.t('settings.languageBody')}  ·  ${AppLanguage.system.nativeName}'
+                    : widget.state.language.nativeName,
+                onTap: _pickLanguage,
+                trailing: const Icon(Icons.translate_rounded, size: 20),
+              ),
+              const Divider(),
+              SectionRow(
+                label: s.t('settings.dynamicColor'),
+                value: s.t('settings.dynamicColorBody'),
                 trailing: Switch(
                   value: widget.state.dynamicColor,
                   onChanged: (v) => setState(() => widget.state.dynamicColor = v),
@@ -42,8 +53,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const Divider(),
               SectionRow(
-                label: 'Reduce motion',
-                value: 'Shorter transitions',
+                label: s.t('settings.reduceMotion'),
+                value: s.t('settings.reduceMotionBody'),
                 trailing: Switch(
                   value: widget.state.reducedMotion,
                   onChanged: (v) => setState(() => widget.state.reducedMotion = v),
@@ -53,96 +64,97 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           SectionCard(
-            title: 'Engine',
+            title: s.t('settings.engine'),
             children: [
               SectionRow(
-                label: 'Platform access',
+                label: s.t('settings.platformAccess'),
                 value: engine == null
-                    ? 'Unknown'
+                    ? s.t('common.unknown')
                     : engine.hiddenApiGranted
-                        ? 'Granted'
-                        : 'Denied - virtual apps cannot run',
+                        ? s.t('settings.granted')
+                        : s.t('settings.denied'),
                 valueColor: engine?.hiddenApiGranted == false ? UniqueColors.error : null,
               ),
               const Divider(),
               SectionRow(
-                label: 'Native library',
+                label: s.t('settings.nativeLibrary'),
                 value: engine == null
-                    ? 'Unknown'
+                    ? s.t('common.unknown')
                     : engine.nativeLoaded
-                        ? 'Loaded'
-                        : (engine.nativeLoadError ?? 'Not loaded'),
+                        ? s.t('settings.loaded')
+                        : (engine.nativeLoadError ?? s.t('settings.notLoaded')),
                 valueColor: engine?.nativeLoaded == false ? UniqueColors.error : null,
               ),
               const Divider(),
               SectionRow(
-                label: 'Memory page size',
+                label: s.t('settings.pageSize'),
                 value: engine == null
-                    ? 'Unknown'
+                    ? s.t('common.unknown')
                     : '${engine.pageSizeBytes ~/ 1024} KB'
-                        '${engine.usesLargePages ? '  -  apps must ship 16 KB-aligned libraries' : ''}',
+                        '${engine.usesLargePages ? '  —  ${s.t('settings.largePages')}' : ''}',
               ),
               const Divider(),
               SectionRow(
-                label: 'Path redirection',
+                label: s.t('settings.pathRedirection'),
                 value: (engine?.ioRedirectImplemented ?? false)
-                    ? 'Active'
-                    : 'Not active in this build',
+                    ? s.t('settings.active')
+                    : s.t('settings.notActive'),
               ),
             ],
           ),
 
           SectionCard(
-            title: 'Google',
+            title: s.t('settings.google'),
             children: [
               // Read from the device, not asserted. Everything in this section is a fact
               // about what is installed here; none of it is a claim that a flow works.
               SectionRow(
-                label: 'Play services',
+                label: s.t('settings.playServices'),
                 value: _google == null
-                    ? 'Reading...'
+                    ? s.t('common.reading')
                     : !_google!.gmsPresent
-                        ? 'Not installed on this device'
+                        ? s.t('settings.notInstalledHere')
                         : _google!.presentButUnusable
-                            ? 'Installed but not usable'
-                                '${_google!.gmsEnabled ? "" : " - disabled"}'
+                            ? '${s.t('settings.presentUnusable')}'
+                                '${_google!.gmsEnabled ? "" : " — ${s.t('settings.disabledSuffix')}"}'
                                 '  (${_google!.gmsVersionName})'
-                            : 'Available  -  ${_google!.gmsVersionName}',
+                            : '${s.t('settings.available')}  —  ${_google!.gmsVersionName}',
                 valueColor: _google?.presentButUnusable == true
                     ? UniqueColors.warning
                     : null,
               ),
               const Divider(),
               SectionRow(
-                label: 'Play Store',
+                label: s.t('settings.playStore'),
                 value: _google == null
-                    ? '-'
-                    : _google!.vendingPresent ? 'Installed' : 'Not installed',
+                    ? s.t('common.none')
+                    : _google!.vendingPresent
+                        ? s.t('settings.installed')
+                        : s.t('settings.notInstalled'),
               ),
               const Divider(),
               SectionRow(
-                label: 'Browser for OAuth',
+                label: s.t('settings.oauthBrowser'),
                 value: _google == null
-                    ? '-'
+                    ? s.t('common.none')
                     : _google!.customTabsAvailable
                         ? _google!.customTabsPackage
-                        : 'None - browser-based sign-in cannot run here',
+                        : s.t('settings.noBrowser'),
                 valueColor: _google?.customTabsAvailable == false
                     ? UniqueColors.warning
                     : null,
               ),
               const Divider(),
               SectionRow(
-                label: 'Sign-in flows',
+                label: s.t('settings.signInFlows'),
                 value: _google?.bridgesImplemented == true
-                    ? 'Available'
-                    : 'Not implemented yet - routing is decided and recorded, but no '
-                        'flow has an implementation',
+                    ? s.t('settings.available')
+                    : s.t('settings.signInNotImplemented'),
                 valueColor: UniqueColors.warning,
               ),
               const Divider(),
               SectionRow(
-                label: 'Google diagnostics',
+                label: s.t('settings.googleDiagnostics'),
                 onTap: () => _openDiagnostics(context, channel: 'GOOGLE'),
                 trailing: const Icon(Icons.chevron_right_rounded, size: 20),
               ),
@@ -150,12 +162,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           SectionCard(
-            title: 'Advanced',
+            title: s.t('settings.advanced'),
             children: [
               SectionRow(
-                label: 'Device test',
-                value: 'What this phone is, and the physical-device sequence — run and '
-                    'recorded here, with no computer',
+                label: s.t('settings.deviceTest'),
+                value: s.t('settings.deviceTestBody'),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => DeviceTestScreen(state: widget.state),
@@ -165,19 +176,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const Divider(),
               SectionRow(
-                label: 'Diagnostics',
-                value: '${widget.state.diagnostics.length} events recorded',
+                label: s.t('settings.diagnostics'),
+                value: s.t('settings.diagnosticsBody',
+                    {'count': widget.state.diagnostics.length}),
                 onTap: () => _openDiagnostics(context),
                 trailing: const Icon(Icons.chevron_right_rounded, size: 20),
               ),
               const Divider(),
               SectionRow(
-                label: 'Export diagnostics',
+                label: s.t('settings.export'),
                 value: _exporting
-                    ? 'Collecting from every running app...'
-                    : _exportSummary ??
-                        'A zip with UNIQUE\'s logs and the device, and nothing from '
-                            'inside a virtualized app',
+                    ? s.t('settings.exporting')
+                    : _exportSummary ?? s.t('settings.exportBody'),
                 onTap: _exporting ? null : _export,
                 trailing: _exporting
                     ? const SizedBox(
@@ -190,19 +200,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           SectionCard(
-            title: 'About',
+            title: s.t('settings.about'),
             children: [
-              SectionRow(label: 'Version', value: engine?.versionName ?? '-'),
+              SectionRow(
+                  label: s.t('settings.version'),
+                  value: engine?.versionName ?? s.t('common.none')),
               const Divider(),
               SectionRow(
-                label: 'Android',
+                label: s.t('settings.android'),
                 value: engine == null
-                    ? '-'
-                    : 'API ${engine.sdkInt}  -  ${engine.abis.join(", ")}',
+                    ? s.t('common.none')
+                    : 'API ${engine.sdkInt}  —  ${engine.abis.join(", ")}',
               ),
               const Divider(),
               SectionRow(
-                label: 'Open-source licences',
+                label: s.t('settings.licences'),
                 onTap: () => showLicensePage(
                   context: context,
                   applicationName: 'Unique',
@@ -220,6 +232,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _exporting = false;
   String? _exportSummary;
   GoogleStatus? _google;
+
+  /// The language picker.
+  ///
+  /// Each option is named in its own language, never translated into the current one — a
+  /// picker that renames "Русский" to "Russian" is unreadable to exactly the person who
+  /// needs it. `System` is first because it is the default and the right answer for most
+  /// people; it follows the phone and falls back to English for a language UNIQUE does
+  /// not have.
+  Future<void> _pickLanguage() async {
+    final s = Strings.of(context);
+    final chosen = await showModalBottomSheet<AppLanguage>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  UniqueSpace.lg, 0, UniqueSpace.lg, UniqueSpace.sm),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(s.t('settings.language'),
+                    style: Theme.of(context).textTheme.titleMedium),
+              ),
+            ),
+            for (final language in AppLanguage.values)
+              ListTile(
+                title: Text(language.nativeName),
+                trailing: widget.state.language == language
+                    ? const Icon(Icons.check_rounded, size: 20)
+                    : null,
+                onTap: () => Navigator.pop(context, language),
+              ),
+            const SizedBox(height: UniqueSpace.sm),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => widget.state.language = chosen);
+  }
 
   @override
   void initState() {
@@ -250,17 +305,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     final result = await widget.state.exportDiagnostics();
     if (!mounted) return;
+    final s = Strings.of(context);
     setState(() {
       _exporting = false;
       _exportSummary = result.ok
-          ? '${result.name}  -  ${_formatBytes(result.bytes)}, '
-              '${result.lines} lines from ${result.processes + 1} '
-              '${result.processes == 0 ? "process" : "processes"}'
-          : result.message ?? 'Export failed';
+          ? s.t('settings.exportSummary', {
+              'name': result.name,
+              'size': _formatBytes(result.bytes),
+              'lines': result.lines,
+              'procs': result.processes + 1,
+              'word': s.t(result.processes == 0
+                  ? 'settings.processes.one'
+                  : 'settings.processes.many'),
+            })
+          : result.message ?? s.t('settings.exportFailed');
     });
     if (!result.ok) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved to ${result.path}')),
+      SnackBar(content: Text(s.t('settings.savedTo', {'path': result.path}))),
     );
   }
 
@@ -290,15 +352,18 @@ class DiagnosticsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final s = Strings.of(context);
     final records = channel == null
         ? state.diagnostics
         : state.diagnostics.where((r) => r.channel == channel).toList();
+    final title = s.t('settings.diagnostics');
 
     return Scaffold(
-      appBar: AppBar(title: Text(channel == null ? 'Diagnostics' : 'Diagnostics - $channel')),
+      appBar: AppBar(title: Text(channel == null ? title : '$title — $channel')),
       body: records.isEmpty
           ? Center(
-              child: Text('Nothing recorded yet', style: theme.textTheme.bodyMedium))
+              child: Text(s.t('settings.nothingRecorded'),
+                  style: theme.textTheme.bodyMedium))
           : ListView.separated(
               padding: const EdgeInsets.all(UniqueSpace.lg),
               itemCount: records.length,

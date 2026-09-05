@@ -44,6 +44,7 @@ object ManifestReader {
         var hasCode = true
         var extractNativeLibs: Boolean? = null
         var label: String? = null
+        var labelResId = 0
         var iconResId = 0
         var themeResId = 0
 
@@ -111,7 +112,10 @@ object ManifestReader {
                     appComponentFactory = el.attrByName("appComponentFactory")?.asString()
                     hasCode = el.attr(AndroidAttrs.HAS_CODE, "hasCode")?.asBoolean(true) ?: true
                     extractNativeLibs = el.attrByName("extractNativeLibs")?.asBoolean(true)
-                    label = el.attr(AndroidAttrs.LABEL, "label")?.asString()
+                    val labelAttr = el.attr(AndroidAttrs.LABEL, "label")
+                    label = labelAttr?.asString()
+                    labelResId = labelAttr?.takeIf { it.dataType == BinaryXml.TYPE_REFERENCE }
+                        ?.rawData ?: 0
                     iconResId = el.attr(AndroidAttrs.ICON, "icon")?.rawData ?: 0
                     themeResId = el.attr(AndroidAttrs.THEME, "theme")?.rawData ?: 0
                 }
@@ -170,6 +174,7 @@ object ManifestReader {
             hasCode = hasCode,
             extractNativeLibs = extractNativeLibs,
             label = label,
+            labelResId = labelResId,
             iconResId = iconResId,
             themeResId = themeResId,
             usesPermissions = usesPermissions.toList(),

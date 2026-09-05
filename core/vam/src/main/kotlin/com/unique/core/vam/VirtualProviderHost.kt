@@ -200,6 +200,10 @@ object VirtualProviderHost {
     private fun startGraft(context: Context, params: VirtualLaunchParams) {
         val mine = CountDownLatch(1)
         if (!inFlight.compareAndSet(null, mine)) return
+        // Announced before the work, not after it: the point of the record is to tell a
+        // waiting caller that this process is busy rather than dead, and it is only useful
+        // while the graft is still running.
+        AppBootstrap.announceStarting(context, params)
         post(context, params, mine)
     }
 

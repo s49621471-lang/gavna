@@ -43,8 +43,21 @@ import java.lang.reflect.Proxy
  * A blanket rewrite across the whole interface would be actively dangerous:
  * `forceStopPackage(String, int)` takes a package name as *data*, and rewriting it would
  * make a guest's call stop UNIQUE itself. It has no `IApplicationThread`, so the
- * predicate excludes it. A small allowlist covers the identity-bearing methods that lack
- * one, of which `getIntentSender` is the important case.
+ * predicate excludes it. Two more rules cover the rest: an allowlist for identity-bearing
+ * methods that carry no `IApplicationThread` (`getIntentSender` is the important case),
+ * and a structural rule for the *interrogative* half of the interface — a method that only
+ * asks a question about a package can be told the host's name safely, and there are far
+ * too many of those to name one at a time. That rule was written after a real device
+ * refused to start an app at all:
+ *
+ * ```
+ * SecurityException: Permission Denial: getHistoricalProcessExitReasons
+ *     from pid=22773, uid=10300 requires android.permission.DUMP
+ * ```
+ *
+ * `getHistoricalProcessExitReasons` needs `DUMP` only when the package it is asked about
+ * is not the caller's own — so a guest asking why it died last time was asking about a
+ * stranger, and Crashlytics-style startup code took the whole application down with it.
  */
 object VirtualActivityManagerHook {
 
@@ -64,6 +77,36 @@ object VirtualActivityManagerHook {
         "revokeUriPermission",
         "setServiceForeground",
     )
+
+    /**
+     * Verbs that mean the method *acts on* the package it is given.
+     *
+     * Matched as a substring of the lowercased method name, so `forceStopPackage`,
+     * `forceStopPackageEvenWhenStopping`, `killBackgroundProcesses`,
+     * `clearApplicationUserData` and `crashApplication` are all excluded by one entry
+     * each. These are the calls where rewriting the guest's package to the host's would
+     * turn "stop me" into "stop UNIQUE", which is the §3 violation this whole predicate
+     * exists to avoid.
+     *
+     * A verb this list does not know is treated as destructive, because [ASKS_ABOUT] is an
+     * allowlist of question words rather than a denylist of actions. Getting that direction
+     * right is the difference between a missed rewrite, which produces a visible
+     * `SecurityException` naming the method, and a wrong one, which kills the host.
+     */
+    private val ACTS_ON = listOf(
+        "kill", "forcestop", "stopapp", "clearapplication", "crash", "remove", "restart",
+        "setpackage", "suspend", "unsuspend", "hibernate", "uninstall", "delete",
+    )
+
+    /**
+     * Verbs that mean the method only *asks about* the package it is given.
+     *
+     * `get`, `is`, `check`, `has`, `query` and `report` — a call that reads a fact or files
+     * a record about the caller. The virtual package is not a name this device knows, so
+     * wherever it appears in such a call it can only mean "me", and the host's name is the
+     * only one the platform will accept for that (§6.6.6).
+     */
+    private val ASKS_ABOUT = listOf("get", "is", "check", "has", "query", "report", "notice")
 
     /**
      * Every `IActivityManager` method that dispatches a service `Intent`.
@@ -682,6 +725,22 @@ object VirtualActivityManagerHook {
 
     internal fun carriesCallerIdentity(method: Method): Boolean {
         if (method.name in IDENTITY_METHODS) return true
-        return method.parameterTypes.any { it.name == APPLICATION_THREAD }
+        if (method.parameterTypes.any { it.name == APPLICATION_THREAD }) return true
+        return asksAboutTheCaller(method)
+    }
+
+    /**
+     * Whether a method merely asks a question about the package it is handed.
+     *
+     * Both halves have to hold: the name has to start with a question word, and it must
+     * not contain a verb that acts. `getPackageProcessState` passes; `killBackgroundProcesses`
+     * does not, and neither would a future `getAndClearSomething`. There must also be a
+     * `String` to rewrite, or there is nothing here to do.
+     */
+    private fun asksAboutTheCaller(method: Method): Boolean {
+        if (method.parameterTypes.none { it == String::class.java }) return false
+        val name = method.name.lowercase()
+        if (ACTS_ON.any { name.contains(it) }) return false
+        return ASKS_ABOUT.any { name.startsWith(it) }
     }
 }

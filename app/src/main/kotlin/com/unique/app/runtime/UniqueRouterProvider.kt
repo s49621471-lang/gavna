@@ -37,6 +37,8 @@ class UniqueRouterProvider : ContentProvider() {
         VirtualProviderRouter.ROUTER_METHOD_RESOLVE -> VirtualProviderRouter.resolve(extras)
         VirtualDiagnostics.METHOD_PUBLISH -> VirtualDiagnostics.absorb(extras)
         VirtualProviderRouter.ROUTER_METHOD_SLOT_READY -> VirtualProviderRouter.slotReady(extras)
+        VirtualProviderRouter.ROUTER_METHOD_SLOT_STARTING ->
+            VirtualProviderRouter.slotStarting(extras)
         VirtualProviderRouter.ROUTER_METHOD_SLOT_STATUS -> VirtualProviderRouter.slotStatus(extras)
         VirtualBroadcastRouter.ROUTER_METHOD_COLD_DELIVERED ->
             VirtualBroadcastRouter.coldDelivered(extras)

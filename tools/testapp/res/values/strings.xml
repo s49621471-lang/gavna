@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The probe's name lives in a resource, not in the manifest, because that is what real
+  apps do and UNIQUE got it wrong for exactly that reason: `android:label` is a *reference*
+  into this table, and a manifest reader with no resource table hands back `@7f010000`.
+  Every imported app on a physical device was called that.
+
+  A localized copy exists in values-ru so the resolution is exercised rather than assumed:
+  a label that resolves through the wrong configuration is a different bug from one that
+  does not resolve at all.
+-->
+<resources>
+    <string name="app_name">UNIQUE Probe</string>
+</resources>

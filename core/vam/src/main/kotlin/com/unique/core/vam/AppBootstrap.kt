@@ -136,7 +136,22 @@ object AppBootstrap {
      * slower path it had before, which is the correct behaviour when the message is late
      * and the wrong behaviour to block a guest's startup for.
      */
-    fun announceReady(hostContext: Context, params: VirtualLaunchParams) {
+    fun announceReady(hostContext: Context, params: VirtualLaunchParams) =
+        announce(hostContext, params, VirtualProviderRouter.ROUTER_METHOD_SLOT_READY)
+
+    /**
+     * Says a graft has *begun*, which is a different and equally necessary fact.
+     *
+     * A caller waiting on a slot re-issues the warm-up when nothing has been heard, on the
+     * assumption that the process died. While a graft is running that assumption is wrong
+     * and the re-issue is harmful: it queues another `onStartCommand` behind a main thread
+     * that is busy for tens of seconds, and ActivityManager kills the process for `bg anr`
+     * — sixteen seconds before it would have been ready.
+     */
+    fun announceStarting(hostContext: Context, params: VirtualLaunchParams) =
+        announce(hostContext, params, VirtualProviderRouter.ROUTER_METHOD_SLOT_STARTING)
+
+    private fun announce(hostContext: Context, params: VirtualLaunchParams, method: String) {
         val host = hostPackage ?: return
         Thread({
             runCatching {
@@ -144,7 +159,7 @@ object AppBootstrap {
                     .acquireUnstableContentProviderClient(VirtualProviderRouter.routerUri(host))
                     ?.use { client ->
                         client.call(
-                            VirtualProviderRouter.ROUTER_METHOD_SLOT_READY, null,
+                            method, null,
                             Bundle().apply {
                                 putInt(VirtualProviderRouter.KEY_SLOT, params.slot)
                                 putInt(VirtualProviderRouter.KEY_VUID, params.vuid)
@@ -154,11 +169,15 @@ object AppBootstrap {
                     }
             }.onFailure {
                 Diagnostics.warn(
-                    DiagChannel.PROCESS, "SLOT_READY_ANNOUNCE_FAILED",
-                    mapOf("slot" to params.slot.toString(), "error" to it.toString()),
+                    DiagChannel.PROCESS, "SLOT_ANNOUNCE_FAILED",
+                    mapOf(
+                        "slot" to params.slot.toString(),
+                        "method" to method,
+                        "error" to it.toString(),
+                    ),
                 )
             }
-        }, "unique-slot-ready").start()
+        }, "unique-slot-announce").start()
     }
 
     private fun graft(hostContext: Context, params: VirtualLaunchParams): Result {
@@ -269,6 +288,16 @@ object AppBootstrap {
         VirtualActivityTaskManagerHook.install(params.packageName, hostContext)
         VirtualPermissions.installManagerHook(params.packageName, hostContext.packageName)
         VirtualAppOpsHook.install(params.packageName, hostContext.packageName)
+
+        // Before the guest's own code runs, and after the hooks it depends on.
+        //
+        // This process spent its first second as UNIQUE's own, and everything it acquired
+        // then is still cached — the settings provider above all, which the framework reads
+        // during `handleBindApplication` before a line of guest code exists. Those caches
+        // sit in front of the wrapper that rewrites the caller's identity, so a guest
+        // reading a setting gets `Package … does not belong to <uid>`. `Application.onCreate`
+        // is the first place a guest reads one, so the eviction has to precede it.
+        VirtualProviderCaches.evict(hostContext)
 
         val (application, applicationError) = makeApplication(activityThreadClass, activityThread, loadedApk)
         if (application == null) {
@@ -711,6 +740,16 @@ object AppBootstrap {
 
             theme = manifest.themeResId
             icon = manifest.iconResId
+            // Without this a guest asking its own PackageManager what it is called gets
+            // its package name: `ApplicationInfo.loadLabel` resolves `labelRes` against
+            // the app's resources and falls back to `packageName` when it is zero. Apps
+            // do ask — an about screen, a notification title, a share sheet.
+            labelRes = manifest.labelResId
+            if (manifest.labelResId == 0 && manifest.label != null) {
+                // The minority that spell their name out in the manifest. `loadLabel`
+                // prefers this over `labelRes` when it is set, which is the right order.
+                nonLocalizedLabel = manifest.label
+            }
 
             // FLAG_HAS_CODE makes the platform build a class loader; FLAG_INSTALLED stops
             // framework paths that treat an uninstalled package as absent.

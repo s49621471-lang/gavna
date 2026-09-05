@@ -21,6 +21,7 @@ import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
 import com.unique.app.engine.DeviceReport
 import com.unique.app.engine.DiagnosticsExport
+import com.unique.app.engine.GuestAppInfo
 import com.unique.app.engine.InstancePermissions
 import com.unique.app.engine.TestChecklist
 import com.unique.app.engine.UniqueEngine
@@ -150,13 +151,15 @@ object UniqueBridge {
             "googleStatus" -> googleStatus(context)
             "googleRouting" -> googleRouting(context, (a["vuid"] as Number).toInt())
             "exportDiagnostics" -> exportDiagnostics(context)
+            "uiSettings" -> uiSettings(context)
+            "setUiSetting" -> setUiSetting(context, a["key"] as String, a["value"])
             "shareDiagnostics" -> shareDiagnostics(context)
             "deviceReport" -> deviceReport(context)
             "checklist" -> TestChecklist.steps(context).map { it.toMap() }
             "setChecklistStep" -> setChecklistStep(context, a)
             "resetChecklist" -> TestChecklist.reset(context).map { it.toMap() }
 
-            "listInstances" -> listInstances()
+            "listInstances" -> listInstances(context)
             "importInstalled" -> importInstalled(context, a["package"] as String)
             "importApk" -> importApk((a["paths"] as List<*>).map { File(it as String) })
             "importApkFromPicker" -> importApkFromPicker(context)
@@ -221,6 +224,45 @@ object UniqueBridge {
                 "why" to decision.rationale,
             )
         }
+    }
+
+    /**
+     * Interface preferences, which live on the Kotlin side because they must survive.
+     *
+     * They were in-memory until the interface had a language switch, and a language that
+     * resets to English every time the app is opened is not a language switch — it is a
+     * setting that lies. `SharedPreferences` in UNIQUE's own app-private storage, so
+     * nothing here is world-readable and none of it belongs to a guest.
+     */
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE)
+
+    private const val UI_PREFS = "unique.ui"
+
+    private fun uiSettings(context: Context): Map<String, Any?> = prefs(context).let { p ->
+        mapOf(
+            // "system" rather than a guess at the device's language: the resolution belongs
+            // to the platform, which knows about regional variants and fallback chains that
+            // this would only approximate.
+            "language" to p.getString("language", "system"),
+            "dynamicColor" to p.getBoolean("dynamicColor", true),
+            "reducedMotion" to p.getBoolean("reducedMotion", false),
+        )
+    }
+
+    private fun setUiSetting(context: Context, key: String, value: Any?): Map<String, Any?> {
+        val editor = prefs(context).edit()
+        when (value) {
+            is String -> editor.putString(key, value)
+            is Boolean -> editor.putBoolean(key, value)
+            else -> return mapOf("ok" to false, "message" to "unsupported value for $key")
+        }
+        editor.apply()
+        Diagnostics.info(
+            DiagChannel.STORAGE, "UI_SETTING_CHANGED",
+            mapOf("key" to key, "value" to value.toString()),
+        )
+        return mapOf("ok" to true)
     }
 
     /**
@@ -318,14 +360,14 @@ object UniqueBridge {
     // Instances
     // ---------------------------------------------------------------------------------
 
-    private suspend fun listInstances(): List<Map<String, Any?>> =
+    private suspend fun listInstances(context: Context): List<Map<String, Any?>> =
         UniqueEngine.instances.instances().map { instance ->
             val usage = UniqueEngine.storage.usage(instance.vuid, instance.packageName)
             mapOf(
                 "vuid" to instance.vuid,
                 "package" to instance.packageName,
                 "versionCode" to instance.versionCode,
-                "label" to labelOf(instance.packageName, instance.versionCode),
+                "label" to labelOf(context, instance.packageName, instance.versionCode),
                 "profileName" to instance.displayName,
                 "androidId" to instance.profile.androidId,
                 "instanceId" to instance.profile.instanceId.toString(),
@@ -336,12 +378,24 @@ object UniqueBridge {
             )
         }
 
-    /** Label and version come from the imported manifest, not from the host. */
-    private fun labelOf(packageName: String, versionCode: Long): String = runCatching {
-        com.unique.core.common.apk.ManifestReader
-            .fromApk(File(UniqueEngine.storage.model.baseApk(packageName, versionCode)))
-            .label
-    }.getOrNull() ?: packageName
+    /**
+     * What to call an imported app.
+     *
+     * The APK's own resources first, because `android:label` is a *reference* into them and
+     * UNIQUE's binary-XML reader has no resource table — it hands back `@7f130001`, which
+     * is what every app in the list was called on a real phone. The manifest's own value is
+     * the fallback for the apps that do spell their label out, and the package name is the
+     * last resort. A reference is never shown: it is not a name, it is a number.
+     */
+    private fun labelOf(context: Context, packageName: String, versionCode: Long): String {
+        GuestAppInfo.of(context, packageName, versionCode).label?.let { return it }
+        val fromManifest = runCatching {
+            com.unique.core.common.apk.ManifestReader
+                .fromApk(File(UniqueEngine.storage.model.baseApk(packageName, versionCode)))
+                .label
+        }.getOrNull()
+        return fromManifest?.takeIf { it.isNotBlank() && !it.startsWith("@") } ?: packageName
+    }
 
     private suspend fun importInstalled(context: Context, packageName: String): Map<String, Any?> =
         UniqueEngine.importInstalled(context, packageName).toMap()
@@ -552,8 +606,17 @@ object UniqueBridge {
             java.io.File(dir).listFiles().isNullOrEmpty()
     }
 
-    private fun appIcon(context: Context, packageName: String): ByteArray? = runCatching {
-        val drawable: Drawable = context.packageManager.getApplicationIcon(packageName)
+    /**
+     * An app's icon as PNG bytes, from the imported APK before the host's package manager.
+     *
+     * The order matters and used to be the other way round, which meant no imported app
+     * ever had an icon: `getApplicationIcon(packageName)` answers only for packages the
+     * *device* has installed, and the whole point of UNIQUE is that these are not. It stays
+     * as the fallback for an app that is also installed here, where it is the cheaper call.
+     */
+    private suspend fun appIcon(context: Context, packageName: String): ByteArray? = runCatching {
+        val drawable: Drawable = fromImportedApk(context, packageName)
+            ?: context.packageManager.getApplicationIcon(packageName)
         val size = 144
         val bitmap = if (drawable is BitmapDrawable && drawable.bitmap != null) {
             Bitmap.createScaledBitmap(drawable.bitmap, size, size, true)
@@ -572,6 +635,12 @@ object UniqueBridge {
         Diagnostics.warn(DiagChannel.LAUNCH, "ICON_RENDER_FAILED",
             mapOf("package" to packageName, "error" to it.toString()))
         null
+    }
+
+    private suspend fun fromImportedApk(context: Context, packageName: String): Drawable? {
+        val version = UniqueEngine.instances.instances()
+            .firstOrNull { it.packageName == packageName }?.versionCode ?: return null
+        return GuestAppInfo.of(context, packageName, version).icon
     }
 
     private fun DiagEvent.toMap(): Map<String, Any?> = mapOf(

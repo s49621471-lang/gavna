@@ -244,26 +244,34 @@ object VirtualProviderBridge {
         var nextWarm = started + READY_REWARM_MILLIS
         var warms = 0
         while (SystemClock.uptimeMillis() < deadline) {
-            if (isSlotReady(context, hostPackage, route)) return
+            val state = slotState(context, hostPackage, route)
+            if (state.ready) return
             val now = SystemClock.uptimeMillis()
             if (now >= nextWarm) {
-                // The process this is waiting for may no longer exist. A device slow
-                // enough to need this wait is slow enough to lose the process during it,
-                // and the platform kills it before any of UNIQUE's code has run:
+                // Ask again only when nothing is happening. The process may have died —
+                // a device slow enough to need this wait is slow enough to lose it, and
+                // the platform kills it before any of UNIQUE's code has run:
                 //
                 //   Process ProcessRecord{… com.unique:vapp2} failed to attach
                 //   Killing 11888:com.unique:vapp2 (adj -10000): start timeout
                 //
-                // Nothing announces, nothing notices, and the whole budget is spent
-                // waiting for a process that died eight seconds in. Asking again is cheap
-                // and idempotent — a bound process re-announces, one still starting joins
-                // the graft in flight, and a dead one is started afresh.
-                startWarmService(context, hostPackage, route)
-                warms++
+                // But if a graft is *running*, asking again is the harmful thing to do:
+                // it queues another `onStartCommand` behind a main thread that is busy for
+                // tens of seconds, and ActivityManager kills the process for `bg anr` —
+                // which is exactly how this cost a slot sixteen seconds before it was
+                // ready. `starting` is what tells the two apart.
+                if (!state.starting) {
+                    startWarmService(context, hostPackage, route)
+                    warms++
+                }
                 nextWarm = now + READY_REWARM_MILLIS
             }
             runCatching { Thread.sleep(READY_POLL_MILLIS) }
         }
+        // One last look. The poll leaves up to a quarter-second blind before the deadline,
+        // and a run was lost inside it: the slot announced 116 ms before the budget
+        // expired, and the caller gave up on a process that was already serving.
+        if (isSlotReady(context, hostPackage, route)) return
         Diagnostics.warn(
             DiagChannel.PROCESS, "PROVIDER_READY_NOT_SEEN",
             mapOf(
@@ -275,10 +283,12 @@ object VirtualProviderBridge {
         )
     }
 
-    /** Asks the router whether the slot has finished grafting this instance. */
-    private fun isSlotReady(context: Context, hostPackage: String, route: Route): Boolean =
+    /** What the router knows about a slot: grafted, grafting, or neither. */
+    private data class SlotState(val ready: Boolean, val starting: Boolean)
+
+    private fun slotState(context: Context, hostPackage: String, route: Route): SlotState =
         runCatching {
-            callUnstably(
+            val reply = callUnstably(
                 context,
                 VirtualProviderRouter.routerUri(hostPackage),
                 VirtualProviderRouter.ROUTER_METHOD_SLOT_STATUS,
@@ -286,8 +296,15 @@ object VirtualProviderBridge {
                     putInt(VirtualProviderRouter.KEY_SLOT, route.slot)
                     putInt(VirtualProviderRouter.KEY_VUID, route.vuid)
                 },
-            )?.getBoolean(VirtualProviderRouter.KEY_READY, false) ?: false
-        }.getOrDefault(false)
+            )
+            SlotState(
+                ready = reply?.getBoolean(VirtualProviderRouter.KEY_READY, false) ?: false,
+                starting = reply?.getBoolean(VirtualProviderRouter.KEY_STARTING, false) ?: false,
+            )
+        }.getOrDefault(SlotState(ready = false, starting = false))
+
+    private fun isSlotReady(context: Context, hostPackage: String, route: Route): Boolean =
+        slotState(context, hostPackage, route).ready
 
     /**
      * `call()` on a provider without taking a *stable* reference to its process.

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'l10n/strings.dart';
 import 'screens/home_screen.dart';
 import 'state/app_state.dart';
 import 'theme/unique_theme.dart';
@@ -42,6 +44,17 @@ class _UniqueAppState extends State<UniqueApp> {
           themeMode: ThemeMode.dark,
           theme: UniqueTheme.light(dynamicSeed: seed),
           darkTheme: UniqueTheme.dark(dynamicSeed: seed),
+          // Null means "follow the phone", which is the default and the right one: the
+          // device's own language is the best first guess, and the picker in Settings is
+          // for the times it is not.
+          locale: _state.language.locale,
+          supportedLocales: Strings.supportedLocales,
+          localizationsDelegates: const [
+            Strings.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           home: _Root(state: _state),
         );
       },
@@ -89,7 +102,9 @@ class _StartupFailed extends StatelessWidget {
   final AppState state;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    final s = Strings.of(context);
+    return Scaffold(
         key: const ValueKey('failed'),
         body: SafeArea(
           child: Padding(
@@ -99,11 +114,11 @@ class _StartupFailed extends StatelessWidget {
               children: [
                 NoticeBanner(
                   tone: NoticeTone.error,
-                  title: 'UNIQUE could not start',
-                  message: state.error ?? 'The engine did not respond.',
+                  title: s.t('startup.failed.title'),
+                  message: state.error ?? s.t('startup.failed.body'),
                   action: FilledButton(
                     onPressed: state.load,
-                    child: const Text('Try again'),
+                    child: Text(s.t('common.tryAgain')),
                   ),
                 ),
               ],
@@ -111,4 +126,5 @@ class _StartupFailed extends StatelessWidget {
           ),
         ),
       );
+  }
 }

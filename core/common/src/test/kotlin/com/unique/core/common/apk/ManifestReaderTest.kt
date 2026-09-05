@@ -94,6 +94,27 @@ class ManifestReaderTest {
         assertThat(base.usesGoogleSignIn).isTrue()
     }
 
+    @Test fun `a literal label carries no resource id`() {
+        assertThat(base.label).isEqualTo("Sample")
+        assertThat(base.labelResId).isEqualTo(0)
+    }
+
+    @Test fun `a referenced label is reported as both the reference and the id`() {
+        // How real applications name themselves. The textual form is what the manifest
+        // literally says — `@7f010000` — and it is not a name: a physical-device run
+        // listed every imported app as exactly that. The resource id beside it is what
+        // the platform needs to resolve it, and what `ApplicationInfo.labelRes` is set
+        // from so a guest asking its own PackageManager gets its name rather than its
+        // package.
+        val labelled = ManifestReader.fromApk(fixture("sample-labelled.apk"))
+        assertThat(labelled.packageName).isEqualTo("com.example.labelled")
+        assertThat(labelled.label).startsWith("@")
+        assertThat(labelled.labelResId).isNotEqualTo(0)
+        // The reference and the id are the same number, written two ways. If they ever
+        // disagree, one of them is being read from the wrong attribute.
+        assertThat(labelled.label).isEqualTo("@" + Integer.toHexString(labelled.labelResId))
+    }
+
     @Test fun `reads a config split manifest`() {
         val split = ManifestReader.fromApk(fixture("sample-split-abi.apk"))
         assertThat(split.packageName).isEqualTo("com.example.sample")

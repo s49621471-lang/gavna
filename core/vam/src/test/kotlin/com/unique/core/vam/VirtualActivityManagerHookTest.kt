@@ -46,8 +46,19 @@ class VirtualActivityManagerHookTest {
 
         // Takes a package name as DATA. Must never be rewritten.
         fun forceStopPackage(packageName: String, userId: Int)
+        fun forceStopPackageEvenWhenStopping(packageName: String, userId: Int)
         fun killBackgroundProcesses(packageName: String, userId: Int)
+        fun clearApplicationUserData(packageName: String, observer: Any?, userId: Int): Boolean
+        fun crashApplicationWithType(uid: Int, initialPid: Int, packageName: String, type: Int)
+
+        // Asks a question about a package. Safe to rewrite, and the reason the structural
+        // rule exists: a real device refused to launch an app at all because
+        // getHistoricalProcessExitReasons was going out with the guest's own name and
+        // needs android.permission.DUMP for any package but the caller's.
+        fun getHistoricalProcessExitReasons(packageName: String, pid: Int, maxNum: Int, userId: Int): Any?
         fun getPackageProcessState(packageName: String, callingPackage: String): Int
+        fun isAppFreezerEnabled(packageName: String): Boolean
+        fun checkPermissionForPackage(permission: String, packageName: String): Int
     }
 
     
@@ -73,13 +84,49 @@ class VirtualActivityManagerHookTest {
         }
     }
 
-    @Test fun `methods that take a package as data are never rewritten`() {
-        // The dangerous direction. forceStopPackage with a rewritten argument would make
-        // a guest's call stop UNIQUE itself.
-        for (name in listOf("forceStopPackage", "killBackgroundProcesses", "getPackageProcessState")) {
+    @Test fun `methods that act on a package are never rewritten`() {
+        // The dangerous direction, and the only one that matters: the rewrite fires when
+        // an argument *equals the virtual package*, so what it would turn "stop me" into
+        // is "stop UNIQUE".
+        for (name in listOf(
+            "forceStopPackage",
+            "forceStopPackageEvenWhenStopping",
+            "killBackgroundProcesses",
+            "clearApplicationUserData",
+            "crashApplicationWithType",
+        )) {
             assertThat(VirtualActivityManagerHook.carriesCallerIdentity(method(name)))
                 .isFalse()
         }
+    }
+
+    @Test fun `methods that ask about a package are rewritten`() {
+        // The other direction, and the one a physical device found first. These take a
+        // package name and only read: the virtual name is not one this device knows, so
+        // wherever it appears it can only mean "me", and the host's name is the one the
+        // platform will accept for that.
+        //
+        // `getPackageProcessState` used to be grouped with the destructive methods above.
+        // That was over-cautious rather than safe: the guest runs *in* UNIQUE's process,
+        // so UNIQUE's process state is the true answer, and refusing to rewrite it gave
+        // the guest a SecurityException instead.
+        for (name in listOf(
+            "getHistoricalProcessExitReasons",
+            "getPackageProcessState",
+            "isAppFreezerEnabled",
+            "checkPermissionForPackage",
+        )) {
+            assertThat(VirtualActivityManagerHook.carriesCallerIdentity(method(name)))
+                .isTrue()
+        }
+    }
+
+    @Test fun `a question word is not enough on its own`() {
+        // Both halves of the rule have to hold. A method with no String has nothing to
+        // rewrite, and one whose name contains an acting verb is excluded however it
+        // starts — which is what stops a future `getAndClearFoo(String)` from slipping in.
+        assertThat(VirtualActivityManagerHook.carriesCallerIdentity(method("unbindService")))
+            .isFalse()
     }
 
     // ---------------------------------------------------------------------------------

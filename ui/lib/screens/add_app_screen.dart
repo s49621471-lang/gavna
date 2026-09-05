@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../l10n/strings.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
@@ -58,14 +59,15 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
     });
     final result = await widget.state.importApkFromPicker();
     if (!mounted) return;
+    final s = Strings.of(context);
     setState(() {
       _importing = false;
       _pickerFailed = !result.ok;
       _pickerMessage = result.cancelled
           ? null
           : result.ok
-              ? 'Imported. It is on Home now.'
-              : result.message ?? 'The selected files could not be imported.';
+              ? s.t('add.added', {'app': s.t('add.tab.apk')})
+              : result.message ?? s.t('add.failed', {'app': s.t('add.tab.apk')});
     });
     if (result.ok && !result.cancelled && mounted) Navigator.of(context).pop();
   }
@@ -79,13 +81,17 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
+    final s = Strings.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add App'),
+        title: Text(s.t('add.title')),
         bottom: TabBar(
           controller: _tabs,
           dividerColor: Colors.transparent,
-          tabs: const [Tab(text: 'Installed'), Tab(text: 'APK')],
+          tabs: [
+            Tab(text: s.t('add.tab.installed')),
+            Tab(text: s.t('add.tab.apk')),
+          ],
         ),
       ),
       body: Column(
@@ -97,7 +103,7 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
               controller: _searchController,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
-                hintText: 'Search',
+                hintText: s.t('add.searchHint'),
                 prefixIcon: const Icon(Icons.search_rounded, size: 20),
                 suffixIcon: _query.isEmpty
                     ? null
@@ -134,7 +140,7 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
               padding: const EdgeInsets.all(UniqueSpace.lg),
               child: NoticeBanner(
                 tone: NoticeTone.error,
-                title: 'Could not list applications',
+                title: Strings.of(context).t('add.listFailed'),
                 message: '${snapshot.error}',
               ),
             );
@@ -155,10 +161,10 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
                 padding: const EdgeInsets.symmetric(horizontal: UniqueSpace.lg),
                 child: Row(
                   children: [
-                    Text('${apps.length} apps',
+                    Text('${apps.length}',
                         style: Theme.of(context).textTheme.bodySmall),
                     const Spacer(),
-                    Text('System apps',
+                    Text(Strings.of(context).t('add.systemApps'),
                         style: Theme.of(context).textTheme.bodySmall),
                     const SizedBox(width: UniqueSpace.sm),
                     Switch(
@@ -192,12 +198,10 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const NoticeBanner(
+            NoticeBanner(
               tone: NoticeTone.info,
-              title: 'Supported files',
-              message: 'A single .apk, or a base APK together with its split APKs. '
-                  'UNIQUE keeps the arm64-v8a split and every feature split, and reports '
-                  'anything it cannot run before copying it.',
+              title: Strings.of(context).t('add.supportedTitle'),
+              message: Strings.of(context).t('add.supportedBody'),
             ),
             const Spacer(),
             Center(
@@ -208,7 +212,7 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
                       size: 44,
                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3)),
                   const SizedBox(height: UniqueSpace.lg),
-                  Text('Choose an APK from your files',
+                  Text(Strings.of(context).t('add.chooseApk'),
                       style: Theme.of(context).textTheme.bodyMedium),
                 ],
               ),
@@ -222,13 +226,12 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.file_open_rounded),
-              label: Text(_importing ? 'Importing...' : 'Select APK'),
+              label: Text(Strings.of(context)
+                  .t(_importing ? 'add.importing' : 'add.selectApk')),
             ),
             const SizedBox(height: UniqueSpace.sm),
             Text(
-              _pickerMessage ??
-                  'Select a base APK and its splits together - importing a base without '
-                      'its ABI split produces an app with no native code.',
+              _pickerMessage ?? Strings.of(context).t('add.splitHint'),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: _pickerFailed
@@ -262,13 +265,16 @@ class _InstalledRowState extends State<_InstalledRow> {
     setState(() => _busy = true);
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    // Resolved before the await, like the messenger and the navigator beside it: a
+    // BuildContext read after an async gap is a context that may no longer be mounted.
+    final s = Strings.of(context);
     final result = await state.importInstalled(app.packageName);
     if (!mounted) return;
     setState(() => _busy = false);
     messenger.showSnackBar(SnackBar(
       content: Text(result.ok
-          ? '${app.label} added'
-          : (result.message ?? 'Could not add ${app.label}.')),
+          ? s.t('add.added', {'app': app.label})
+          : (result.message ?? s.t('add.failed', {'app': app.label}))),
     ));
     if (result.ok) navigator.pop();
   }
