@@ -35,7 +35,7 @@ never written as `SUPPORTED` because something ought to work.
 
 | | |
 |---|---|
-| **Off-device tests** | 162 JVM tests, 34 native checks, 15 Dart tests, 26 log-analyzer tests — all passing |
+| **Off-device tests** | 162 JVM tests, 34 native checks, 15 Dart tests, 41 tool tests — all passing |
 | **On-device suite** | **38 of 38** instrumented tests pass, on an Android 14 x86_64 emulator, against the exact APK in `dist/` |
 | **On a real phone** | UNIQUE installs and runs, imports apps, starts virtual processes, grafts, publishes providers, launches the activity — **and the guest then crashes.** Three runs, nine causes found and fixed, none yet re-tested on hardware |
 
@@ -122,7 +122,8 @@ what broke, and why the current shape is the one that survived.
 | [`docs/PHYSICAL_DEVICE_TEST.md`](docs/PHYSICAL_DEVICE_TEST.md) | The twelve-step sequence for testing on a phone, with no `adb`, no root and no computer |
 | [`docs/GOOGLE_DEVICE_TEST.md`](docs/GOOGLE_DEVICE_TEST.md) | The procedure for a device with a Google stack, in the order that makes one failure explain the next |
 | [`dist/README.md`](dist/README.md) | The downloadable APKs, which to install and why |
-| [`tools/device-log/README.md`](tools/device-log/README.md) | Reading a run from a phone: ten checks over a device log, no SDK and no device |
+| [`tools/device-log/README.md`](tools/device-log/README.md) | Reading a run from a phone: eleven checks over a device log, no SDK and no device |
+| [`tools/apk-survey/README.md`](tools/apk-survey/README.md) | Which platform APIs real apps actually call, and which of them UNIQUE still does not proxy |
 
 ---
 
@@ -182,6 +183,7 @@ Three build types, and the difference matters:
 ./tools/native-test/run.sh        # 34 host-side native checks, no device needed
 (cd ui && flutter test)           # 15 Dart tests
 ./tools/device-log/self_test.py   # 26 tests for the device-log analyzer, no toolchain
+./tools/apk-survey/self_test.py   # 15 tests for the APK survey, no toolchain
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface
 
 # The on-device suite: builds, installs, runs 38 instrumented tests, saves everything.
@@ -193,6 +195,25 @@ BUILD_TYPE=verify ./tools/verify-device.sh
 the build configures `core/` alone and says so, rather than refusing. `:app` and the
 instrumented suite still need the Flutter SDK, and a build that has left them out announces
 it instead of reporting a green that covers nothing UNIQUE ships.
+
+### Deciding what to fix before a phone does
+
+The third device run found nothing that needed a phone. Every fault it produced was plain
+Java logic that would have reproduced anywhere; what the emulator suite lacked was not
+hardware but a *real application* — it runs against a probe written to be probed, and the
+probe calls none of the APIs that killed ChatGPT.
+
+So the platform surface real apps use is read directly out of their DEX:
+
+```bash
+tools/apk-survey/survey.py /path/to/apks/*.apk
+```
+
+It reports, per system service, how many real apps call it and whether UNIQUE proxies it —
+distinguishing "proxied", "named in `TARGETS` but never installed", and "not there at all".
+Across 63 apps from F-Droid it finds nine services UNIQUE does not proxy, three of them
+declared and dead, including `window`, which 60 of the 63 use. See
+[`tools/apk-survey/README.md`](tools/apk-survey/README.md).
 
 ### Reading a run from a phone
 

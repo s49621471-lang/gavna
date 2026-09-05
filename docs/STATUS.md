@@ -40,8 +40,9 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Process slot pool | 12 | Release ends the process; a dead slot is reclaimed; a full pool refuses rather than evicts |
 | Per-instance permission store | 12 | Undecided install-time is granted, undecided runtime is not, and neither can exceed the host |
 | Device-log analyzer | 26 | Against a real Android 15 run, plus a synthetic healthy one |
+| APK survey (DEX reader, service map) | 15 | The reader is checked against a real checked-in APK |
 
-**162 JVM tests, 15 Dart tests, 34 native checks, 26 device-log analyzer tests — all passing.**
+**162 JVM tests, 15 Dart tests, 34 native checks, 41 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -492,6 +493,33 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
   and are recorded `UNSUPPORTED_FOR_NOW` — expected, not measured.
 - **32-bit-only apps** on a 64-bit-only device.
 - The Credential Manager route is the Google layer's **central hypothesis**, unverified.
+
+## What a survey of real apps says is missing
+
+`tools/apk-survey/survey.py` reads the `method_ids` table out of real APKs and reports
+which system services they call. Across 63 apps from F-Droid, nine services real apps use
+are not proxied — and three of those are the worse kind, named in
+`SystemServiceHook.TARGETS` with nothing installing them, so they read as done:
+
+| Service | Manager | Apps | State |
+|---|---|---|---|
+| `window` | `WindowManager` | 60/63 | declared, never installed |
+| `phone` | `TelephonyManager` | 34/63 | not in `TARGETS` |
+| `download` | `DownloadManager` | 5/63 | not in `TARGETS` |
+| `account` | `AccountManager` | 3/63 | declared, never installed |
+| `media_session` | `MediaSessionManager` | 3/63 | declared, never installed |
+| `device_policy` | `DevicePolicyManager` | 3/63 | not in `TARGETS` |
+| `media.camera` | `CameraManager` | 3/63 | not in `TARGETS` |
+| `telecom` | `TelecomManager` | 1/63 | not in `TARGETS` |
+| `media_router` | `MediaRouter` | 1/63 | not in `TARGETS` |
+
+`account` matters beyond compatibility: until it is installed, `AccountManager.getAccounts()`
+from inside a guest returns the **host's real Google accounts**, which is a per-instance
+identity leak rather than a missing feature.
+
+None of this is a claim that these apps fail — a DEX reference is not a call. It is a
+ranking of what to proxy before a phone finds it, and it is the check that would have
+caught `restrictions`, `locale` and `connectivity` before one did.
 
 ## Next steps, in order
 
