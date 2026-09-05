@@ -229,11 +229,15 @@ what they require through `UiAutomation`, so no manual `pm grant` is necessary.
 
 ## Known limits before you start
 
-- **The release build is not device-verified.** It builds, minifies and signs, and its R8
-  keep rules are written and reasoned about — but the instrumented suite cannot run against
-  it (`androidx.tracing.Trace` resolves from R8's *classpath* rather than program input, so
-  no keep rule reaches it). A virtualization engine is nearly all reflection; an unverified
-  minified build is exactly the one to be suspicious of. Test the debug build.
+- **The release build is not device-verified.** It builds, minifies and signs, and its keep
+  rules hold structurally — the stub pool, the router and shared providers, `UniqueNative`
+  and the native entry points all survive R8, checked on the artifact. But the instrumented
+  suite cannot run against it (`androidx.tracing.Trace` resolves from R8's *classpath*
+  rather than program input, so no keep rule reaches it), and a class surviving is not the
+  same as a reflective lookup succeeding. A virtualization engine is nearly all reflection;
+  an unverified minified build is exactly the one to be suspicious of. **Test the debug
+  build.** Install the release one only to see whether it starts at all, and if it behaves
+  differently, that difference is the finding.
 - **No Google flow is implemented.** Those interfaces have no bodies. `t21` and `s10` assert
   that UNIQUE *reports* that honestly, not that anything works. Play Integrity, Play Games
   and Play Billing are expected not to work.

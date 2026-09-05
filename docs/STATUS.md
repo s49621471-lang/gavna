@@ -291,11 +291,14 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
    procedure, in the order that makes one failure explain the next.
 4. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-5. **Verifying the minified release build.** It assembles and signs, but the instrumented
+5. **Verifying the minified release build.** It assembles and signs, and its keep rules
+   hold structurally — the stub pool, the router and shared providers, `UniqueNative` and
+   the native entry points all survive R8, checked on the artifact. But the instrumented
    suite cannot run against it: `androidx.tracing.Trace` reaches
    `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so
-   no `-keep` rule applies. Until that is solved the release build is not device-verified
-   and the debug build is what to test with.
+   no `-keep` rule applies. A class surviving is not the same as a reflective lookup
+   succeeding, so until that is solved the release build is not device-verified and the
+   debug build is what to test with.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.
