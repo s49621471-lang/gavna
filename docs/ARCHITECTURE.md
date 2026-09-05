@@ -568,6 +568,41 @@ Once the process exists the ordinary graft runs, and the guest's receiver is ins
 from the guest's class loader with the guest's own `Context` — the same object a live
 delivery would get. Nothing in the receiver's code can tell the two apart.
 
+**And the delivery is tracked until the receiver acknowledges it.** Starting a process is
+not the same as delivering to one. A cold wake is the longest thing UNIQUE asks a device to
+do — fork, load UNIQUE's own code, install the interception layer, graft the guest, *then*
+run the receiver — and all of it happens inside what ActivityManager considers a background
+service start. On a loaded device that budget is exceeded and the process is killed:
+
+```
+ANR in com.unique:vapp0
+Killing 12252:com.unique:vapp0 (adj 500): bg anr
+```
+
+The ANR is a property of a slow device. What was UNIQUE's own defect is what happened next:
+the stub is started `START_NOT_STICKY`, nothing brought it back, and the broadcast was
+**lost silently** — no error, no record, and a guest that has no way to know the broadcast
+it exists to receive ever happened.
+
+So each cold start is recorded in UNIQUE's main process and re-tried until the `:vappN`
+reports the receiver actually ran, over the same router provider §6.4.0 uses. Three
+attempts, ninety seconds apart: ninety because a cold graft is measured at forty (§17.1)
+and a retry that fires while the first attempt is still working would double the load on
+the device least able to carry it, which is how the original failure was produced. Three
+because a delivery that has failed three times is failing for a reason a fourth will not
+fix, and an unbounded retry against a process that cannot start is a battery drain that
+looks like a hang. Every outcome is recorded: `COLD_BROADCAST_RETRY`,
+`COLD_BROADCAST_ACKNOWLEDGED`, `COLD_BROADCAST_GIVEN_UP`.
+
+The acknowledgement is sent only when the receiver *ran*. A wake that got as far as
+grafting and then failed is exactly the case worth another attempt, and acknowledging it
+would record a delivery that never happened. In the other direction the acknowledgement is
+best-effort: losing it costs one duplicate delivery ninety seconds later, which a receiver
+must already tolerate, because the platform does not promise exactly-once either.
+
+This matters more on hardware than on the verification emulator. Aggressive OEM background
+management produces the same kill for its own reasons.
+
 What this still cannot do: UNIQUE's main process must be alive to hold the registration. A
 broadcast arriving while the whole app is dead and unstarted is missed. Closing that needs
 the registrations to be *static* in the host manifest, which means knowing the actions at
@@ -651,6 +686,61 @@ The resolution has three moving parts and one trick.
    its timer counting down while the work it waits for has not started. That is what
    `BOOTSTRAP_TIMED_OUT … did not graft within 20s` actually meant: not a slow graft, but a
    timer racing a queue.
+
+   Starting the process is asynchronous, so the caller has to know when to stop waiting,
+   and **the slot says so itself**. Every graft — for an Activity, a Service, a receiver or
+   a provider — ends with the `:vappN` calling `unique.slotReady` on the router with its
+   slot, its vuid and its pid; a caller polls `unique.slotStatus` for the same pair. The
+   router checks the recorded pid with `kill(pid, 0)` before answering yes, so a slot that
+   grafted and then died reads as not ready rather than as ready — `ESRCH` is the one errno
+   that means gone, and `EPERM` means a process is there.
+
+   Announced from `AppBootstrap`, where every graft passes, rather than from the provider
+   path that first needed it. When only the provider path announced, a caller acquiring
+   from a guest that was already running — grafted for its Activity, minutes earlier —
+   waited out its entire budget for a message nothing was going to send:
+
+   ```
+   PROVIDER_READY_NOT_SEEN slot=0 vuid=0 waitedMillis=45005
+   PROVIDER_BIND_READY … slot=0                       (2.5 seconds later)
+   ```
+
+   And a warm request that finds the process *already bound* announces again rather than
+   returning silently: a caller only warms a slot the router did not report ready, so
+   arriving there at all means the two disagree — the announcement was lost, or UNIQUE's
+   own process restarted and its table went with it.
+
+   What the caller must **not** do is decide for itself, from
+   `ActivityManager.getRunningAppProcesses`, that the process is already there. That was
+   tried, as a cheap way to avoid a redundant service start, and it is how a killed
+   provider process failed to come back at all:
+
+   ```
+   PROVIDER_SLOT_READY_STALE slot=2 pid=6236          (the router noticed the death)
+   PROVIDER_READY_NOT_SEEN slot=2 vuid=0 waitedMillis=45078
+   Killing 6989:com.unique:vapp2 (adj 0): timeout publishing content providers
+   ```
+
+   The list still named a process that was gone, so nothing was started, and the wait timed
+   out against a process that was never coming — leaving ActivityManager to cold-start it
+   for the provider and kill it three times over. Starting a process that is already
+   running is harmless; believing a process list that a process has already left is not.
+
+   The first version of this waited on `ActivityManager.getRunningAppProcesses` instead,
+   which answers a weaker question and answers it unreliably: it has omitted a process
+   that was already serving Binder calls and listed one `system_server` had buried minutes
+   earlier. What that produced was
+
+   ```
+   PROVIDER_WARM_NOT_SEEN slot=2 waitedMillis=8000
+   Killing 5216:com.unique:vapp2 (adj 0): timeout publishing content providers
+   ```
+
+   — a warm-up that had in fact started the process, a caller that stopped believing it
+   after eight seconds, and ActivityManager cold-starting the very same process *for the
+   provider*, back inside the ten-second budget this step exists to avoid. The budget for
+   the new wait is forty-five seconds because a cold graft is measured at forty (§17.1); a
+   timeout tighter than the work is a test of the machine.
 
 3. **The trick: the stub's authority set is widened at runtime.**
    `ContentProvider.setAuthorities` has existed since API 21 and is what `attachInfo`
@@ -1581,10 +1671,37 @@ briefly in memory.
 
 ### 14.2 The export package
 
-`environment.txt`, `instances.txt`, `unique.log`, `crash.log`, one `vappN.log` per slot
-reached, and a `README.txt` that says what the archive does and does not contain. It is
-written into UNIQUE's own cache directory — app-private storage, never anywhere
-world-readable — and goes further only if the user sends it.
+`environment.txt`, `device-report.txt`, `test-checklist.txt`, `instances.txt`,
+`unique.log`, `logcat.txt`, `crash.log`, one `vappN.log` per slot reached, any
+`native-crash-*.txt`, and a `README.txt` that says what the archive does and does not
+contain. It is written into UNIQUE's own cache directory — app-private storage, never
+anywhere world-readable — and goes further only if the user sends it, through the ordinary
+share sheet.
+
+Three of those entries exist because of a constraint worth stating plainly: **a tester has
+a phone and nothing else.** No `adb`, no root, no computer. Everything the engine knows
+has to be collectable by the app itself, or it will not be collected.
+
+- `device-report.txt` is what the *device* is, measured on the spot: ABIs, page size, the
+  host's own Vulkan probed by creating a real instance, device and queue, the WebView
+  provider, the Google stack. It is the other half of every result in the package — "the
+  guest could not bring Vulkan up" means one thing on a phone with a working driver and
+  nothing at all on one whose host device type is `cpu`.
+- `test-checklist.txt` is the physical-device sequence with the tester's own verdicts and
+  notes, recorded on the device as they go. Deliberately not a gate: nothing in
+  `docs/COMPATIBILITY.md` moves because a checklist says so. A verdict is an observation,
+  and it travels with the run so it can be read *next to* the machine's record rather than
+  substituted for it.
+- `logcat.txt` is the part UNIQUE's own events cannot see. ART refusing to verify a class,
+  the linker failing to map a library on a 16 KB-page device, ActivityManager's kill
+  reason, the stack trace of an uncaught exception — all of it has needed `adb` until now.
+  `logd` restricts a read to the caller's own uid, so this is UNIQUE and its `:vappN`
+  processes and no other app on the device; that is a platform guarantee rather than a
+  filter. But UNIQUE's uid *includes the guests*, and an app may log its own credentials,
+  so only framework, runtime, linker and UNIQUE tags are kept and app-authored logging is
+  dropped rather than reasoned about. The trade is real and worth naming: a guest's own
+  `Log.d` is often what would explain its behaviour, and it is not here. Dropping it is the
+  only version of this that belongs in a file a user is invited to mail to a stranger.
 
 What is deliberately absent is a structural property, not a filter: **nothing from inside
 an instance's data directory**. No databases, no `shared_prefs`, no cookies, no tokens. The
@@ -1599,6 +1716,19 @@ a line *leaves* `Diagnostics`, not at each consumer: a line that has left that o
 never need trusting again, and putting the redactor at every consumer is how one consumer
 ends up without it. The redactor has its own unit tests, because a leaky diagnostics export
 is a security bug and not a cosmetic one.
+
+**Including the line that leaves for logcat.** `Diagnostics.event` used to write the raw
+event there and redact only on export, on the reasoning that logcat is a developer's
+concern. It is not: anything written there is readable by `adb logcat`, ends up in a bug
+report, and on many OEM builds is collected by a logging service — so a token printed there
+has left the device by a route the export has no say over. Both paths now go through the
+same `formatted()`.
+
+`t37` is the regression test, and it is written as one: a marker is planted inside a
+guest's own `shared_prefs` and `databases/`, and in a field UNIQUE itself logs, and every
+byte of every entry in the package is searched for it. The structural guarantee — the
+exporter never opens those directories — is the strong one, and it is exactly the kind a
+later refactor removes without noticing.
 
 ### 14.3 Crashes
 

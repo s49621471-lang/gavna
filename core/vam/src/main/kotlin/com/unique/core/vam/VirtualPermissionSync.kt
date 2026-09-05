@@ -32,14 +32,18 @@ object VirtualPermissionSync {
         val stub = Uri.parse(
             "content://" + VirtualProviderRouter.stubAuthority(context.packageName, slot)
         )
+        // Unstable: UNIQUE must not become killable because a virtual process it happens
+        // to be telling something to has died (§6.4.0).
         runCatching {
-            context.contentResolver.call(
-                stub, METHOD_SET_PERMISSION, null,
-                Bundle().apply {
-                    putStringArray(KEY_PERMISSIONS, permissions.toTypedArray())
-                    putString(KEY_STATE, state)
-                },
-            )
+            context.contentResolver.acquireUnstableContentProviderClient(stub)?.use { client ->
+                client.call(
+                    METHOD_SET_PERMISSION, null,
+                    Bundle().apply {
+                        putStringArray(KEY_PERMISSIONS, permissions.toTypedArray())
+                        putString(KEY_STATE, state)
+                    },
+                )
+            }
         }.onFailure {
             // Not an error the user should see: the change is on disk and takes effect at
             // the next start. Recorded because "took effect late" is otherwise invisible.

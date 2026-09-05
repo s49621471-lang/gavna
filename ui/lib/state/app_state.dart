@@ -140,6 +140,21 @@ class AppState extends ChangeNotifier {
 
   Future<GoogleStatus> googleStatus() => _bridge.googleStatus();
 
+  Future<List<ReportSection>> deviceReport() => _bridge.deviceReport();
+
+  Future<List<ChecklistStep>> checklist() => _bridge.checklist();
+
+  Future<List<ChecklistStep>> setChecklistStep(
+    String id,
+    StepVerdict verdict,
+    String note,
+  ) =>
+      _bridge.setChecklistStep(id, verdict, note);
+
+  Future<List<ChecklistStep>> resetChecklist() => _bridge.resetChecklist();
+
+  Future<DiagnosticsExportResult> shareDiagnostics() => _bridge.shareDiagnostics();
+
   Future<List<GoogleRoute>> googleRouting(int vuid) => _bridge.googleRouting(vuid);
 
   Future<List<InstancePermission>> instancePermissions(int vuid) =>

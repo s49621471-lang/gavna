@@ -232,6 +232,30 @@ android {
         }
     }
 
+    signingConfigs {
+        // A release build that cannot be installed is not a deliverable. Android's own
+        // debug keystore is used unless a real one is supplied, so `assembleRelease`
+        // always produces something a tester can put on a phone.
+        //
+        // This is a *test-signing* arrangement and is marked as such: an APK signed this
+        // way must not be distributed, and an app signed with a different key later will
+        // not install over it. Supply UNIQUE_KEYSTORE and friends for a real release.
+        create("testSigned") {
+            val supplied = providers.gradleProperty("uniqueKeystore").orNull
+            if (supplied != null) {
+                storeFile = file(supplied)
+                storePassword = providers.gradleProperty("uniqueKeystorePassword").orNull
+                keyAlias = providers.gradleProperty("uniqueKeyAlias").orNull
+                keyPassword = providers.gradleProperty("uniqueKeyPassword").orNull
+            } else {
+                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -240,8 +264,18 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // The instrumentation APK's own problems stay in its own file; see
+            // proguard-test-rules.pro.
+            testProguardFiles("proguard-test-rules.pro")
+            signingConfig = signingConfigs.getByName("testSigned")
         }
     }
+
+    // The acceptance suite can be pointed at the release build with
+    // `-PuniqueTestBuildType=release`. That is how the R8 rules above are established as
+    // correct rather than plausible: a keep rule that is wrong shows up as a red test, and
+    // a minified engine that fails only on a phone is the worst way to find out.
+    testBuildType = (providers.gradleProperty("uniqueTestBuildType").orNull ?: "debug")
 
     buildFeatures {
         buildConfig = true
@@ -289,4 +323,16 @@ dependencies {
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.truth)
     androidTestImplementation(libs.kotlinx.coroutines.android)
+    // AndroidJUnitRunner loads androidx.tracing.Trace in its own onCreate. It normally
+    // arrives from the *app* APK, and in a minified build the app's R8 run removes it —
+    // correctly, since the product never uses it — leaving the runner to look for a class
+    // in an APK that no longer has it, and the whole suite to die before its first test:
+    //
+    //   NoClassDefFoundError: Failed resolution of: Landroidx/tracing/Trace;
+    //       at androidx.test.runner.AndroidJUnitRunner.onCreate
+    //
+    // A -keep rule cannot fix that: the class is on R8's classpath for this variant, not
+    // its program input. Declared here so the instrumentation APK carries its own copy and
+    // does not depend on what the product happened to keep.
+    androidTestImplementation("androidx.tracing:tracing:1.2.0")
 }

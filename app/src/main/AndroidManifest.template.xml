@@ -153,6 +153,19 @@
             android:exported="false"
             android:grantUriPermissions="true" />
 
+        <!-- How a diagnostics package leaves the device, so a tester needs no adb and no
+             computer. Scoped by export_paths.xml to the directory UNIQUE writes those
+             packages into, and nothing else. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.export"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/export_paths" />
+        </provider>
+
         <!-- The VirtualCore server. Single writer for the state database. -->
         <service
             android:name="com.unique.app.server.UniqueServerService"

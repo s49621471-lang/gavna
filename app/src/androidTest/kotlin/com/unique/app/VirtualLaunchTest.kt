@@ -19,6 +19,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import com.unique.app.engine.DeviceReport
+import com.unique.app.engine.DiagnosticsExport
+import com.unique.app.engine.TestChecklist
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.diag.DiagChannel
@@ -40,6 +43,7 @@ import com.unique.core.vpm.CreateResult
 import com.unique.core.vpm.Instance
 import com.unique.core.vpm.UpdateResult
 import kotlinx.coroutines.runBlocking
+import java.util.zip.ZipInputStream
 import org.junit.Before
 import org.junit.FixMethodOrder
 import org.junit.Test
@@ -2032,6 +2036,154 @@ class VirtualLaunchTest {
         assertThat(executed["className"]).isEqualTo("$probePackage.ProbeJobService")
         assertThat(executed["packageName"]).isEqualTo(probePackage)
         assertThat(executed["filesDir"]).isEqualTo(dir)
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 8: the evidence a tester can gather with nothing but the phone.
+
+    /**
+     * The on-device report, the checklist and the export that carries them.
+     *
+     * This is the path a physical-device run actually depends on: no `adb`, no root, no
+     * computer, so if it is wrong there is no second way to find out what happened. Three
+     * separable claims, asserted separately.
+     *
+     * The third is a *requirement*, not a nicety. The export is a file a user is invited to
+     * mail to a stranger, and it must carry nothing an app stored — no databases, no
+     * shared preferences, no cookies, no tokens. The guarantee comes from the export never
+     * opening those directories rather than from filtering at the end, which is stronger,
+     * but a guarantee by construction is exactly the kind that a later refactor removes
+     * without noticing. So a marker is planted inside the guest's own storage, in the two
+     * places a token really would live, and every byte of the zip is searched for it.
+     */
+    @Test
+    fun t37_theDeviceReportChecklistAndExportAreRealAndCarryNoAppData() = runBlocking {
+        val instance = requireInstance()
+
+        // 1. The device report. Every section, and values that were measured rather than
+        // defaulted — the Vulkan section in particular comes from UNIQUE's own native
+        // probe, so an answer at all proves the JNI entry point exists and ran.
+        val sections = DeviceReport.collect(context, setOf(probePackage))
+        val byTitle = sections.associate { it.title to it.values }
+        assertThat(byTitle.keys).containsAtLeast(
+            "Device", "Runtime", "Engine", "Graphics (host)", "WebView (host)", "Google (host)",
+        )
+        assertThat(byTitle["Runtime"]!!["abis"]).isNotEmpty()
+        assertThat(byTitle["Runtime"]!!["pageSizeBytes"]!!.toInt()).isAtLeast(4096)
+        assertThat(byTitle["Engine"]!!["nativeLoaded"]).isEqualTo("true")
+        // The probe answers even where there is no driver; what must not happen is no
+        // answer, which is what a missing or misnamed JNI symbol would produce.
+        assertThat(byTitle["Graphics (host)"]!!["vulkanLibraryLoaded"]).isAnyOf("true", "false")
+        assertThat(byTitle["Graphics (host)"]).containsKey("vulkanIsHardware")
+        Diagnostics.info(
+            DiagChannel.PROCESS, "DEVICE_REPORT_OBSERVED",
+            mapOf(
+                "pageSize" to byTitle["Runtime"]!!["pageSizeBytes"]!!,
+                "abis" to byTitle["Runtime"]!!["abis"]!!,
+                "vulkanDeviceType" to (byTitle["Graphics (host)"]!!["vulkanDeviceType"] ?: "-"),
+                "vulkanIsHardware" to (byTitle["Graphics (host)"]!!["vulkanIsHardware"] ?: "-"),
+                "webViewProvider" to (byTitle["WebView (host)"]!!["provider"] ?: "-"),
+            ),
+        )
+
+        // 2. The checklist. Twelve steps in the order the tester is asked to run them, a
+        // verdict that survives being written and read back, and a note that survives with
+        // it — the note is the part a person actually writes, and losing it silently would
+        // be worse than losing the verdict.
+        val fresh = TestChecklist.reset(context)
+        assertThat(fresh.map { it.id }).containsExactly(
+            "s01", "s02", "s03", "s04", "s05", "s06",
+            "s07", "s08", "s09", "s10", "s11", "s12",
+        ).inOrder()
+        assertThat(fresh.all { it.verdict == TestChecklist.Verdict.NOT_RUN }).isTrue()
+
+        val note = "observed on the acceptance run"
+        TestChecklist.set(context, "s07", TestChecklist.Verdict.PASS, note)
+        val reread = TestChecklist.steps(context).first { it.id == "s07" }
+        assertThat(reread.verdict).isEqualTo(TestChecklist.Verdict.PASS)
+        assertThat(reread.note).isEqualTo(note)
+
+        // 3. The export, and what it must not contain. The marker goes where a real token
+        // would: an app's SharedPreferences XML and a file under databases/.
+        val marker = "UNIQUE_MUST_NOT_LEAK_" + SystemClock.uptimeMillis()
+        val dataDir = File(model.dataDir(instance.vuid, probePackage))
+        val prefs = File(dataDir, "shared_prefs/probe_secrets.xml").apply {
+            parentFile?.mkdirs()
+            writeText(
+                "<?xml version='1.0'?><map>" +
+                    "<string name=\"oauth_token\">$marker</string></map>"
+            )
+        }
+        val db = File(dataDir, "databases/probe_accounts.db").apply {
+            parentFile?.mkdirs()
+            writeText("account row: refresh_token=$marker")
+        }
+        // And in a place UNIQUE *does* read, to prove the redactor is on that path too:
+        // an app is free to log its own secrets, and UNIQUE records what apps log.
+        Diagnostics.info(
+            DiagChannel.STORAGE, "TEST_PLANTED_MARKER",
+            mapOf("oauth_token" to marker, "note" to "must be redacted on export"),
+        )
+
+        val liveSlots = UniqueEngine.launcher.snapshot()
+            .filter { it.occupant != null }
+            .map { it.index }
+        val instances = UniqueEngine.instances.instances().map {
+            mapOf(
+                "vuid" to it.vuid.toString(),
+                "package" to it.packageName,
+                "versionCode" to it.versionCode.toString(),
+                "androidId" to it.profile.androidId,
+            )
+        }
+        val export = DiagnosticsExport.write(context, liveSlots, instances)
+
+        assertThat(export.file.isFile).isTrue()
+        assertThat(export.bytes).isGreaterThan(0L)
+        // App-private storage, never anywhere world-readable.
+        assertThat(export.file.absolutePath).startsWith(context.cacheDir.absolutePath)
+
+        val entries = mutableMapOf<String, String>()
+        ZipInputStream(export.file.inputStream().buffered()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                entries[entry.name] = zip.readBytes().toString(Charsets.UTF_8)
+                zip.closeEntry()
+            }
+        }
+        assertThat(entries.keys).containsAtLeast(
+            "environment.txt", "device-report.txt", "test-checklist.txt",
+            "instances.txt", "unique.log", "logcat.txt", "README.txt",
+        )
+        // The two new entries carry what the screens showed, not placeholders.
+        assertThat(entries["device-report.txt"]).contains("[Runtime]")
+        assertThat(entries["device-report.txt"]).contains("pageSizeBytes=")
+        assertThat(entries["test-checklist.txt"]).contains("s07")
+        assertThat(entries["test-checklist.txt"]).contains(note)
+
+        // The system log is the half UNIQUE's own events cannot see, so an empty entry
+        // would make the leak check below pass for the wrong reason.
+        assertThat(entries["logcat.txt"]!!.lineSequence().count()).isGreaterThan(3)
+
+        // The event really was recorded — otherwise "no marker anywhere" would be true of
+        // a package that simply never saw it.
+        assertThat(entries["unique.log"]).contains("TEST_PLANTED_MARKER")
+        assertThat(entries["unique.log"]).contains("oauth_token=[redacted]")
+
+        // The requirement. Not one entry, anywhere in the package.
+        val leaked = entries.filterValues { it.contains(marker) }.keys
+        assertThat(leaked).isEmpty()
+        assertThat(prefs.readText()).contains(marker)   // it really was there to find
+        assertThat(db.readText()).contains(marker)
+
+        Diagnostics.info(
+            DiagChannel.STORAGE, "EXPORT_CONTAINS_NO_APP_DATA",
+            mapOf(
+                "entries" to entries.size.toString(),
+                "bytes" to export.bytes.toString(),
+                "slots" to liveSlots.size.toString(),
+            ),
+        )
     }
 
     /**

@@ -60,7 +60,12 @@ object Diagnostics {
                 DiagLevel.WARN -> Log.WARN
                 DiagLevel.ERROR -> Log.ERROR
             }
-            Log.println(priority, TAG, format(e))
+            // Redacted here too, not only on the export path. The buffer is UNIQUE's own
+            // and safe; logcat is not. Anything written there is readable by `adb logcat`,
+            // ends up in a bug report, and on many OEM builds is collected by a logging
+            // service — so a token printed here has left the device by a route the export
+            // has no say over. `formatted` is the same redaction `exportLines` applies.
+            Log.println(priority, TAG, formatted(e))
         }
     }
 

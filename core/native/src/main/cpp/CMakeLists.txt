@@ -19,6 +19,7 @@ add_library(unique_native SHARED
         plt_hook.cpp
         prop_virtual.cpp
         crash_handler.cpp
+        vulkan_probe.cpp
 )
 
 target_compile_options(unique_native PRIVATE

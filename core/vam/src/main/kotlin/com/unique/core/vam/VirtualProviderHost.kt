@@ -56,6 +56,11 @@ object VirtualProviderHost {
                 DiagChannel.PROCESS, DiagLevel.DEBUG, "PROVIDER_WARM_ALREADY_BOUND",
                 mapOf("package" to existing.params.packageName, "slot" to params.slot.toString()),
             )
+            // Say so again. The caller only warms a slot the router did *not* report ready,
+            // so arriving here means the two disagree — the announcement was lost, or
+            // UNIQUE's own process restarted since and its table went with it. Repeating it
+            // is what turns that into a wait of milliseconds instead of the full budget.
+            AppBootstrap.announceReady(context, existing.params)
             return
         }
         // Started, not waited for. `warm` runs inside `Service.onStartCommand`, which is
@@ -204,15 +209,20 @@ object VirtualProviderHost {
                 .getOrElse { AppBootstrap.Result.Failed("BOOTSTRAP_THREW", it.toString(), it) }
             outcome.set(result)
             when (result) {
-                is AppBootstrap.Result.Ready -> Diagnostics.info(
-                    DiagChannel.PROCESS, "PROVIDER_GRAFT_READY",
-                    mapOf(
-                        "package" to params.packageName,
-                        "vuid" to params.vuid.toString(),
-                        "slot" to params.slot.toString(),
-                        "process" to params.processName,
-                    ),
-                )
+                is AppBootstrap.Result.Ready -> {
+                    Diagnostics.info(
+                        DiagChannel.PROCESS, "PROVIDER_GRAFT_READY",
+                        mapOf(
+                            "package" to params.packageName,
+                            "vuid" to params.vuid.toString(),
+                            "slot" to params.slot.toString(),
+                            "process" to params.processName,
+                        ),
+                    )
+                    // The readiness announcement is not made here: `AppBootstrap` makes it
+                    // for every graft, and a process grafted for an Activity can serve a
+                    // provider just as well as one grafted for this.
+                }
                 is AppBootstrap.Result.Failed -> Diagnostics.error(
                     DiagChannel.PROCESS, "PROVIDER_GRAFT_FAILED",
                     mapOf(

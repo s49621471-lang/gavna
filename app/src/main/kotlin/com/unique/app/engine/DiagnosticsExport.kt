@@ -57,6 +57,13 @@ object DiagnosticsExport {
         context: Context,
         liveSlots: List<Int>,
         instances: List<Map<String, String>>,
+    ): Result = write(context, liveSlots, instances, includeDeviceReport = true)
+
+    fun write(
+        context: Context,
+        liveSlots: List<Int>,
+        instances: List<Map<String, String>>,
+        includeDeviceReport: Boolean,
     ): Result {
         val dir = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
         // One file per export rather than a fixed name: two exports minutes apart are
@@ -72,8 +79,24 @@ object DiagnosticsExport {
 
         ZipOutputStream(zipFile.outputStream().buffered()).use { zip ->
             writeLines(zip, "environment.txt", environment(context))
+            if (includeDeviceReport) {
+                // What the *device* is, which is the other half of every result in here.
+                // "The guest could not bring Vulkan up" means one thing on a phone with a
+                // working driver and nothing at all on one without.
+                val packages = instances.mapNotNull { it["package"] }.toSet()
+                writeLines(
+                    zip, "device-report.txt",
+                    DeviceReport.lines(DeviceReport.collect(context, packages)),
+                )
+                writeLines(zip, "test-checklist.txt", TestChecklist.lines(context))
+            }
             writeLines(zip, "instances.txt", instanceSummary(instances))
             writeLines(zip, "unique.log", own)
+            // The part of a failure UNIQUE's own events cannot see: ART, the linker,
+            // ActivityManager's kill reasons, and the stack trace of an uncaught
+            // exception. Filtered to framework tags so no app's own logging travels with
+            // it — see LogcatCapture for exactly what that drops and why.
+            writeLines(zip, "logcat.txt", LogcatCapture.capture())
             writeLines(zip, "crash.log", Diagnostics.exportLines(DiagChannel.CRASH) + remote)
             for ((slot, lines) in perSlot) {
                 writeLines(zip, "vapp$slot.log", lines)
@@ -166,7 +189,12 @@ object DiagnosticsExport {
         "",
         "environment.txt  the device and this build of UNIQUE",
         "instances.txt    which apps are imported, and the identity UNIQUE gave each",
+        "device-report.txt  what this device is: ABIs, page size, Vulkan, WebView, Google",
+        "test-checklist.txt the physical-device sequence, and what the tester observed",
         "unique.log       UNIQUE's own structured event log",
+        "logcat.txt       the system log for UNIQUE's own uid: ART, the linker,",
+        "                 ActivityManager kill reasons, uncaught exceptions. Framework",
+        "                 tags only — no app-authored logging is included",
         "crash.log        crash records, including ones pushed here by processes that died",
         "vappN.log        the event log of virtual process slot N, pulled while it was alive",
         "",

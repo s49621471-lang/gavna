@@ -4,6 +4,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
+import 'device_test_screen.dart';
 
 /// Settings.
 ///
@@ -151,6 +152,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           SectionCard(
             title: 'Advanced',
             children: [
+              SectionRow(
+                label: 'Device test',
+                value: 'What this phone is, and the physical-device sequence — run and '
+                    'recorded here, with no computer',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => DeviceTestScreen(state: widget.state),
+                  ),
+                ),
+                trailing: const Icon(Icons.phonelink_setup_rounded, size: 20),
+              ),
+              const Divider(),
               SectionRow(
                 label: 'Diagnostics',
                 value: '${widget.state.diagnostics.length} events recorded',

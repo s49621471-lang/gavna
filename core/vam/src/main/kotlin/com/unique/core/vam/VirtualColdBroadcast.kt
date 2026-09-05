@@ -2,6 +2,7 @@ package com.unique.core.vam
 
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 
@@ -71,6 +72,46 @@ object VirtualColdBroadcast {
                 "delivered" to delivered.toString(),
             ),
         )
+        if (delivered) acknowledge(context, params, receiverClass, payload.action)
+    }
+
+    /**
+     * Tells UNIQUE's main process the receiver ran, so it stops re-trying.
+     *
+     * Sent only when the receiver actually ran. A wake that got as far as grafting and
+     * then failed is exactly the case worth another attempt, and acknowledging it would
+     * throw that away — the router would record a delivery that never happened.
+     *
+     * Best-effort in the other direction too: a failure here costs one duplicate delivery
+     * ninety seconds later, which a receiver must already tolerate because the platform
+     * itself does not promise exactly-once.
+     */
+    private fun acknowledge(
+        context: Context,
+        params: VirtualLaunchParams,
+        receiverClass: String,
+        action: String?,
+    ) {
+        val host = AppBootstrap.hostPackageName ?: return
+        runCatching {
+            context.contentResolver
+                .acquireUnstableContentProviderClient(VirtualProviderRouter.routerUri(host))
+                ?.use { client ->
+                    client.call(
+                        VirtualBroadcastRouter.ROUTER_METHOD_COLD_DELIVERED, null,
+                        Bundle().apply {
+                            putInt(VirtualBroadcastRouter.KEY_VUID, params.vuid)
+                            putString(VirtualBroadcastRouter.KEY_RECEIVER, receiverClass)
+                            putString(VirtualBroadcastRouter.KEY_ACTION, action ?: "")
+                        },
+                    )
+                }
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "COLD_BROADCAST_ACK_FAILED",
+                mapOf("receiver" to receiverClass, "error" to it.toString()),
+            )
+        }
     }
 
     /**

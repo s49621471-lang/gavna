@@ -121,6 +121,29 @@ object UniqueNative {
     fun installCrashHandler(path: String): InstallStatus =
         if (loaded) InstallStatus.of(nativeInstallCrashHandler(path)) else InstallStatus.FAILED
 
+    /**
+     * What Vulkan this device has, as newline-separated `key=value` lines.
+     *
+     * Creates a real instance, physical device, logical device and graphics queue — not a
+     * `dlopen` check. `libvulkan.so` is present on essentially every Android 10+ device,
+     * including ones whose loader finds no driver at all, so "the library exists" is worth
+     * nothing as an answer.
+     *
+     * Run from UNIQUE's own process, which is the point: it is what a guest's result is
+     * compared *against*, so a device with no working Vulkan is never recorded as UNIQUE
+     * having broken it.
+     */
+    fun probeVulkan(): Map<String, String> {
+        if (!loaded) return mapOf("ran" to "false", "error" to (loadFailure ?: "native library not loaded"))
+        return runCatching { parse(nativeProbeVulkan()) }
+            .getOrElse { mapOf("ran" to "false", "error" to it.toString()) }
+    }
+
+    private fun parse(report: String): Map<String, String> =
+        report.lineSequence()
+            .filter { it.contains('=') }
+            .associate { it.substringBefore('=') to it.substringAfter('=') }
+
     fun setProperty(key: String, value: String) { if (loaded) nativeSetProperty(key, value) }
     fun clearProperties() { if (loaded) nativeClearProperties() }
     fun lookupProperty(key: String): String? = if (loaded) nativeLookupProperty(key) else null
@@ -142,4 +165,5 @@ object UniqueNative {
     @JvmStatic private external fun nativeLookupProperty(key: String): String?
     @JvmStatic private external fun nativeInstallPropertyVirtualization(): Int
     @JvmStatic private external fun nativeInstallCrashHandler(path: String): Int
+    @JvmStatic private external fun nativeProbeVulkan(): String
 }

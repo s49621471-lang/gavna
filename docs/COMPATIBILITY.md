@@ -21,10 +21,14 @@ never tried" is the difference between a fact and a guess.
 | `EMU34` | Android 14 (API 34), x86_64, `aosp_atd` emulator, software rendering, no KVM |
 | `ARM64` | Physical ARM64 Android 15 phone — **not yet run**, see `docs/PHYSICAL_DEVICE_TEST.md` |
 
+Every result below was produced by the **debug** build. The minified release build is a
+separate question and is answered separately, in the first row of the next table.
+
 ## Engine capabilities
 
 | Capability | EMU34 | ARM64 | Notes |
 |---|---|---|---|
+| Minified release build (R8) | `NOT_TESTED` | `NOT_TESTED` | It assembles, minifies and signs, and the keep rules are written and reasoned about — the stub pool, the native methods, `UniqueNative`, enums, Room and the bridge. The instrumented suite **cannot be run against it**: `androidx.tracing.Trace` reaches `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so no `-keep` rule applies and the runner dies with `NoClassDefFoundError` before the first test. A virtualization engine is nearly all reflection, so an unverified minified build is exactly the one to be suspicious of; everything else in this file is the debug build |
 | APK import (single APK) | `SUPPORTED` | `NOT_TESTED` | Probe imported from a file, package not installed on the host |
 | Virtual package registration | `SUPPORTED` | `NOT_TESTED` | Room-backed, survives process death |
 | Instance creation | `SUPPORTED` | `NOT_TESTED` | Directories created, device profile generated |
@@ -81,7 +85,10 @@ never tried" is the difference between a fact and a guess.
 | Diagnostics — events from a virtual process | `SUPPORTED` | `NOT_TESTED` | Pulled from each live `:vappN` through that slot's stub provider when an export is written; crash records are pushed to UNIQUE's main process by the dying process itself |
 | Native crash record | `SUPPORTED` | `NOT_TESTED` | A SIGSEGV inside a guest's own `.so` leaves a record UNIQUE wrote — signal, code, fault address, pid, tid — under that instance's diagnostics directory, and the export picks it up (`t33`). The platform's tombstone is still produced: the previous handler is chained to, not replaced |
 | Native crash symbolisation | `UNSUPPORTED_FOR_NOW` | `UNSUPPORTED_FOR_NOW` | Addresses are recorded raw. Resolving them means `dladdr`, which takes the linker lock, and a crash inside the linker is not rare |
-| Diagnostics — export package | `SUPPORTED` | `NOT_TESTED` | Written to UNIQUE's app-private cache. Contains the structured logs, the per-slot logs and the device; contains **nothing** from inside an instance's data directory, and every line passes the redactor |
+| Diagnostics — export package | `SUPPORTED` | `NOT_TESTED` | Written to UNIQUE's app-private cache. Carries the structured logs, the per-slot logs, the device report and the tester's checklist (`t37`) |
+| Diagnostics — export carries no app data | `SUPPORTED` | `NOT_TESTED` | A marker planted in the guest's own `shared_prefs` and `databases/`, and in a field UNIQUE itself logs, appears in **no entry** of the package (`t37`). The guarantee is by construction — the export never opens an instance's data directory — and the redactor covers the one path that does read app-authored text |
+| Device report, collected on the phone | `SUPPORTED` | `NOT_TESTED` | Six sections — device, runtime, engine, host Vulkan, WebView provider, Google — measured on demand, with the host Vulkan probe creating a real instance, device and queue. This is what a physical-device result is *compared against*: a guest failing Vulkan means nothing on a phone whose host device type is `cpu` (`t37`) |
+| Physical-device checklist, recorded on the phone | `SUPPORTED` | `NOT_TESTED` | The twelve steps, their verdicts and free-text notes, persisted on the device and folded into the export (`t37`). Deliberately not a gate: nothing in this file moves because a checklist says so |
 | Startup and memory measurement | `SUPPORTED` | `NOT_TESTED` | `t29` records cold start, warm start and PSS on every run (`PERF_COLD_START`, `PERF_WARM_START`, `PERF_MEMORY`). It asserts ordering and process reuse, not a time budget: a wall-clock budget on this emulator would measure the CI host |
 | Per-instance permissions in the UI | `SUPPORTED` | `NOT_TESTED` | App Details reads the instance's real state and offers only the groups the app's own manifest asks for; a group the *host* lacks is shown disabled with the reason, since UNIQUE can only narrow what it holds. A change reaches a running process through the slot's stub provider |
 | APK import from a file picker | `PARTIAL` | `NOT_TESTED` | The system document picker is wired, multi-select for base + splits, and the chosen files are copied into app-private storage before the importer reads them. Exercised by hand, not by the suite: the suite imports from an asset |

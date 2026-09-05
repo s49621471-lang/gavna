@@ -19,8 +19,10 @@ import com.unique.core.compat.CompatDatabase
 import com.unique.core.google.GoogleCompatRouter
 import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
+import com.unique.app.engine.DeviceReport
 import com.unique.app.engine.DiagnosticsExport
 import com.unique.app.engine.InstancePermissions
+import com.unique.app.engine.TestChecklist
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vpermission.PermissionGroup
@@ -148,6 +150,11 @@ object UniqueBridge {
             "googleStatus" -> googleStatus(context)
             "googleRouting" -> googleRouting(context, (a["vuid"] as Number).toInt())
             "exportDiagnostics" -> exportDiagnostics(context)
+            "shareDiagnostics" -> shareDiagnostics(context)
+            "deviceReport" -> deviceReport(context)
+            "checklist" -> TestChecklist.steps(context).map { it.toMap() }
+            "setChecklistStep" -> setChecklistStep(context, a)
+            "resetChecklist" -> TestChecklist.reset(context).map { it.toMap() }
 
             "listInstances" -> listInstances()
             "importInstalled" -> importInstalled(context, a["package"] as String)
@@ -215,6 +222,62 @@ object UniqueBridge {
             )
         }
     }
+
+    /**
+     * Everything UNIQUE can establish about this device, for a tester with no computer.
+     *
+     * Collected fresh each time. A Vulkan probe that creates a real device and queue costs
+     * a few hundred milliseconds once; caching it would mean showing a stale answer after
+     * the very thing a tester just changed.
+     */
+    private suspend fun deviceReport(context: Context): List<Map<String, Any?>> {
+        val packages = UniqueEngine.instances.instances().map { it.packageName }.toSet()
+        return DeviceReport.collect(context, packages).map { section ->
+            mapOf("title" to section.title, "values" to section.values)
+        }
+    }
+
+    private fun setChecklistStep(context: Context, a: Map<String, Any?>): List<Map<String, Any?>> {
+        val id = a["id"] as? String ?: return TestChecklist.steps(context).map { it.toMap() }
+        val verdict = runCatching {
+            TestChecklist.Verdict.valueOf(a["verdict"] as String)
+        }.getOrDefault(TestChecklist.Verdict.NOT_RUN)
+        val note = a["note"] as? String ?: ""
+        return TestChecklist.set(context, id, verdict, note).map { it.toMap() }
+    }
+
+    /**
+     * Writes a diagnostics package and hands it to the share sheet.
+     *
+     * The whole point of this path is that a tester needs no `adb` and no computer: a file
+     * whose location the UI merely *reports* is a file on a phone, and getting it off one
+     * is exactly the step this is supposed to remove.
+     */
+    private suspend fun shareDiagnostics(context: Context): Map<String, Any?> {
+        val written = exportDiagnostics(context)
+        if (written["ok"] != true) return written
+        val path = written["path"] as? String
+            ?: return mapOf("ok" to false, "message" to "The package was written but has no path.")
+        val sharer = sharer
+            ?: return written + mapOf(
+                "shared" to false,
+                "message" to "No window is open to share from; the file is saved at $path.",
+            )
+        val started = sharer.shareFile(java.io.File(path), "application/zip")
+        return written + mapOf("shared" to started)
+    }
+
+    /**
+     * How the bridge puts a file into the share sheet, when it has no window of its own.
+     *
+     * Implemented by [com.unique.app.MainActivity], for the same reason [ApkPicker] is.
+     */
+    interface FileSharer {
+        fun shareFile(file: java.io.File, mimeType: String): Boolean
+    }
+
+    @Volatile
+    var sharer: FileSharer? = null
 
     /**
      * Writes a diagnostics package and reports where it is.

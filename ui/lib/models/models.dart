@@ -386,3 +386,66 @@ class GoogleRoute {
         why: (m['why'] as String?) ?? '',
       );
 }
+
+/// One section of the on-device report: what this phone actually is.
+class ReportSection {
+  const ReportSection({required this.title, required this.values});
+
+  final String title;
+  final Map<String, String> values;
+
+  static ReportSection fromMap(Map<Object?, Object?> m) => ReportSection(
+        title: (m['title'] as String?) ?? '',
+        values: ((m['values'] as Map?) ?? const {})
+            .map((k, v) => MapEntry(k.toString(), v?.toString() ?? '-')),
+      );
+}
+
+/// One step of the physical-device sequence, and what the tester saw.
+///
+/// A verdict is an observation, not a gate: nothing in the compatibility matrix moves
+/// because this says so. It travels with the diagnostics package so it can be read
+/// alongside the machine's own record rather than instead of it.
+enum StepVerdict { notRun, pass, fail, blocked, skipped }
+
+class ChecklistStep {
+  const ChecklistStep({
+    required this.id,
+    required this.title,
+    required this.what,
+    required this.verdict,
+    required this.note,
+  });
+
+  final String id;
+  final String title;
+  final String what;
+  final StepVerdict verdict;
+  final String note;
+
+  bool get done => verdict != StepVerdict.notRun;
+
+  static StepVerdict _verdict(String? raw) => switch (raw) {
+        'PASS' => StepVerdict.pass,
+        'FAIL' => StepVerdict.fail,
+        'BLOCKED' => StepVerdict.blocked,
+        'SKIPPED' => StepVerdict.skipped,
+        _ => StepVerdict.notRun,
+      };
+
+  static String encode(StepVerdict v) => switch (v) {
+        StepVerdict.pass => 'PASS',
+        StepVerdict.fail => 'FAIL',
+        StepVerdict.blocked => 'BLOCKED',
+        StepVerdict.skipped => 'SKIPPED',
+        StepVerdict.notRun => 'NOT_RUN',
+      };
+
+  static ChecklistStep fromMap(Map<Object?, Object?> m) => ChecklistStep(
+        id: (m['id'] as String?) ?? '',
+        title: (m['title'] as String?) ?? '',
+        what: (m['what'] as String?) ?? '',
+        verdict: _verdict(m['verdict'] as String?),
+        note: (m['note'] as String?) ?? '',
+      );
+}

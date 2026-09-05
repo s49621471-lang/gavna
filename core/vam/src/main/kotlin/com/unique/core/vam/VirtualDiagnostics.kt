@@ -57,16 +57,22 @@ object VirtualDiagnostics {
         lines: List<String>,
     ) {
         if (lines.isEmpty()) return
+        // Unstable, like every other call UNIQUE makes to one of its own providers: a
+        // stable reference would let ActivityManager kill the caller when the provider's
+        // process dies (§6.4.0), and this one runs from a process that is *already* dying.
         runCatching {
-            context.contentResolver.call(
-                VirtualProviderRouter.routerUri(hostPackage),
-                METHOD_PUBLISH,
-                null,
-                Bundle().apply {
-                    putString(KEY_PROCESS, processLabel)
-                    putStringArray(KEY_LINES, lines.toTypedArray())
-                },
-            )
+            context.contentResolver
+                .acquireUnstableContentProviderClient(
+                    VirtualProviderRouter.routerUri(hostPackage)
+                )?.use { client ->
+                    client.call(
+                        METHOD_PUBLISH, null,
+                        Bundle().apply {
+                            putString(KEY_PROCESS, processLabel)
+                            putStringArray(KEY_LINES, lines.toTypedArray())
+                        },
+                    )
+                }
         }
         // Deliberately no diagnostic on failure. This runs from an uncaught-exception
         // handler in a process that is about to die; the one thing worse than losing the
@@ -111,7 +117,8 @@ object VirtualDiagnostics {
      */
     fun pull(context: Context, hostPackage: String, slot: Int): List<String> = runCatching {
         val stub = Uri.parse("content://" + VirtualProviderRouter.stubAuthority(hostPackage, slot))
-        val reply = context.contentResolver.call(stub, METHOD_SNAPSHOT, null, null)
+        val reply = context.contentResolver.acquireUnstableContentProviderClient(stub)
+            ?.use { client -> client.call(METHOD_SNAPSHOT, null, null) }
             ?: return emptyList()
         val label = reply.getString(KEY_PROCESS) ?: ":vapp$slot"
         reply.getStringArray(KEY_LINES).orEmpty().map { "[$label] $it" }

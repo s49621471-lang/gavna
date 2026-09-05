@@ -10,6 +10,7 @@
 #
 # Env:
 #   UNIQUE_ABIS   ABIs to build (default: the ABI this device actually runs)
+#   BUILD_TYPE    debug (default) or release — release is the minified, signed build
 #   TESTS         restrict to one test, e.g. TESTS=t02_launchesAndTheAppSeesItsOwnIdentity
 #   SKIP_BUILD    reuse the APKs from the last build
 #   RUN_ID        override the generated run id
@@ -52,19 +53,55 @@ else
     esac
 fi
 echo "   building for $ABIS"
+# Which build the suite runs against. Debug by default, because that is the build being
+# developed; `BUILD_TYPE=release` points it at the minified, signed one instead, which is
+# how the R8 keep rules are established as correct rather than merely plausible. A
+# virtualization engine is nearly all reflection, and a keep rule that is wrong produces an
+# app that works everywhere except the build people actually install.
+BUILD_TYPE="${BUILD_TYPE:-debug}"
+case "$BUILD_TYPE" in
+    debug)   ASSEMBLE=(:app:assembleDebug :app:assembleDebugAndroidTest)
+             APP_APK="app/build/outputs/apk/debug/app-debug.apk"
+             TEST_APK="app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk" ;;
+    release) ASSEMBLE=(:app:assembleRelease :app:assembleReleaseAndroidTest)
+             APP_APK="app/build/outputs/apk/release/app-release.apk"
+             TEST_APK="app/build/outputs/apk/androidTest/release/app-release-androidTest.apk" ;;
+    *) fail "unknown BUILD_TYPE=$BUILD_TYPE (expected debug or release)" ;;
+esac
+echo "   build type $BUILD_TYPE"
+
 { echo "runId=$RUN_ID"; echo "model=$model"; echo "sdk=$sdk"; echo "abilist=$abi";
   echo "fingerprint=$(adb shell getprop ro.build.fingerprint | tr -d '\r')";
   echo "pagesize=$(adb shell getconf PAGE_SIZE | tr -d '\r')";
-  echo "uniqueAbis=$ABIS"; } > "$logs/device.properties"
+  echo "uniqueAbis=$ABIS"; echo "buildType=$BUILD_TYPE"; } > "$logs/device.properties"
+
 
 if [ -z "${SKIP_BUILD:-}" ]; then
     echo "== build probe =="
     timeout 900 "$root/tools/testapp/build.sh" > "$logs/build-probe.log" 2>&1 || fail "probe build"
-    echo "== build UNIQUE (abis: $ABIS) =="
-    ( cd "$root" && timeout 2400 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
-        -Punique.abis="$ABIS" --console=plain ) > "$logs/build-unique.log" 2>&1 || fail "unique build"
+    echo "== build UNIQUE ($BUILD_TYPE, abis: $ABIS) =="
+    ( cd "$root" && timeout 2400 ./gradlew "${ASSEMBLE[@]}" \
+        -Punique.abis="$ABIS" -PuniqueTestBuildType="$BUILD_TYPE" --console=plain ) \
+        > "$logs/build-unique.log" 2>&1 || fail "unique build"
 fi
 probe="$root/tools/testapp/build/probe.apk"
+
+# The build daemons are stopped before the suite runs, rather than left resident.
+#
+# Gradle's daemon holds around 3 GB and Kotlin's around 1.8 GB, and on a machine sized for
+# one emulator that is the emulator's memory. With both resident the verification emulator
+# ran at load 10 and the platform killed processes before they could attach:
+#
+#   Process ProcessRecord{… 11888:com.unique:vapp2} failed to attach
+#   Killing 11888:com.unique:vapp2 (adj -10000): start timeout
+#
+# That is the platform's own ten-second process-start timeout, expiring before a single
+# line of UNIQUE's code has run — so it fails tests that have nothing to do with what they
+# are testing. `com.android.bluetooth` was killed the same way in the same second, which is
+# how it was finally identified as the machine rather than the engine. Stopping the daemons
+# dropped the same emulator to load 1.
+( cd "$root" && ./gradlew --stop ) > /dev/null 2>&1 || true
+pkill -f KotlinCompileDaemon > /dev/null 2>&1 || true
 
 echo "== install =="
 # Piping to tail would swallow adb's exit status, and a failed install is invisible:
@@ -82,8 +119,8 @@ install_apk() {
         *) echo "$out" | tail -3; fail "install of $(basename "$apk") did not report Success" ;;
     esac
 }
-install_apk "$root/app/build/outputs/apk/debug/app-debug.apk"
-install_apk "$root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+install_apk "$root/$APP_APK"
+install_apk "$root/$TEST_APK"
 
 echo "== reset state =="
 adb shell pm clear com.unique > /dev/null

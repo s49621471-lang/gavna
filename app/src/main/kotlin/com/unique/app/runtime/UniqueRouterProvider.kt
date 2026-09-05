@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
+import com.unique.core.vam.VirtualBroadcastRouter
 import com.unique.core.vam.VirtualDiagnostics
 import com.unique.core.vam.VirtualProviderRouter
 
@@ -35,6 +36,10 @@ class UniqueRouterProvider : ContentProvider() {
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? = when (method) {
         VirtualProviderRouter.ROUTER_METHOD_RESOLVE -> VirtualProviderRouter.resolve(extras)
         VirtualDiagnostics.METHOD_PUBLISH -> VirtualDiagnostics.absorb(extras)
+        VirtualProviderRouter.ROUTER_METHOD_SLOT_READY -> VirtualProviderRouter.slotReady(extras)
+        VirtualProviderRouter.ROUTER_METHOD_SLOT_STATUS -> VirtualProviderRouter.slotStatus(extras)
+        VirtualBroadcastRouter.ROUTER_METHOD_COLD_DELIVERED ->
+            VirtualBroadcastRouter.coldDelivered(extras)
         else -> {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "PROVIDER_ROUTER_UNKNOWN_METHOD",

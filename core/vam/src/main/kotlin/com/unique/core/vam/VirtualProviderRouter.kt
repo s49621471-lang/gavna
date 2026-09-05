@@ -2,6 +2,9 @@ package com.unique.core.vam
 
 import android.net.Uri
 import android.os.Bundle
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
@@ -39,6 +42,15 @@ object VirtualProviderRouter {
     )
 
     const val ROUTER_METHOD_RESOLVE = "unique.resolveProvider"
+
+    /** A `:vappN` reporting that it has grafted and is ready to serve. */
+    const val ROUTER_METHOD_SLOT_READY = "unique.slotReady"
+
+    /** A caller asking whether a slot has got that far yet. */
+    const val ROUTER_METHOD_SLOT_STATUS = "unique.slotStatus"
+
+    const val KEY_READY = "unique.ready"
+    const val KEY_PID = "unique.pid"
 
     const val KEY_VUID = "unique.vuid"
     const val KEY_AUTHORITY = "unique.authority"
@@ -98,7 +110,102 @@ object VirtualProviderRouter {
     }
 
     @Synchronized
-    fun reset() = targets.clear()
+    fun reset() {
+        targets.clear()
+        ready.clear()
+    }
+
+    /**
+     * Which instance each `:vappN` has finished grafting, as the slot itself reported.
+     *
+     * The alternative — polling `ActivityManager.getRunningAppProcesses` — answers a
+     * different and much weaker question, and answers it unreliably: it has omitted a
+     * process that was already serving Binder calls, and listed one `system_server` had
+     * buried minutes earlier. A caller that gives up on that signal proceeds to acquire a
+     * provider from a process that has not started, ActivityManager cold-starts it *for
+     * the provider*, and the platform's ten-second publish timeout kills it in a loop.
+     *
+     * A slot saying "I am ready" is the only signal that means what the caller needs.
+     */
+    private data class Ready(val vuid: Int, val pid: Int)
+
+    private val ready = HashMap<Int, Ready>()
+
+    @Synchronized
+    fun markReady(slot: Int, vuid: Int, pid: Int) {
+        ready[slot] = Ready(vuid, pid)
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PROVIDER_SLOT_READY",
+            mapOf(
+                "slot" to slot.toString(),
+                "vuid" to vuid.toString(),
+                "pid" to pid.toString(),
+            ),
+        )
+    }
+
+    /**
+     * Whether [slot] is currently serving [vuid] and has finished grafting.
+     *
+     * The recorded pid is checked, not just the mark, because a slot that grafted and then
+     * died must not read as ready: the caller would skip the warm-up and let
+     * ActivityManager cold-start the process *for the provider* again, which is the
+     * failure this whole handshake exists to prevent.
+     *
+     * `Os.kill(pid, 0)` is the liveness check rather than `getRunningAppProcesses`, for
+     * the reason in this class's doc: the list has been seen to lag reality in both
+     * directions. A signal of 0 delivers nothing and only asks whether the process is
+     * there; `ESRCH` is the one errno that means it is not.
+     *
+     * The residual hole is pid reuse: a recycled pid belonging to some other process would
+     * read as alive. It stays narrow — the mark must also name the same vuid, and the
+     * bind's own retry loop is what finally establishes whether the slot can answer — and
+     * it is worth naming rather than papering over.
+     */
+    @Synchronized
+    fun isReady(slot: Int, vuid: Int): Boolean {
+        val mark = ready[slot] ?: return false
+        if (mark.vuid != vuid) return false
+        if (!processAlive(mark.pid)) {
+            ready.remove(slot)
+            Diagnostics.info(
+                DiagChannel.PROCESS, "PROVIDER_SLOT_READY_STALE",
+                mapOf("slot" to slot.toString(), "pid" to mark.pid.toString()),
+            )
+            return false
+        }
+        return true
+    }
+
+    private fun processAlive(pid: Int): Boolean = try {
+        Os.kill(pid, 0)
+        true
+    } catch (e: ErrnoException) {
+        // EPERM means a process is there and not ours to signal; only ESRCH means gone.
+        e.errno != OsConstants.ESRCH
+    }
+
+    @Synchronized
+    fun forgetSlot(slot: Int) {
+        ready.remove(slot)
+    }
+
+    /** Answers [ROUTER_METHOD_SLOT_READY] and [ROUTER_METHOD_SLOT_STATUS]. */
+    fun slotReady(extras: Bundle?): Bundle? {
+        val slot = extras?.getInt(KEY_SLOT, -1) ?: -1
+        val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
+        val pid = extras?.getInt(KEY_PID, -1) ?: -1
+        if (slot < 0 || vuid < 0 || pid < 0) return null
+        markReady(slot, vuid, pid)
+        return Bundle.EMPTY
+    }
+
+    fun slotStatus(extras: Bundle?): Bundle? {
+        val slot = extras?.getInt(KEY_SLOT, -1) ?: -1
+        val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
+        if (slot < 0 || vuid < 0) return null
+        return Bundle().apply { putBoolean(KEY_READY, isReady(slot, vuid)) }
+    }
 
     @Synchronized
     fun target(vuid: Int, authority: String): Target? = targets[Key(vuid, authority)]

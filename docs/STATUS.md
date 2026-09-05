@@ -63,7 +63,8 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-032840-24481`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260905-093631-18438`, Android 14 x86_64, probe **not installed on the device**.
+**37 of 37 pass.**
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -104,6 +105,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t34` a guest shares one of its own files with something outside it | **PASS** |
 | `t35` the Google routing decision is real, and follows this device | **PASS** |
 | `t36` a guest reaching another app's provider gets a well-formed answer | **PASS** |
+| `t37` the device report, the checklist and an export that carries no app data | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -111,13 +113,23 @@ Recorded by `t29` on every run. **Software-emulated x86_64 with no hardware acce
 so these are not device numbers and no budget is asserted against them (§17.1) — they are
 a baseline a physical-device run is compared against.
 
-| Measurement | Run `20260904-221502-8465` |
-|---|---|
-| Cold start, fork → the app's first screen ready | 37.5 s |
-| ... of which fork → guest `Application.onCreate` (the graft) | 27.6 s |
-| ... of which `Application.onCreate` → `Activity.onCreate` | 7.5 s |
-| Warm start, request → ready, into a live process | 5.4 s |
-| Virtual process memory, total PSS | 30.2 MB |
+| Measurement | Run `20260904-221502-8465` | Run `20260905-093631-18438` |
+|---|---|---|
+| Cold start, fork → the app's first screen ready | 37.5 s | 12.1 s |
+| ... of which fork → guest `Application.onCreate` (the graft) | 27.6 s | 8.2 s |
+| ... of which `Application.onCreate` → `Activity.onCreate` | 7.5 s | 3.3 s |
+| Warm start, request → ready, into a live process | 5.4 s | 2.3 s |
+| Virtual process memory, total PSS | 30.2 MB | 33.1 MB |
+
+The two columns are the same engine on the same emulator, three times apart in every
+timing, and the difference is not UNIQUE: the first was measured with Gradle's and Kotlin's
+daemons resident, holding about five gigabytes between them on a machine sized for one
+emulator. That is what a wall-clock number on this environment is worth, and why none is
+asserted against (§17.1). `tools/verify-device.sh` now stops the daemons before it
+instruments, because at load 10 the platform was killing processes before they could
+attach — `Killing …:com.unique:vapp2 (adj -10000): start timeout`, and
+`com.android.bluetooth` in the same second, which is how the machine was finally
+distinguished from the engine.
 
 The graft dominates cold start, which is what a JIT-only process loading UNIQUE's
 interception layer before any guest code looks like. PSS rather than RSS: a virtual process
@@ -240,9 +252,20 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
   to reach the graft, and `system_server` has been seen to give up on it:
   `Killing …:com.unique:vapp2 (adj 0): timeout publishing content providers`. On hardware
   the margin is far larger, but the ceiling is real and belongs to the platform.
-- **Background ANRs on a loaded emulator.** `Killing …:com.unique:vapp0 (adj 0): bg anr`
-  appears when the machine is thrashing. It is an environment artifact, and the reason no
-  test asserts a wall-clock budget (§17.1).
+- **Background ANRs on a loaded machine.** `Killing …:com.unique:vapp0 (adj 0): bg anr`
+  appears when the device is thrashing: a cold wake is fork, load UNIQUE's code, install
+  the interception layer, graft the guest, *then* run the component, and all of it inside
+  what ActivityManager considers a background service start. It is the reason no test
+  asserts a wall-clock budget (§17.1).
+
+  What was a bug rather than a limit is what happened next: the stub is started
+  `START_NOT_STICKY`, so nothing brought it back and the broadcast was **lost silently**.
+  A cold delivery is now tracked in UNIQUE's main process and re-tried until the guest's
+  receiver acknowledges it, up to three attempts ninety seconds apart
+  (`COLD_BROADCAST_RETRY`, `COLD_BROADCAST_ACKNOWLEDGED`, `COLD_BROADCAST_GIVEN_UP`). The
+  ANR itself remains a property of a loaded device; losing the broadcast to it does not.
+  OEM background management on a real phone produces the same kill, which is why this is
+  worth carrying to hardware.
 
 
 - **No AOT.** Since Android 10 an app cannot invoke `dex2oat`, so virtual apps are
@@ -254,16 +277,25 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 ## Next steps, in order
 
-1. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
+1. **The physical-device run.** ARM64 native code, a real GPU driver, a hardware Vulkan
+   ICD, WebView rendering and a real application — five things only a phone can answer,
+   and every one of them is `NOT_TESTED` until it does.
+   `docs/PHYSICAL_DEVICE_TEST.md` is the sequence, and it needs no `adb`, no root and no
+   computer: *Settings → Advanced → Device test* holds the device report and the twelve
+   steps, and the last step shares one diagnostics package out through the share sheet.
+2. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
    Sharing outward works (`t34`) and the inbound request is at least well-formed (`t36`),
    but arranging a real grant needs a third APK: instrumentation runs under the target
    app's uid and can neither write another app's files nor grant for its authority.
-2. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
-   only a physical device can answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
 3. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
    procedure, in the order that makes one failure explain the next.
 4. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
+5. **Verifying the minified release build.** It assembles and signs, but the instrumented
+   suite cannot run against it: `androidx.tracing.Trace` reaches
+   `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so
+   no `-keep` rule applies. Until that is solved the release build is not device-verified
+   and the debug build is what to test with.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

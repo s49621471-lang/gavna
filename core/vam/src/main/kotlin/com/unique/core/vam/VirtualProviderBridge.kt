@@ -1,6 +1,5 @@
 package com.unique.core.vam
 
-import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.ContentProviderClient
 import android.content.Context
@@ -65,10 +64,10 @@ object VirtualProviderBridge {
     fun resolve(context: Context, vuid: Int, authority: String): Route? {
         val hostPackage = hostPackageOf(context)
         val reply = runCatching {
-            context.contentResolver.call(
+            callUnstably(
+                context,
                 VirtualProviderRouter.routerUri(hostPackage),
                 VirtualProviderRouter.ROUTER_METHOD_RESOLVE,
-                null,
                 Bundle().apply {
                     putInt(VirtualProviderRouter.KEY_VUID, vuid)
                     putString(VirtualProviderRouter.KEY_AUTHORITY, authority)
@@ -106,18 +105,18 @@ object VirtualProviderBridge {
         val stub = Uri.parse(
             "content://" + VirtualProviderRouter.stubAuthority(hostPackage, route.slot)
         )
-        // Warm the target process before asking it for anything, and *wait for it to
-        // exist*. Starting the service and calling immediately still loses the race: AMS
-        // cold-starts the process for the provider instead, and the ten-second publish
-        // timeout applies after all. See warmProcess.
+        // Warm the target process before asking it for anything, and *wait until it says
+        // it has grafted*. Starting the service and calling immediately still loses the
+        // race: AMS cold-starts the process for the provider instead, and the ten-second
+        // publish timeout applies after all. See warmProcess and awaitReady.
         warmProcess(context, hostPackage, route)
-        awaitProcess(context, hostPackage, route.slot)
+        awaitReady(context, hostPackage, route)
 
         val extras = Bundle().apply { putAll(route.launchParams().toBundle()) }
         var lastError: String? = null
         for (attempt in 1..BIND_ATTEMPTS) {
             val reply = runCatching {
-                context.contentResolver.call(stub, METHOD_BIND, null, extras)
+                callUnstably(context, stub, METHOD_BIND, extras)
             }.getOrElse {
                 lastError = it.toString()
                 null
@@ -170,14 +169,35 @@ object VirtualProviderBridge {
      * cold broadcast path uses, for the same reason — bringing a process into existence
      * without putting a window on screen.
      *
-     * Fire-and-forget. The retry loop above is what actually waits, because a service
-     * start is asynchronous and there is nothing useful to block on.
+     * Fire-and-forget. A service start is asynchronous and there is nothing useful to
+     * block on here; [awaitReady] is what waits, on a signal the slot sends rather than on
+     * a guess about it.
      */
     private fun warmProcess(context: Context, hostPackage: String, route: Route) {
-        // Nothing to warm, and starting the service again would queue another
-        // onStartCommand behind a graft that is already running — which is how a `:vappN`
-        // earns `bg anr` for work it was told to do three times.
-        if (processExists(context, hostPackage, route.slot)) return
+        // A slot that reports itself ready has already grafted; there is nothing to warm.
+        //
+        // That is the *only* question asked. An earlier version also skipped the start
+        // when `getRunningAppProcesses` listed the process, and that turned out to be how
+        // this failed after a guest's provider process was killed:
+        //
+        // ```
+        // PROVIDER_SLOT_READY_STALE slot=2 pid=6236        (the router noticed the death)
+        // PROVIDER_READY_NOT_SEEN slot=2 vuid=0 waitedMillis=45078
+        // Killing 6989:com.unique:vapp2 (adj 0): timeout publishing content providers
+        // ```
+        //
+        // The list still named a process that was gone, so nothing was started, and the
+        // wait below timed out against a process that was never coming — leaving
+        // ActivityManager to cold-start it for the provider and kill it three times over.
+        // Starting it again when it is already running is harmless: `VirtualProviderHost`
+        // returns `PROVIDER_WARM_ALREADY_BOUND` for a bound process and joins the graft
+        // already in flight for one that is still starting.
+        if (isSlotReady(context, hostPackage, route)) return
+        startWarmService(context, hostPackage, route)
+    }
+
+    /** The service start itself, with no opinion about whether it is needed. */
+    private fun startWarmService(context: Context, hostPackage: String, route: Route) {
         runCatching {
             val stubService = StubRouter.stubService(
                 route.slot, VirtualServiceRouter.COLD_BROADCAST_STUB_INDEX,
@@ -198,33 +218,106 @@ object VirtualProviderBridge {
     }
 
     /**
-     * Waits until the slot's process exists, or gives up quietly.
+     * Waits until the slot's process reports it has grafted, or gives up quietly.
      *
-     * Existence is the whole point: a *running* process publishes a provider promptly, so
-     * ActivityManager's ten-second budget for cold-starting one never applies. Giving up
-     * quietly is right too — the retry loop is what actually reports failure, and it will
-     * have a better error than "the process did not appear".
+     * The signal is the slot's own `slotReady` announcement, relayed by the router
+     * (§6.4.0). That is a genuine statement about the thing the caller depends on — the
+     * guest is bootstrapped, so its providers publish immediately — where the process
+     * merely appearing in `getRunningAppProcesses` was a guess about it, and a lagging one:
+     * the run that produced this code failed with
+     *
+     * ```
+     * PROVIDER_WARM_NOT_SEEN slot=2 waitedMillis=8000
+     * Killing 5216:com.unique:vapp2 (adj 0): timeout publishing content providers
+     * ```
+     *
+     * — a warm-up that had in fact started the process, a caller that stopped believing
+     * it, and ActivityManager cold-starting the same process for the provider into its own
+     * ten-second budget.
+     *
+     * Giving up quietly is still right: the retry loop is what reports failure, and it
+     * will have a better error than "the slot never said it was ready".
      */
-    private fun awaitProcess(context: Context, hostPackage: String, slot: Int) {
-        val deadline = SystemClock.uptimeMillis() + PROCESS_WAIT_MILLIS
+    private fun awaitReady(context: Context, hostPackage: String, route: Route) {
+        val started = SystemClock.uptimeMillis()
+        val deadline = started + READY_WAIT_MILLIS
+        var nextWarm = started + READY_REWARM_MILLIS
+        var warms = 0
         while (SystemClock.uptimeMillis() < deadline) {
-            if (processExists(context, hostPackage, slot)) return
-            runCatching { Thread.sleep(250) }
+            if (isSlotReady(context, hostPackage, route)) return
+            val now = SystemClock.uptimeMillis()
+            if (now >= nextWarm) {
+                // The process this is waiting for may no longer exist. A device slow
+                // enough to need this wait is slow enough to lose the process during it,
+                // and the platform kills it before any of UNIQUE's code has run:
+                //
+                //   Process ProcessRecord{… com.unique:vapp2} failed to attach
+                //   Killing 11888:com.unique:vapp2 (adj -10000): start timeout
+                //
+                // Nothing announces, nothing notices, and the whole budget is spent
+                // waiting for a process that died eight seconds in. Asking again is cheap
+                // and idempotent — a bound process re-announces, one still starting joins
+                // the graft in flight, and a dead one is started afresh.
+                startWarmService(context, hostPackage, route)
+                warms++
+                nextWarm = now + READY_REWARM_MILLIS
+            }
+            runCatching { Thread.sleep(READY_POLL_MILLIS) }
         }
         Diagnostics.warn(
-            DiagChannel.PROCESS, "PROVIDER_WARM_NOT_SEEN",
-            mapOf("slot" to slot.toString(), "waitedMillis" to PROCESS_WAIT_MILLIS.toString()),
+            DiagChannel.PROCESS, "PROVIDER_READY_NOT_SEEN",
+            mapOf(
+                "slot" to route.slot.toString(),
+                "vuid" to route.vuid.toString(),
+                "waitedMillis" to (SystemClock.uptimeMillis() - started).toString(),
+                "rewarms" to warms.toString(),
+            ),
         )
     }
 
-    private fun processExists(context: Context, hostPackage: String, slot: Int): Boolean {
-        val name = "$hostPackage:vapp$slot"
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            ?: return false
-        return runCatching {
-            am.runningAppProcesses.orEmpty().any { it.processName == name }
+    /** Asks the router whether the slot has finished grafting this instance. */
+    private fun isSlotReady(context: Context, hostPackage: String, route: Route): Boolean =
+        runCatching {
+            callUnstably(
+                context,
+                VirtualProviderRouter.routerUri(hostPackage),
+                VirtualProviderRouter.ROUTER_METHOD_SLOT_STATUS,
+                Bundle().apply {
+                    putInt(VirtualProviderRouter.KEY_SLOT, route.slot)
+                    putInt(VirtualProviderRouter.KEY_VUID, route.vuid)
+                },
+            )?.getBoolean(VirtualProviderRouter.KEY_READY, false) ?: false
         }.getOrDefault(false)
-    }
+
+    /**
+     * `call()` on a provider without taking a *stable* reference to its process.
+     *
+     * `ContentResolver.call` acquires stably, and a stable reference tells
+     * `ActivityManagerService` that the caller cannot survive the provider's process
+     * dying — so it kills the caller when it does:
+     *
+     * ```
+     * Killing 4798:com.unique (adj 0): depends on provider
+     *     com.unique/.stub.ProviderStub_p0 in dying proc com.unique:vapp0
+     * ```
+     *
+     * That is UNIQUE's own process being taken down by a virtual app closing, which is the
+     * exact thing §3 exists to prevent. It appeared with cross-process providers and hid
+     * behind an earlier, wrong conclusion that only same-instance processes were affected.
+     *
+     * The fix belongs here, on UNIQUE's own side of the acquisition — not in rewriting the
+     * `stable` flag of somebody else's call in flight, which was tried and desynchronised
+     * `ActivityThread`'s reference counts from ActivityManager's (§6.4.0).
+     */
+    private fun callUnstably(
+        context: Context,
+        uri: Uri,
+        method: String,
+        extras: Bundle?,
+    ): Bundle? =
+        context.contentResolver.acquireUnstableContentProviderClient(uri)?.use { client ->
+            client.call(method, null, extras)
+        }
 
     private fun finishBind(route: Route, reply: Bundle): Set<String>? {
 
@@ -251,18 +344,30 @@ object VirtualProviderBridge {
     private const val BIND_RETRY_MILLIS = 2500L
 
     /**
-     * How long to wait for a warmed process to appear.
+     * How long to wait for a warmed slot to report itself ready.
      *
-     * A fork is fast even on a slow device; what is slow is everything after it, and that
-     * is what the process needing to *exist* protects against.
+     * Sized to the work, not to a guess: a cold graft is measured at forty seconds on the
+     * verification emulator (§17.1), which is why `VirtualProviderHost` allows sixty for
+     * the same work. Forty-five is longer than the graft and shorter than that timeout, so
+     * a caller that gives up here still leaves the bind's own retries something to do.
      *
-     * Best-effort, and short, because the evidence is unreliable:
-     * `getRunningAppProcesses` lags — it has been seen to omit a process that was already
-     * serving Binder calls, and to list one `system_server` had buried minutes earlier.
-     * Waiting longer on a bad signal buys nothing; the retry loop is what actually
-     * establishes whether the slot can answer.
+     * The eight seconds this replaced were sized to a *fork*, because the signal being
+     * waited on was only the process existing. Waiting for the right thing costs more
+     * wall-clock and is the difference between a bind that works on a slow device and one
+     * that is killed publishing.
      */
-    private const val PROCESS_WAIT_MILLIS = 8_000L
+    private const val READY_WAIT_MILLIS = 45_000L
+    private const val READY_POLL_MILLIS = 250L
+
+    /**
+     * How often to ask again for a process that has not reported in.
+     *
+     * Fifteen seconds is longer than the platform's own ten-second process-start timeout,
+     * so a start that is going to fail has already failed by the time the next one is
+     * issued — and shorter than a third of the budget, so a wait that needs three tries
+     * gets them.
+     */
+    private const val READY_REWARM_MILLIS = 15_000L
 
     /**
      * A client for one instance's provider, or null when it cannot be reached.

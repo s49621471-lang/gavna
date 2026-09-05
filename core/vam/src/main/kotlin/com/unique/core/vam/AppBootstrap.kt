@@ -6,6 +6,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Bundle
 import android.os.Process
 import com.unique.core.common.apk.Abi
 import android.webkit.WebView
@@ -102,11 +103,62 @@ object AppBootstrap {
 
         return try {
             val result = graft(hostContext, params)
-            if (result is Result.Ready) bootstrapped = result
+            if (result is Result.Ready) {
+                bootstrapped = result
+                announceReady(hostContext, params)
+            }
             result
         } catch (t: Throwable) {
             Result.Failed("BOOTSTRAP_FAILED", t.toString(), t)
         }
+    }
+
+    /**
+     * Tells UNIQUE's main process that this slot now serves this instance.
+     *
+     * Announced here, from the one place every graft passes through, rather than from the
+     * provider path that first needed it. A process grafted for an *Activity* is just as
+     * able to serve a provider, and when only the provider path announced, a caller
+     * acquiring from an already-running guest waited out its whole budget before
+     * proceeding anyway:
+     *
+     * ```
+     * PROVIDER_READY_NOT_SEEN slot=0 vuid=0 waitedMillis=45005
+     * PROVIDER_BIND_READY … slot=0            (2.5 seconds later)
+     * ```
+     *
+     * Forty-five seconds of waiting for a signal nothing was going to send, on a process
+     * that had been ready the whole time.
+     *
+     * On a thread of its own because this runs on the guest's main thread at the end of
+     * `Application.onCreate`, and a Binder call into a busy `:core` would hold the guest
+     * there. Nothing waits on the announcement: a caller that misses it falls back to the
+     * slower path it had before, which is the correct behaviour when the message is late
+     * and the wrong behaviour to block a guest's startup for.
+     */
+    fun announceReady(hostContext: Context, params: VirtualLaunchParams) {
+        val host = hostPackage ?: return
+        Thread({
+            runCatching {
+                hostContext.contentResolver
+                    .acquireUnstableContentProviderClient(VirtualProviderRouter.routerUri(host))
+                    ?.use { client ->
+                        client.call(
+                            VirtualProviderRouter.ROUTER_METHOD_SLOT_READY, null,
+                            Bundle().apply {
+                                putInt(VirtualProviderRouter.KEY_SLOT, params.slot)
+                                putInt(VirtualProviderRouter.KEY_VUID, params.vuid)
+                                putInt(VirtualProviderRouter.KEY_PID, Process.myPid())
+                            },
+                        )
+                    }
+            }.onFailure {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "SLOT_READY_ANNOUNCE_FAILED",
+                    mapOf("slot" to params.slot.toString(), "error" to it.toString()),
+                )
+            }
+        }, "unique-slot-ready").start()
     }
 
     private fun graft(hostContext: Context, params: VirtualLaunchParams): Result {

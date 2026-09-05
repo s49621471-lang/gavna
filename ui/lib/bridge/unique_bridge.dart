@@ -86,6 +86,50 @@ class UniqueBridgeClient {
     return DiagnosticsExportResult.fromMap(result ?? const {});
   }
 
+  /// Everything UNIQUE can establish about this device without a computer.
+  Future<List<ReportSection>> deviceReport() async {
+    final result = await _method.invokeListMethod<Object?>('deviceReport');
+    return (result ?? const [])
+        .map((e) => ReportSection.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  Future<List<ChecklistStep>> checklist() async {
+    final result = await _method.invokeListMethod<Object?>('checklist');
+    return (result ?? const [])
+        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  Future<List<ChecklistStep>> setChecklistStep(
+    String id,
+    StepVerdict verdict,
+    String note,
+  ) async {
+    final result = await _method.invokeListMethod<Object?>('setChecklistStep', {
+      'id': id,
+      'verdict': ChecklistStep.encode(verdict),
+      'note': note,
+    });
+    return (result ?? const [])
+        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  Future<List<ChecklistStep>> resetChecklist() async {
+    final result = await _method.invokeListMethod<Object?>('resetChecklist');
+    return (result ?? const [])
+        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
+        .toList();
+  }
+
+  /// Writes a diagnostics package and hands it to the system share sheet.
+  Future<DiagnosticsExportResult> shareDiagnostics() async {
+    final result =
+        await _method.invokeMapMethod<Object?, Object?>('shareDiagnostics');
+    return DiagnosticsExportResult.fromMap(result ?? const {});
+  }
+
   /// How each Google flow would be served for one instance, and why.
   Future<List<GoogleRoute>> googleRouting(int vuid) async {
     final result =
