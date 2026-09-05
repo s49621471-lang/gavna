@@ -99,6 +99,7 @@ class EngineOutcome {
     this.message,
     this.vuid,
     this.cancelled = false,
+    this.needsHostSettings = false,
   });
 
   final bool ok;
@@ -109,11 +110,15 @@ class EngineOutcome {
   /// showing "import failed" to someone who pressed Back is a lie about their own action.
   final bool cancelled;
 
+  /// Android will not show the permission dialog again; only its settings page will do.
+  final bool needsHostSettings;
+
   static EngineOutcome fromMap(Map<Object?, Object?> m) => EngineOutcome(
         ok: (m['ok'] as bool?) ?? false,
         message: (m['message'] as String?) ?? (m['code'] as String?),
         vuid: (m['vuid'] as int?),
         cancelled: (m['cancelled'] as bool?) ?? false,
+        needsHostSettings: (m['needsHostSettings'] as bool?) ?? false,
       );
 }
 
@@ -351,13 +356,23 @@ class InstancePermission {
     required this.granted,
     required this.state,
     required this.blockedByHost,
+    this.missingHostPermissions = const <String>[],
   });
 
   final String group;
   final String label;
   final bool granted;
   final String state;
+
+  /// UNIQUE itself does not hold this group, so no instance can be given it *yet*.
+  ///
+  /// Not a dead end: turning the switch on asks Android for it on UNIQUE's behalf. The
+  /// switch used to be disabled here, which left the row explaining a problem the user
+  /// had no way to solve.
   final bool blockedByHost;
+
+  /// Exactly which permissions of the group UNIQUE is missing, for the request.
+  final List<String> missingHostPermissions;
 
   static InstancePermission fromMap(Map<Object?, Object?> m) => InstancePermission(
         group: (m['group'] as String?) ?? '',
@@ -365,6 +380,9 @@ class InstancePermission {
         granted: (m['granted'] as bool?) ?? false,
         state: (m['state'] as String?) ?? 'ASK',
         blockedByHost: (m['blockedByHost'] as bool?) ?? false,
+        missingHostPermissions: ((m['missingHostPermissions'] as List<Object?>?) ?? const [])
+            .map((e) => e.toString())
+            .toList(growable: false),
       );
 }
 

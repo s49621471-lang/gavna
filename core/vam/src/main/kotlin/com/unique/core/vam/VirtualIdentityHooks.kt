@@ -99,7 +99,6 @@ object VirtualIdentityHooks {
             "asking about accounts is refused, which killed the Play Store on launch",
         "phone" to "34 of 63 surveyed apps call TelephonyManager, and its queries carry " +
             "the caller's package",
-        "download" to "enqueue and query carry the caller's package",
         "device_policy" to "policy queries carry the caller's package",
         "media.camera" to "connectDevice carries the client package and is checked against the uid",
         "telecom" to "every call-capability query carries the caller's package",
@@ -132,8 +131,20 @@ object VirtualIdentityHooks {
      * interface that builds windows, to fix calls the survey cannot show are being made,
      * is risk without evidence. It stays in `TARGETS` and uninstalled until a log shows a
      * refusal that names it.
+     *
+     * `download`: `Context.DOWNLOAD_SERVICE` is the string "download" and there is no
+     * binder service of that name — `DownloadManager` is built from a `ContentResolver`,
+     * and everything it does goes to `content://downloads`. The survey counted the
+     * *manager*; the target added for it resolved to nothing on a real device, ten times
+     * in one run:
+     *
+     * ```
+     * IDENTITY_HOOK_FAILED service=download reason=service not available
+     * ```
+     *
+     * The provider path it actually uses already carries UNIQUE's attribution source.
      */
-    private val NOT_PROXIED_ON_PURPOSE = setOf("search", "window")
+    private val NOT_PROXIED_ON_PURPOSE = setOf("search", "window", "download")
 
     /**
      * Installs the caller-package rewrite on every service in [CALLER_PACKAGE_SERVICES].
@@ -249,6 +260,10 @@ object VirtualIdentityHooks {
      * default, which is what the guest would have seen before it ever set one.
      */
     private fun guards(serviceName: String): List<MethodShim> = when (serviceName) {
+        // The volume rewrite is prepended here rather than installed on its own, because
+        // installing a service twice replaces the whole proxy: the second install wraps
+        // the real interface again and whatever the first bound is gone.
+        "mount" -> VirtualExternalStorage.shims()
         "locale" -> listOf(
             shim("setApplicationLocales") {
                 replaceWith {

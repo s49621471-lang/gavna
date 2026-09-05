@@ -122,6 +122,22 @@ object VirtualIntentResolver {
     }
 
     /**
+     * Whether one manifest filter would take [intent].
+     *
+     * Exposed because services and receivers ask the same question with none of the
+     * placement decision that surrounds [matchingActivities]: for those the answer *is*
+     * the filter's, and duplicating the construction would be a second matcher to keep
+     * in step with this one.
+     */
+    fun matches(entry: IntentFilterEntry, intent: Intent): Boolean {
+        val filter = build(entry) ?: return false
+        return filter.match(
+            intent.action, intent.type, intent.data?.scheme, intent.data,
+            intent.categories.orEmpty(), TAG,
+        ) >= 0
+    }
+
+    /**
      * Builds the platform's own matcher from a manifest filter.
      *
      * A filter with no actions can never match an implicit intent, so it is skipped rather

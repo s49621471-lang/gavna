@@ -50,5 +50,62 @@ internal object AndroidAttrs {
     const val VERSION_CODE = 0x0101021b
     const val VERSION_NAME = 0x0101021c
     const val TARGET_SDK_VERSION = 0x01010270
+    // -----------------------------------------------------------------------------
+    // Window and task attributes.
+    //
+    // These decide how the platform builds a guest's window, and their absence is not
+    // cosmetic: with `hardwareAccelerated` unread every virtual activity was launched
+    // with `ActivityInfo.flags == 0`, which is what `Activity.attach` passes to
+    // `Window.setWindowManager` - so every guest rendered in software. That is both the
+    // "the screen lags" report and this crash, which is a hard stop for anything drawing
+    // through a RenderNode (Compose, any hardware layer, most modern view code):
+    //
+    //     java.lang.IllegalArgumentException: Software rendering doesn't support
+    //         drawRenderNode
+    //
+    // Ids read out of `android.R$attr` on the compile SDK rather than transcribed.
+    // -----------------------------------------------------------------------------
+    const val HARDWARE_ACCELERATED = 0x010102d3
+    const val WINDOW_SOFT_INPUT_MODE = 0x0101022b
+    const val UI_OPTIONS = 0x01010398
+    const val RESIZEABLE_ACTIVITY = 0x010104f6
+    const val SUPPORTS_PICTURE_IN_PICTURE = 0x010104f7
+    const val MAX_ASPECT_RATIO = 0x01010560
+    const val MIN_ASPECT_RATIO = 0x0101059b
+    const val NO_HISTORY = 0x0101022d
+    const val FINISH_ON_TASK_LAUNCH = 0x01010014
+    const val CLEAR_TASK_ON_LAUNCH = 0x01010015
+    const val STATE_NOT_NEEDED = 0x01010016
+    const val ALLOW_TASK_REPARENTING = 0x01010204
+    const val ALWAYS_RETAIN_TASK_STATE = 0x01010203
+    const val IMMERSIVE = 0x010102c0
+    const val SHOW_FOR_ALL_USERS = 0x010104ef
+    const val DOCUMENT_LAUNCH_MODE = 0x01010445
+    const val MAX_RECENTS = 0x01010446
+    const val RELINQUISH_TASK_IDENTITY = 0x01010476
+    const val AUTO_REMOVE_FROM_RECENTS = 0x01010447
+    const val RESUME_WHILE_PAUSING = 0x010104b2
+    const val COLOR_MODE = 0x0101054a
+    const val ROTATION_ANIMATION = 0x0101053a
+    const val SHOW_WHEN_LOCKED = 0x01010569
+    const val TURN_SCREEN_ON = 0x0101056a
+    const val LOCK_TASK_MODE = 0x010104ed
+    const val PERSISTABLE_MODE = 0x0101042d
+    const val DIRECT_BOOT_AWARE = 0x01010505
+
+    /** `<application>` attributes that change how the guest's process is built. */
+    const val LARGE_HEAP = 0x0101035a
+    const val SUPPORTS_RTL = 0x010103af
+    const val REQUEST_LEGACY_EXTERNAL_STORAGE = 0x01010603
+    const val EXTRACT_NATIVE_LIBS = 0x010104ea
+    const val USES_CLEARTEXT_TRAFFIC = 0x010104ec
+    const val NETWORK_SECURITY_CONFIG = 0x01010527
+    const val APP_COMPONENT_FACTORY = 0x0101057a
+    const val TARGET_ACTIVITY = 0x01010202
+    const val IS_FEATURE_SPLIT = 0x0101055b
+    const val VERSION_CODE_MAJOR = 0x01010576
+    const val ROUND_ICON = 0x0101052c
+    const val BANNER = 0x010103f2
+    const val LOGO = 0x010102be
     const val REQUIRED = 0x0101028e
 }

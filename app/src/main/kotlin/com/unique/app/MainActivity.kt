@@ -17,7 +17,8 @@ import kotlinx.coroutines.CompletableDeferred
  * It also owns the one thing the bridge cannot do from an application context: putting a
  * system file picker on screen and waiting for what comes back.
  */
-class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.FileSharer {
+class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.FileSharer,
+    UniqueBridge.HostPermissions {
 
     /**
      * The pick currently on screen, if any.
@@ -28,6 +29,15 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
      * this is a suspending function and everything else it does is too.
      */
     private var pending: CompletableDeferred<List<Uri>>? = null
+
+    /**
+     * The runtime-permission request currently on screen, if any.
+     *
+     * Same shape and the same reason as [pending]: `FlutterActivity` extends the platform
+     * `Activity`, so `registerForActivityResult` is unavailable and the request-code path
+     * is what there is.
+     */
+    private var pendingPermissions: CompletableDeferred<Map<String, Boolean>>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,11 +51,13 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
         UniqueBridge.attach(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         UniqueBridge.picker = this
         UniqueBridge.sharer = this
+        UniqueBridge.hostPermissions = this
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         if (UniqueBridge.picker === this) UniqueBridge.picker = null
         if (UniqueBridge.sharer === this) UniqueBridge.sharer = null
+        if (UniqueBridge.hostPermissions === this) UniqueBridge.hostPermissions = null
         UniqueBridge.detach()
         super.cleanUpFlutterEngine(flutterEngine)
     }
@@ -55,8 +67,90 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
         // whatever the UI is showing a spinner for.
         pending?.complete(emptyList())
         pending = null
+        pendingPermissions?.complete(emptyMap())
+        pendingPermissions = null
         if (UniqueBridge.picker === this) UniqueBridge.picker = null
+        if (UniqueBridge.hostPermissions === this) UniqueBridge.hostPermissions = null
         super.onDestroy()
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Host runtime permissions
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * Asks Android for permissions on UNIQUE's own behalf and reports what it granted.
+     *
+     * This is what makes the per-app permission switches usable. UNIQUE can only ever
+     * narrow what it holds, so a group UNIQUE does not hold is a group no instance can be
+     * given — and until now the switch for it was simply disabled, which left the user
+     * looking at "needs UNIQUE permission" with nothing to press. Now pressing it asks.
+     *
+     * The answer is read back from the platform rather than from the callback's result
+     * array alone, because the two disagree in one case that matters: a permission already
+     * held is not re-reported, and a partial grant (coarse location without fine) comes
+     * back as one denial and one grant for what the user experiences as one decision.
+     */
+    override suspend fun request(permissions: List<String>): Map<String, Boolean> {
+        val wanted = permissions.filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (wanted.isEmpty()) return permissions.associateWith { true }
+
+        pendingPermissions?.complete(emptyMap())
+        val deferred = CompletableDeferred<Map<String, Boolean>>()
+        pendingPermissions = deferred
+        return try {
+            requestPermissions(wanted.toTypedArray(), REQUEST_HOST_PERMISSIONS)
+            deferred.await()
+            // Whatever the callback said, the platform is the record.
+            permissions.associateWith {
+                checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+        } catch (t: Throwable) {
+            pendingPermissions = null
+            permissions.associateWith { false }
+        }
+    }
+
+    /**
+     * Whether Android has stopped offering a dialog for this permission.
+     *
+     * "Not granted and no rationale" is the platform's own definition of *don't ask
+     * again* — but only after the first request, because it is also true before one. This
+     * is called after a refused request, which is exactly when it means what it says.
+     */
+    override fun permanentlyDenied(permission: String): Boolean =
+        checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            !shouldShowRequestPermissionRationale(permission)
+
+    override fun openAppSettings(): Boolean = runCatching {
+        startActivity(
+            Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        true
+    }.getOrElse { false }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (requestCode == REQUEST_HOST_PERMISSIONS) {
+            val deferred = pendingPermissions
+            pendingPermissions = null
+            deferred?.complete(
+                permissions.mapIndexed { i, name ->
+                    name to (grantResults.getOrNull(i) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED)
+                }.toMap()
+            )
+            return
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
     /**
@@ -141,5 +235,6 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
 
     private companion object {
         const val REQUEST_PICK_APKS = 0x5041
+        const val REQUEST_HOST_PERMISSIONS = 0x5042
     }
 }

@@ -15,14 +15,35 @@ enum class PermissionGroup(val label: String, val permissions: List<String>) {
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.ACCESS_MEDIA_LOCATION",
         "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
     )),
     NOTIFICATIONS("Notifications", listOf("android.permission.POST_NOTIFICATIONS")),
     CONTACTS("Contacts", listOf(
         "android.permission.READ_CONTACTS",
         "android.permission.WRITE_CONTACTS",
+        "android.permission.GET_ACCOUNTS",
     )),
-    PHONE("Phone", listOf("android.permission.READ_PHONE_STATE"));
+    CALENDAR("Calendar", listOf(
+        "android.permission.READ_CALENDAR",
+        "android.permission.WRITE_CALENDAR",
+    )),
+    // "Nearby devices" is what the Android settings screen calls this group, and the three
+    // Bluetooth permissions are what an app has had to ask for since Android 12.
+    NEARBY_DEVICES("Nearby devices", listOf(
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_ADVERTISE",
+        "android.permission.NEARBY_WIFI_DEVICES",
+    )),
+    PHYSICAL_ACTIVITY("Physical activity", listOf("android.permission.ACTIVITY_RECOGNITION")),
+    BODY_SENSORS("Body sensors", listOf("android.permission.BODY_SENSORS")),
+    PHONE("Phone", listOf(
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.READ_PHONE_NUMBERS",
+    ));
 
     companion object {
         fun of(permission: String): PermissionGroup? =

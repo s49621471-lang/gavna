@@ -39,7 +39,17 @@ public class ProbeSecondActivity extends Activity {
                 + "extra=" + String.valueOf(getIntent().getStringExtra("probe.second.extra")) + "\n"
                 + "filesDir=" + getFilesDir().getAbsolutePath() + "\n"
                 + "taskId=" + getTaskId() + "\n"
-                + "pid=" + android.os.Process.myPid() + "\n";
+                + "pid=" + android.os.Process.myPid() + "\n"
+                // This Activity declares android:screenOrientation="landscape". The
+                // platform builds the window from the *stub's* manifest entry, where the
+                // orientation is unspecified, so what the app gets here is whatever UNIQUE
+                // put back - which is the whole of "games opened in portrait".
+                + "requestedOrientation=" + getRequestedOrientation() + "\n"
+                + "configOrientation=" + getResources().getConfiguration().orientation + "\n"
+                + "windowHardwareAccelerated="
+                + ((getWindow().getAttributes().flags
+                        & android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED) != 0)
+                + "\n";
         try {
             File f = new File(getFilesDir(), RESULT_FILE);
             FileOutputStream out = new FileOutputStream(f, false);

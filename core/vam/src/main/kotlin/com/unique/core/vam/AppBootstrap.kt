@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
+import android.content.pm.ProviderInfo
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
@@ -195,7 +196,21 @@ object AppBootstrap {
         announce(hostContext, params, VirtualProviderRouter.ROUTER_METHOD_SLOT_STARTING)
 
     private fun announce(hostContext: Context, params: VirtualLaunchParams, method: String) {
-        val host = hostPackage ?: return
+        // `hostPackage` is set part-way through the graft, and the *starting* announcement
+        // is made before the graft begins — so on a cold process this read was null and
+        // this method returned having done nothing. Which is precisely the case the
+        // announcement exists for: the caller in `:core` re-warms a slot it believes is
+        // dead, that start queues behind a main thread busy grafting for tens of seconds,
+        // and ActivityManager kills the process it was trying to help:
+        //
+        //   PROVIDER_READY_NOT_SEEN slot=0 vuid=0 waitedMillis=45147 rewarms=2
+        //   ANR in com.unique:vapp0  Reason: executing service …ServiceStub_p0_s6
+        //   Killing 5384:com.unique:vapp0/u0a108 (adj 0): bg anr
+        //
+        // Before the graft the context still *is* UNIQUE's, so its package name is the
+        // right answer and the only one available. Afterwards `hostPackage` is set and is
+        // used, because by then the context reports the guest.
+        val host = hostPackage ?: hostContext.packageName
         Thread({
             runCatching {
                 hostContext.contentResolver
@@ -263,6 +278,16 @@ object AppBootstrap {
         installLoadedApk(activityThreadClass, activityThread, params.packageName, loadedApk)
         rebindBoundApplication(activityThread, appInfo, loadedApk, params.processName)
 
+        // The guest's resources exist from here on, which is what turns a meta-data
+        // *reference* into the value the platform would have put in the bundle. Done
+        // before anything can read `ApplicationInfo.metaData` - a provider's onCreate is
+        // the earliest such reader, and Play services is the loudest.
+        guestResources = runCatching {
+            Reflect.findMethod(loadedApk.javaClass, "getResources")?.invoke(loadedApk)
+                as? android.content.res.Resources
+        }.getOrNull()
+        appInfo.metaData = GuestMetaData.bundle(manifest.applicationMetaDataEntries, guestResources)
+
         // The instance's own identity, read from runtime/ before any guest code runs.
         // Without it every instance of every app reports the same ANDROID_ID and the same
         // Build fields, so anything that fingerprints the device sees two clones as one
@@ -294,11 +319,7 @@ object AppBootstrap {
             packageName = params.packageName,
             manifest = manifest,
             applicationInfo = appInfo,
-            activityInfoOf = { className ->
-                resolveActivity(manifest, className)?.let { entry ->
-                    buildActivityInfo(manifest, appInfo, params, entry)
-                }
-            },
+            components = guestComponents(manifest, appInfo, params),
             hostContext = hostContext,
             apkPath = baseApk.absolutePath,
         )
@@ -412,6 +433,15 @@ object AppBootstrap {
             )
         }
 
+        // Must precede the `mount` hook below: the volume rewrite it installs reads the
+        // instance's external root from here, and an unprepared one installs nothing.
+        runCatching { VirtualExternalStorage.prepare(hostContext, effective) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.STORAGE, "EXTERNAL_STORAGE_PREPARE_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         // Every service whose interception is nothing but the caller's identity. The list
         // and the reason for each entry are in VirtualIdentityHooks; three of them are
         // there because a guest crashed on this device without them.
@@ -451,12 +481,32 @@ object AppBootstrap {
             )
         }
 
+        // The window attributes the platform used the stub's copy of. Registered before
+        // `onCreate` because a guest may start its first Activity from there.
+        runCatching { VirtualActivityLifecycle.install(ready) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.LAUNCH, "ACTIVITY_LIFECYCLE_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         Diagnostics.vuid = params.vuid
         Diagnostics.packageName = params.packageName
 
         // Last, and deliberately so: everything above is what the guest's own `onCreate`
         // is about to reach. See [runApplicationOnCreate].
         runApplicationOnCreate(activityThreadClass, activityThread, application as Application)
+
+        // Again, now that `onCreate` has run.
+        //
+        // `System.loadLibrary` overwhelmingly happens in a static initialiser or in
+        // `onCreate`, and the redirector hooks what is loaded *at the moment it runs*. It
+        // used to run after `onCreate` for exactly that reason; moving `onCreate` to the
+        // end of the graft silently took that away, leaving every such library covered
+        // only by the load-watch — which catches the next library, not the one already
+        // mapped. The call is idempotent, so the second pass costs one walk of the
+        // process's `.so` list and closes the window.
+        installIoRedirection(hostContext, effective, appInfo)
 
         Diagnostics.info(
             DiagChannel.LAUNCH, "BOOTSTRAP_OK",
@@ -824,8 +874,47 @@ object AppBootstrap {
 
             // FLAG_HAS_CODE makes the platform build a class loader; FLAG_INSTALLED stops
             // framework paths that treat an uninstalled package as absent.
-            flags = ApplicationInfo.FLAG_HAS_CODE or FLAG_INSTALLED
+            //
+            // The screen-support flags are not decoration. `CompatibilityInfo` reads them
+            // and, when they are absent, decides the app predates the screen sizes this
+            // device has and puts it in *screen compatibility mode* - a scaled, letterboxed
+            // window with the density lied about. PackageParser sets them for anything with
+            // a modern target SDK, so leaving them clear was UNIQUE telling the platform
+            // every guest was an Android 1.5 app.
+            flags = ApplicationInfo.FLAG_HAS_CODE or FLAG_INSTALLED or
+                ApplicationInfo.FLAG_SUPPORTS_SMALL_SCREENS or
+                ApplicationInfo.FLAG_SUPPORTS_NORMAL_SCREENS or
+                ApplicationInfo.FLAG_SUPPORTS_LARGE_SCREENS or
+                ApplicationInfo.FLAG_SUPPORTS_XLARGE_SCREENS or
+                ApplicationInfo.FLAG_SUPPORTS_SCREEN_DENSITIES or
+                ApplicationInfo.FLAG_RESIZEABLE_FOR_SCREENS or
+                ApplicationInfo.FLAG_ALLOW_BACKUP
             if (manifest.hasCode.not()) flags = flags and ApplicationInfo.FLAG_HAS_CODE.inv()
+            // The application-level default every activity inherits. `Activity.attach`
+            // reads the *activity's* copy, but plenty of framework and library code reads
+            // this one - and a `PhoneWindow` created outside an Activity (a Toast, a
+            // Dialog on the application context) takes its renderer from here.
+            if (manifest.hardwareAccelerated) {
+                flags = flags or ApplicationInfo.FLAG_HARDWARE_ACCELERATED
+            }
+            if (manifest.largeHeap) flags = flags or ApplicationInfo.FLAG_LARGE_HEAP
+            if (manifest.supportsRtl) flags = flags or ApplicationInfo.FLAG_SUPPORTS_RTL
+            if (manifest.extractNativeLibs != false) {
+                flags = flags or ApplicationInfo.FLAG_EXTRACT_NATIVE_LIBS
+            }
+            // `Environment`'s legacy-view decision and `StorageManager`'s mount mode both
+            // read this private flag; an app that asked for legacy storage and is denied it
+            // sees an empty external directory it wrote to yesterday.
+            if (manifest.requestLegacyExternalStorage) {
+                runCatching {
+                    val field = ApplicationInfo::class.java.getDeclaredField("privateFlags")
+                        .apply { isAccessible = true }
+                    val bit = ApplicationInfo::class.java
+                        .getDeclaredField("PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE")
+                        .apply { isAccessible = true }.getInt(null)
+                    field.setInt(this, field.getInt(this) or bit)
+                }
+            }
             // After the assignment above, not before it: an earlier version set this first
             // and the line below wiped it, which is the quiet kind of wrong — the app runs
             // and its cleartext policy is the host's.
@@ -936,6 +1025,53 @@ object AppBootstrap {
         Reflect.set(boundClass, "appInfo", bound, appInfo)
         Reflect.set(boundClass, "info", bound, loadedApk)
         Reflect.set(boundClass, "processName", bound, processName)
+        renameProcess(processName)
+    }
+
+    /**
+     * Makes `/proc/self/cmdline` say what the guest's process is called.
+     *
+     * `ActivityThread.handleBindApplication` does exactly this for an installed app:
+     *
+     * ```java
+     * Process.setArgV0(data.processName);
+     * ```
+     *
+     * and it ran before the graft, with UNIQUE's own name — so every guest's
+     * `/proc/self/cmdline` read `com.unique:vapp0`. That file is the single most common
+     * thing an app checks when it wants to know whether it is running where it thinks it
+     * is: it is one `read()` with no permission, no API and no way for UNIQUE to answer it
+     * afterwards. Java-side process name is already the guest's, which made the mismatch
+     * *more* obvious rather than less.
+     *
+     * Setting argv[0] is what the platform itself does, on the same thread, with the same
+     * method. It changes nothing the system tracks — `ActivityManagerService` keys
+     * processes by pid and holds the stub's name in its own record — and it is not
+     * reversible, which is why it happens once, here, before any guest code runs.
+     */
+    private fun renameProcess(processName: String) {
+        val result = runCatching {
+            val clazz = Reflect.findClass("android.os.Process") ?: error("no android.os.Process")
+            val method = Reflect.findMethod(clazz, "setArgV0", String::class.java)
+                ?: error("no Process.setArgV0(String)")
+            method.invoke(null, processName)
+        }
+        if (result.isSuccess) {
+            Diagnostics.info(
+                DiagChannel.PROCESS, "PROCESS_RENAMED",
+                mapOf("argv0" to processName),
+            )
+        } else {
+            // Not fatal: the guest runs, and the only cost is that a process-name check
+            // inside it sees UNIQUE. Reported because that cost is invisible otherwise.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROCESS_RENAME_FAILED",
+                mapOf(
+                    "argv0" to processName,
+                    "error" to (result.exceptionOrNull()?.toString() ?: "?"),
+                ),
+            )
+        }
     }
 
     /**
@@ -1115,12 +1251,116 @@ object AppBootstrap {
             exported = entry.exported
             enabled = entry.enabled
             permission = entry.permission
-            // The stub's window has already been created by the system, so soft-input and
-            // resize behaviour is inherited from it; per-activity fidelity for those is
-            // phase 3 work and is recorded as such rather than silently approximated.
-            softInputMode = 0
+            labelRes = entry.labelResId
+            if (entry.labelResId == 0 && entry.labelText != null) nonLocalizedLabel = entry.labelText
+            if (entry.iconResId != 0) icon = entry.iconResId
+            metaData = GuestMetaData.bundle(entry.metaDataEntries, guestResources)
+            // `Activity.attach` reads this and nothing else to decide whether the window
+            // gets a hardware renderer:
+            //
+            //     mWindow.setWindowManager(…, (info.flags & FLAG_HARDWARE_ACCELERATED) != 0)
+            //
+            // Leaving `flags` at zero therefore put every virtual app on the software
+            // rasteriser. Two symptoms, one cause: everything drew slowly, and anything
+            // that renders through a RenderNode died outright with
+            // "Software rendering doesn't support drawRenderNode".
+            flags = activityFlagsOf(entry)
+            softInputMode = entry.window.softInputMode
+            uiOptions = entry.window.uiOptions
+            documentLaunchMode = entry.window.documentLaunchMode
+            if (entry.window.maxRecents >= 0) maxRecents = entry.window.maxRecents
+            colorMode = entry.window.colorMode
+            if (entry.window.persistableMode >= 0) persistableMode = entry.window.persistableMode
+            // Hidden fields; skipped silently on a release that has renamed them, because
+            // they change how a window animates and is pinned, never whether it opens.
+            if (entry.window.rotationAnimation >= 0) {
+                Reflect.set(
+                    ActivityInfo::class.java, "rotationAnimation", this,
+                    entry.window.rotationAnimation,
+                )
+            }
+            Reflect.set(
+                ActivityInfo::class.java, "lockTaskLaunchMode", this, entry.window.lockTaskMode,
+            )
+            applyResizeMode(this, entry)
         }
     }
+
+    /**
+     * `ActivityInfo.flags`, composed from what the manifest declared.
+     *
+     * The constants are read from the platform class rather than mirrored as numbers, so
+     * `core/common` can stay free of `android.*` without this becoming a table of magic
+     * bits that has to be checked against a release note.
+     */
+    private fun activityFlagsOf(entry: ComponentEntry): Int {
+        val w = entry.window
+        var flags = 0
+        if (w.hardwareAccelerated) flags = flags or ActivityInfo.FLAG_HARDWARE_ACCELERATED
+        if (w.multiprocess) flags = flags or ActivityInfo.FLAG_MULTIPROCESS
+        if (w.finishOnTaskLaunch) flags = flags or ActivityInfo.FLAG_FINISH_ON_TASK_LAUNCH
+        if (w.clearTaskOnLaunch) flags = flags or ActivityInfo.FLAG_CLEAR_TASK_ON_LAUNCH
+        if (w.alwaysRetainTaskState) flags = flags or ActivityInfo.FLAG_ALWAYS_RETAIN_TASK_STATE
+        if (w.stateNotNeeded) flags = flags or ActivityInfo.FLAG_STATE_NOT_NEEDED
+        if (w.excludeFromRecents) flags = flags or ActivityInfo.FLAG_EXCLUDE_FROM_RECENTS
+        if (w.allowTaskReparenting) flags = flags or ActivityInfo.FLAG_ALLOW_TASK_REPARENTING
+        if (w.noHistory) flags = flags or ActivityInfo.FLAG_NO_HISTORY
+        if (w.immersive) flags = flags or ActivityInfo.FLAG_IMMERSIVE
+        if (w.autoRemoveFromRecents) flags = flags or ActivityInfo.FLAG_AUTO_REMOVE_FROM_RECENTS
+        if (w.relinquishTaskIdentity) flags = flags or ActivityInfo.FLAG_RELINQUISH_TASK_IDENTITY
+        if (w.resumeWhilePausing) flags = flags or ActivityInfo.FLAG_RESUME_WHILE_PAUSING
+        // Hidden constants: read by name so a release that removes one costs the guest a
+        // window attribute rather than the launch.
+        if (w.showForAllUsers) flags = flags or hiddenActivityFlag("FLAG_SHOW_FOR_ALL_USERS")
+        if (w.turnScreenOn) flags = flags or hiddenActivityFlag("FLAG_TURN_SCREEN_ON")
+        if (w.showWhenLocked) flags = flags or hiddenActivityFlag("FLAG_SHOW_WHEN_LOCKED")
+        return flags
+    }
+
+    private val hiddenActivityFlags = HashMap<String, Int>()
+
+    @Synchronized
+    private fun hiddenActivityFlag(name: String): Int = hiddenActivityFlags.getOrPut(name) {
+        runCatching {
+            ActivityInfo::class.java.getDeclaredField(name).apply { isAccessible = true }.getInt(null)
+        }.getOrDefault(0)
+    }
+
+    /**
+     * `resizeMode` and the aspect-ratio clamps, which are hidden fields.
+     *
+     * Set by reflection because they are not in the SDK surface, and skipped silently when
+     * a release does not have them: they change how the window is letterboxed, never
+     * whether the activity starts.
+     */
+    private fun applyResizeMode(info: ActivityInfo, entry: ComponentEntry) {
+        val resizeable = entry.window.resizeable
+        if (resizeable != null) {
+            // RESIZE_MODE_RESIZEABLE = 2, RESIZE_MODE_UNRESIZEABLE = 0. Hidden constants
+            // whose values have not moved since they were introduced in API 24.
+            Reflect.set(ActivityInfo::class.java, "resizeMode", info, if (resizeable) 2 else 0)
+        }
+        // The aspect-ratio clamps are private fields with public setters that are hidden
+        // too; the fields are the stable half. An app that pins itself to 16:9 and is
+        // stretched to a 20:9 phone renders with the wrong layout, which reads as UNIQUE
+        // breaking it.
+        if (entry.window.maxAspectRatio > 0f) {
+            Reflect.set(ActivityInfo::class.java, "mMaxAspectRatio", info, entry.window.maxAspectRatio)
+        }
+        if (entry.window.minAspectRatio > 0f) {
+            Reflect.set(ActivityInfo::class.java, "mMinAspectRatio", info, entry.window.minAspectRatio)
+        }
+    }
+
+    /**
+     * The guest's own `Resources`, once its `LoadedApk` exists.
+     *
+     * Meta-data references resolve against these, so an `ActivityInfo` built before the
+     * graft finishes carries the reference id and one built afterwards carries the value.
+     * Both are better than the empty bundle that was there before, and the second is what
+     * the platform would have produced.
+     */
+    @Volatile private var guestResources: android.content.res.Resources? = null
 
     /**
      * Builds the `ServiceInfo` the platform will instantiate a service from.
@@ -1133,15 +1373,113 @@ object AppBootstrap {
         val entry = ready.manifest.components.firstOrNull {
             it.kind == ComponentKind.SERVICE && it.className == className
         } ?: return null
+        return buildServiceInfo(ready.applicationInfo, ready.params, entry)
+    }
+
+    private fun buildServiceInfo(
+        appInfo: ApplicationInfo,
+        params: VirtualLaunchParams,
+        entry: ComponentEntry,
+    ): ServiceInfo {
         return ServiceInfo().apply {
             name = entry.className
-            packageName = ready.params.packageName
-            processName = ready.params.processName
-            applicationInfo = ready.applicationInfo
+            packageName = params.packageName
+            processName = params.processName
+            applicationInfo = appInfo
             exported = entry.exported
             enabled = entry.enabled
             permission = entry.permission
+            labelRes = entry.labelResId
+            if (entry.labelResId == 0 && entry.labelText != null) nonLocalizedLabel = entry.labelText
+            if (entry.iconResId != 0) icon = entry.iconResId
+            // Read by, among others, `android.app.job.JobService`-adjacent libraries and
+            // every SDK that configures itself from its own service entry.
+            metaData = GuestMetaData.bundle(entry.metaDataEntries, guestResources)
+            // `mForegroundServiceType` has only a getter in the SDK surface. The stub's
+            // own declaration is what Android 14 actually checks, but a guest library that
+            // reads its own ServiceInfo back gets a truthful answer this way.
+            if (entry.foregroundServiceType != 0) {
+                Reflect.set(
+                    ServiceInfo::class.java, "mForegroundServiceType", this,
+                    entry.foregroundServiceType,
+                )
+            }
+            if (entry.window.directBootAware) {
+                Reflect.set(ServiceInfo::class.java, "directBootAware", this, true)
+            }
         }
+    }
+
+    /**
+     * The component-info factory the virtual `PackageManager` answers from.
+     *
+     * Built here because this is the one place that holds the manifest, the
+     * `ApplicationInfo` and the launch parameters at the same time — the hook is installed
+     * before `bootstrapped` is set, so it cannot ask [current] for any of them.
+     */
+    private fun guestComponents(
+        manifest: ApkManifest,
+        appInfo: ApplicationInfo,
+        params: VirtualLaunchParams,
+    ): GuestComponents = object : GuestComponents {
+
+        override fun activity(className: String): ActivityInfo? =
+            resolveActivity(manifest, className)?.let { buildActivityInfo(manifest, appInfo, params, it) }
+
+        override fun service(className: String): ServiceInfo? =
+            entry(ComponentKind.SERVICE, className)?.let { buildServiceInfo(appInfo, params, it) }
+
+        override fun provider(className: String): ProviderInfo? =
+            entry(ComponentKind.PROVIDER, className)?.let { buildProviderInfo(appInfo, params, it) }
+
+        override fun receiver(className: String): ActivityInfo? =
+            entry(ComponentKind.RECEIVER, className)
+                ?.let { buildActivityInfo(manifest, appInfo, params, it) }
+
+        override fun activities(): Array<ActivityInfo> = manifest.components
+            .filter { it.kind == ComponentKind.ACTIVITY || it.kind == ComponentKind.ACTIVITY_ALIAS }
+            .map { buildActivityInfo(manifest, appInfo, params, it) }
+            .toTypedArray()
+
+        override fun services(): Array<ServiceInfo> = manifest.services
+            .map { buildServiceInfo(appInfo, params, it) }
+            .toTypedArray()
+
+        override fun providers(): Array<ProviderInfo> = manifest.providers
+            .map { buildProviderInfo(appInfo, params, it) }
+            .toTypedArray()
+
+        override fun receivers(): Array<ActivityInfo> = manifest.receivers
+            .map { buildActivityInfo(manifest, appInfo, params, it) }
+            .toTypedArray()
+
+        private fun entry(kind: ComponentKind, className: String): ComponentEntry? =
+            manifest.components.firstOrNull { it.kind == kind && it.className == className }
+    }
+
+    /**
+     * The `ProviderInfo` a guest's provider is published and reported with.
+     *
+     * `grantUriPermissions` comes from the manifest rather than being hard-coded true, as
+     * it was in both places that built one of these: granting a URI on a provider that
+     * never opted in is UNIQUE widening the guest's own surface.
+     */
+    fun buildProviderInfo(
+        appInfo: ApplicationInfo,
+        params: VirtualLaunchParams,
+        entry: ComponentEntry,
+    ): ProviderInfo = ProviderInfo().apply {
+        name = entry.className
+        packageName = params.packageName
+        processName = params.processName
+        applicationInfo = appInfo
+        authority = entry.authorities.joinToString(";")
+        exported = entry.exported
+        enabled = entry.enabled
+        grantUriPermissions = entry.grantUriPermissions
+        readPermission = entry.readPermission
+        writePermission = entry.writePermission
+        metaData = GuestMetaData.bundle(entry.metaDataEntries, guestResources)
     }
 
     /** Null [className] means the package's launcher activity. */

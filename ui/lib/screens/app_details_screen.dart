@@ -63,9 +63,22 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
       _permissions = permissions;
     });
     if (!result.ok && mounted) {
+      final s = Strings.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text(result.message ?? Strings.of(context).t('common.failed'))),
+          content: Text(result.message ?? s.t('common.failed')),
+          // Only when Android has stopped asking. Offering "Settings" for an ordinary
+          // refusal would push the user somewhere they do not need to go.
+          action: result.needsHostSettings
+              ? SnackBarAction(
+                  label: s.t('details.openSettings'),
+                  onPressed: () => state.openHostSettings(),
+                )
+              : null,
+          duration: result.needsHostSettings
+              ? const Duration(seconds: 8)
+              : const Duration(seconds: 4),
+        ),
       );
     }
   }
@@ -168,13 +181,13 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                                   width: 16,
                                   height: 16,
                                   child: CircularProgressIndicator(strokeWidth: 2))
+                              // Enabled even when UNIQUE lacks the permission: turning it
+                              // on asks Android for it first. A disabled switch here left
+                              // the user reading "grant it to UNIQUE" with nothing to
+                              // press and no screen named.
                               : Switch(
                                   value: p.granted,
-                                  // Disabled, not merely off: UNIQUE can only narrow what
-                                  // it holds, so a switch that moved here would do nothing.
-                                  onChanged: p.blockedByHost
-                                      ? null
-                                      : (v) => _togglePermission(p, v),
+                                  onChanged: (v) => _togglePermission(p, v),
                                 ),
                         ),
                         if (p != _permissions!.last) const Divider(),

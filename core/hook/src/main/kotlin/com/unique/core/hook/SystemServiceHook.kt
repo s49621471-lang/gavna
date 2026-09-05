@@ -60,14 +60,41 @@ object SystemServiceHook {
             "package", "android.content.pm.IPackageManager\$Stub",
             listOf(ServiceTarget.SingletonRef("android.app.ActivityThread", "sPackageManager")),
         ),
-        ServiceTarget("notification", "android.app.INotificationManager\$Stub"),
+        // `NotificationManager.sService` is a **static** field, filled by the first
+        // `getService()` anywhere in the process and never consulted again. Patching only
+        // the `ServiceManager` cache left whatever the guest asked before the hook — and
+        // `areNotificationsEnabled()` in an `Application.onCreate` is exactly that ask —
+        // holding the raw interface for the life of the process:
+        //
+        //   SecurityException: Caller not system or systemui or same package: uid 10302
+        //       does not have android.permission.STATUS_BAR_SERVICE
+        //     at NotificationManager.areNotificationsEnabled          (killed ChatGPT)
+        //
+        // Running `onCreate` last removes the common case; re-pointing the field removes
+        // the class of it, including UNIQUE's own code and the framework touching it first.
+        ServiceTarget(
+            "notification", "android.app.INotificationManager\$Stub",
+            listOf(ServiceTarget.SingletonRef("android.app.NotificationManager", "sService")),
+        ),
         ServiceTarget("appops", "com.android.internal.app.IAppOpsService\$Stub"),
         ServiceTarget("alarm", "android.app.IAlarmManager\$Stub"),
         ServiceTarget("jobscheduler", "android.app.job.IJobScheduler\$Stub"),
-        ServiceTarget("window", "android.view.IWindowManager\$Stub"),
+        // `WindowManagerGlobal.sWindowManagerService` is the same shape of static cache,
+        // and 60 of the 63 surveyed apps reach `WindowManager`.
+        ServiceTarget(
+            "window", "android.view.IWindowManager\$Stub",
+            listOf(ServiceTarget.SingletonRef(
+                "android.view.WindowManagerGlobal", "sWindowManagerService",
+            )),
+        ),
         ServiceTarget("clipboard", "android.content.IClipboard\$Stub"),
         ServiceTarget("account", "android.accounts.IAccountManager\$Stub"),
-        ServiceTarget("permissionmgr", "android.permission.IPermissionManager\$Stub"),
+        // `ActivityThread.sPermissionManager`, cached the moment anything asks whether it
+        // should show a permission rationale.
+        ServiceTarget(
+            "permissionmgr", "android.permission.IPermissionManager\$Stub",
+            listOf(ServiceTarget.SingletonRef("android.app.ActivityThread", "sPermissionManager")),
+        ),
         ServiceTarget("media_session", "android.media.session.ISessionManager\$Stub"),
 
         // Services that take the caller's own package name and check it against the
@@ -95,7 +122,18 @@ object SystemServiceHook {
         //     at Environment.isExternalStorageManager        -> clear.una died on its first frame
         ServiceTarget("mount", "android.os.storage.IStorageManager\$Stub"),
         ServiceTarget("phone", "com.android.internal.telephony.ITelephony\$Stub"),
-        ServiceTarget("download", "android.app.IDownloadManager\$Stub"),
+        // No `download` entry, and that is a correction rather than an omission.
+        //
+        // `Context.DOWNLOAD_SERVICE` is the string "download", but there is no binder
+        // service behind it: `SystemServiceRegistry` builds `DownloadManager` from a
+        // `ContentResolver`, and everything it does goes to `content://downloads`. So the
+        // target resolved to nothing, ten times per device run:
+        //
+        //   IDENTITY_HOOK_FAILED service=download reason=service not available
+        //
+        // A guest's downloads travel the provider path, which already carries UNIQUE's
+        // attribution source. Rule 8: a hook that binds to nothing is removed, not left
+        // looking installed.
         ServiceTarget("device_policy", "android.app.admin.IDevicePolicyManager\$Stub"),
         ServiceTarget("media.camera", "android.hardware.ICameraService\$Stub"),
         ServiceTarget("telecom", "com.android.internal.telecom.ITelecomService\$Stub"),
@@ -229,15 +267,19 @@ object SystemServiceHook {
     private fun patchSingleton(ref: ServiceTarget.SingletonRef, shimmed: Any): Boolean = runCatching {
         val owner = Reflect.findClass(ref.className) ?: return false
         val field = Reflect.findField(owner, ref.fieldName) ?: return false
-        val holder = field.get(null) ?: return false
+        val holder = field.get(null)
 
         val singletonClass = Reflect.findClass("android.util.Singleton")
-        if (singletonClass != null && singletonClass.isInstance(holder)) {
+        if (holder != null && singletonClass != null && singletonClass.isInstance(holder)) {
             val instance = Reflect.findField(singletonClass, "mInstance") ?: return false
             instance.set(holder, shimmed)
             return true
         }
-        // A plain static field holding the interface directly.
+        // A plain static field holding the interface directly - written whether or not it
+        // is already populated. An empty one is the *interesting* case: filling it now is
+        // what stops the framework resolving the service itself later, on a code path
+        // (`NotificationManager.getService`) that never consults `ServiceManager` twice.
+        if (!field.type.isInstance(shimmed)) return false
         field.set(null, shimmed)
         true
     }.getOrDefault(false)

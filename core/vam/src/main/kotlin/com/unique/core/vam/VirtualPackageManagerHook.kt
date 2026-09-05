@@ -1,6 +1,7 @@
 package com.unique.core.vam
 
 import android.content.ComponentName
+import android.content.Intent
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
@@ -45,31 +46,20 @@ object VirtualPackageManagerHook {
         packageName: String,
         manifest: ApkManifest,
         applicationInfo: ApplicationInfo,
-        activityInfoOf: (String) -> Any?,
+        components: GuestComponents,
         hostContext: Context? = null,
         apkPath: String? = null,
     ): Boolean {
         if (installedFor == packageName) return true
 
         if (hostContext != null && apkPath != null) {
-            archiveSignatures = loadArchiveSignatures(hostContext, apkPath)
-            Diagnostics.info(
-                DiagChannel.LAUNCH, "SIGNATURES_LOADED",
-                mapOf(
-                    "package" to packageName,
-                    "signers" to signerCount(archiveSignatures).toString(),
-                    "hasSigningInfo" to (
-                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-                            archiveSignatures?.signingInfo != null
-                        ).toString(),
-                ),
-            )
+            startSignatureLoad(hostContext, apkPath, packageName)
         }
 
         val target = SystemServiceHook.TARGETS.first { it.serviceName == "package" }
         val report = SystemServiceHook.install(
             target,
-            shims(packageName, manifest, applicationInfo, activityInfoOf),
+            shims(packageName, manifest, applicationInfo, components),
         )
         if (!report.installed) {
             Diagnostics.error(
@@ -90,7 +80,7 @@ object VirtualPackageManagerHook {
         packageName: String,
         manifest: ApkManifest,
         applicationInfo: ApplicationInfo,
-        activityInfoOf: (String) -> Any?,
+        components: GuestComponents,
     ): List<MethodShim> = listOf(
 
         // The one LoadedApk depends on. Returning null here is what makes the platform
@@ -98,7 +88,7 @@ object VirtualPackageManagerHook {
         shim("getPackageInfo") {
             replaceWith { call ->
                 if (call.firstArgOf<String>() == packageName) {
-                    buildPackageInfo(packageName, manifest, applicationInfo)
+                    buildPackageInfo(packageName, manifest, applicationInfo, components, flagsOf(call))
                 } else call.proceed()
             }
         },
@@ -113,8 +103,146 @@ object VirtualPackageManagerHook {
             replaceWith { call ->
                 val component = call.firstArgOf<ComponentName>()
                 if (component != null && component.packageName == packageName) {
-                    activityInfoOf(component.className) ?: call.proceed()
+                    components.activity(component.className) ?: call.proceed()
                 } else call.proceed()
+            }
+        },
+
+        // The three siblings of `getActivityInfo`. Without them a guest asking the
+        // platform about its own service — which every library that starts one by
+        // `ComponentName` does — gets `NameNotFoundException` for a component that is
+        // right there in its manifest.
+        shim("getServiceInfo") {
+            replaceWith { call ->
+                val component = call.firstArgOf<ComponentName>()
+                if (component != null && component.packageName == packageName) {
+                    components.service(component.className) ?: call.proceed()
+                } else call.proceed()
+            }
+        },
+
+        shim("getReceiverInfo") {
+            replaceWith { call ->
+                val component = call.firstArgOf<ComponentName>()
+                if (component != null && component.packageName == packageName) {
+                    components.receiver(component.className) ?: call.proceed()
+                } else call.proceed()
+            }
+        },
+
+        shim("getProviderInfo") {
+            replaceWith { call ->
+                val component = call.firstArgOf<ComponentName>()
+                if (component != null && component.packageName == packageName) {
+                    components.provider(component.className) ?: call.proceed()
+                } else call.proceed()
+            }
+        },
+
+        // Intent resolution about the guest's own components. Scoped to intents that
+        // name the guest - see GuestIntentResolution for why the scope is that narrow.
+        shim("resolveIntent") {
+            matchMethods { it.name == "resolveIntent" || it.name == "resolveService" }
+            replaceWith { call ->
+                val intent = call.firstArgOf<Intent>()
+                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) call.proceed()
+                else {
+                    val matches = if (call.method.name == "resolveService") {
+                        GuestIntentResolution.services(manifest, components, intent!!, packageName)
+                    } else {
+                        GuestIntentResolution.activities(manifest, components, intent!!, packageName)
+                    }
+                    matches.firstOrNull() ?: call.proceed()
+                }
+            }
+        },
+
+        shim("queryIntent") {
+            matchMethods { method ->
+                method.name == "queryIntentActivities" || method.name == "queryIntentServices" ||
+                    method.name == "queryIntentReceivers"
+            }
+            replaceWith { call ->
+                val intent = call.firstArgOf<Intent>()
+                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) call.proceed()
+                else {
+                    val matches = when (call.method.name) {
+                        "queryIntentServices" ->
+                            GuestIntentResolution.services(manifest, components, intent!!, packageName)
+                        "queryIntentReceivers" ->
+                            GuestIntentResolution.receivers(manifest, components, intent!!, packageName)
+                        else ->
+                            GuestIntentResolution.activities(manifest, components, intent!!, packageName)
+                    }
+                    // An empty answer is handed back to the platform rather than returned:
+                    // a guest may legitimately scope an intent to itself for a component
+                    // it does not have, and "no match" from here would hide a real one.
+                    if (matches.isEmpty()) call.proceed()
+                    else GuestIntentResolution.asReturnValue(call.method.returnType, matches)
+                        ?: call.proceed()
+                }
+            }
+        },
+
+        // `ContentResolver` asks this before every provider acquisition, and a guest's own
+        // authority is one the platform has never heard of.
+        shim("resolveContentProvider") {
+            replaceWith { call ->
+                val authority = call.firstArgOf<String>()
+                val entry = authority?.let { name ->
+                    manifest.providers.firstOrNull { name in it.authorities }
+                }
+                if (entry == null) call.proceed()
+                else components.provider(entry.className) ?: call.proceed()
+            }
+        },
+
+        /*
+         * What the guest sees when it enumerates the device's applications.
+         *
+         * Two wrongs, and the first is the one that breaks ordinary code: the guest's own
+         * package is *absent*, because the platform has never installed it. An app that
+         * looks itself up in `getInstalledPackages()` — to read its own install time, to
+         * check whether a companion app is present, to build an "apps on this device"
+         * list — concludes it is not installed.
+         *
+         * The second is that UNIQUE is present. Its package, its stub pool and its
+         * processes are exactly what a virtualization check looks for, and a guest has no
+         * business seeing the app it is running inside; §"neither should be able to tell".
+         *
+         * Nothing else is touched. Every other installed app stays, because that is what
+         * the device really has and inventing one would be worse than either problem.
+         */
+        shim("installedPackages") {
+            matchMethods { method ->
+                method.name == "getInstalledPackages" || method.name == "getInstalledApplications" ||
+                    method.name == "getPackagesHoldingPermissions"
+            }
+            // `replaceWith` rather than `rewriteResult`, because completing the list needs
+            // the *flags* the caller passed, and only the call carries those.
+            replaceWith { call ->
+                val result = call.proceed()
+                val list = ParceledLists.unwrap(result) ?: return@replaceWith result
+                val host = hostPackageName
+                val kept = ArrayList<Any?>(list.size + 1)
+                var changed = false
+                var sawGuest = false
+                for (element in list) {
+                    val name = packageNameOf(element)
+                    if (name == host) { changed = true; continue }
+                    if (name == packageName) sawGuest = true
+                    kept += element
+                }
+                if (!sawGuest) {
+                    val own: Any? =
+                        if (call.method.name == "getInstalledApplications") applicationInfo
+                        else buildPackageInfo(
+                            packageName, manifest, applicationInfo, components, flagsOf(call),
+                        )
+                    if (own != null) { kept += own; changed = true }
+                }
+                if (!changed) result
+                else ParceledLists.wrap(call.method.returnType, kept) ?: result
             }
         },
 
@@ -155,11 +283,65 @@ object VirtualPackageManagerHook {
     @Volatile
     var hostPackageName: String = "android"
 
+    /** The package name an enumerated entry carries, whichever info class it is. */
+    private fun packageNameOf(element: Any?): String? = when (element) {
+        null -> null
+        is PackageInfo -> element.packageName
+        is ApplicationInfo -> element.packageName
+        else -> null
+    }
+
+    /**
+     * The `flags` argument, found by shape rather than by index.
+     *
+     * The width changed and the position does not generalise: `getPackageInfo` is
+     * `(String, long flags, int userId)` on API 33+ and `(String, int flags, int userId)`
+     * before it, while `getInstalledPackages` is `(long flags, int userId)` and
+     * `getPackagesHoldingPermissions` puts a `String[]` first.
+     *
+     * The rule that covers all of them: flags became `long` in API 33 and `userId` stayed
+     * `int`, so a `long` parameter *is* the flags. Where there is none, the flags are the
+     * first of the two `int`s — the last one is always `userId`.
+     */
+    private fun flagsOf(call: com.unique.core.common.shim.ShimCall): Long {
+        val types = call.method.parameterTypes
+        val longIndex = types.indexOfFirst { it == Long::class.javaPrimitiveType }
+        if (longIndex >= 0) return (call.args.getOrNull(longIndex) as? Long) ?: 0L
+        val ints = types.withIndex().filter { it.value == Int::class.javaPrimitiveType }
+        if (ints.size < 2) return 0L
+        return ((call.args.getOrNull(ints.first().index) as? Int) ?: 0).toLong()
+    }
+
+    /**
+     * Builds the `PackageInfo`, filling exactly the arrays the caller asked for.
+     *
+     * The flags were ignored, which is not a small omission: `getPackageInfo(pkg,
+     * GET_ACTIVITIES)` came back with `activities == null`, and the caller — a launcher
+     * shortcut helper, a deep-link router, an SDK checking that its own activity is
+     * declared — either NPEs or concludes the app is misconfigured. `GET_META_DATA` is
+     * the same story one level down.
+     */
     private fun buildPackageInfo(
         packageName: String,
         manifest: ApkManifest,
         applicationInfo: ApplicationInfo,
+        components: GuestComponents,
+        flags: Long,
     ): PackageInfo = PackageInfo().apply {
+        fun has(flag: Int) = (flags and flag.toLong()) != 0L
+        if (has(PackageManager.GET_ACTIVITIES)) activities = components.activities()
+        if (has(PackageManager.GET_SERVICES)) services = components.services()
+        if (has(PackageManager.GET_RECEIVERS)) receivers = components.receivers()
+        if (has(PackageManager.GET_PROVIDERS)) providers = components.providers()
+        if (has(PackageManager.GET_PERMISSIONS)) {
+            permissions = manifest.declaredPermissions.map { declared ->
+                android.content.pm.PermissionInfo().apply {
+                    name = declared.name
+                    this.packageName = packageName
+                    protectionLevel = declared.protectionLevel
+                }
+            }.toTypedArray()
+        }
         this.packageName = packageName
         this.applicationInfo = applicationInfo
         versionName = manifest.versionName
@@ -182,7 +364,13 @@ object VirtualPackageManagerHook {
         // checks, licence checks, and every Google API whose key is bound to a signing
         // certificate. A null here is not a missing nicety - it is an app that decides it
         // has been tampered with and refuses to start, which looks like UNIQUE breaking it.
-        archiveSignatures?.let { archive ->
+        // Only when asked. Reading the property waits for the background parse, and the
+        // `getPackageInfo` that `LoadedApk` makes during the graft asks for neither.
+        @Suppress("DEPRECATION")
+        val wantsSignatures = has(PackageManager.GET_SIGNATURES) ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                has(PackageManager.GET_SIGNING_CERTIFICATES))
+        if (wantsSignatures) archiveSignatures?.let { archive ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 signingInfo = archive.signingInfo
             }
@@ -215,8 +403,51 @@ object VirtualPackageManagerHook {
      * verification is exactly the wrong place to have a second implementation: the
      * platform's answer is by definition the one an app would have got if it were
      * installed, including which of v1/v2/v3 it honours and how it handles rotation.
+     *
+     * Loaded on a thread of its own, and waited for only by a caller that actually asked
+     * for signatures. `getPackageArchiveInfo` verifies the APK's signing block, which
+     * means digesting **every byte of the APK** — 2.5 seconds for a 1.6 GB game, on the
+     * main thread, in the middle of a launch:
+     *
+     * ```
+     * MIUIScout App: Enter APP_SCOUT_WARNING State (duration=2501ms … w=159)
+     *   at NativeCrypto.EVP_DigestUpdateDirect
+     *   at ApkSignatureVerifier.verify
+     *   at VirtualPackageManagerHook.loadArchiveSignatures
+     *   at AppBootstrap.graft
+     * ```
+     *
+     * The OEM's hang watchdog saw it before the user did. Nothing in the graft needs the
+     * signature — `LoadedApk` asks for `GET_ACTIVITIES`-less `PackageInfo` — so the work
+     * belongs off the launch path and in front of the first caller who wants the answer.
      */
-    @Volatile private var archiveSignatures: PackageInfo? = null
+    private val signatureLoad = java.util.concurrent.atomic.AtomicReference<
+        java.util.concurrent.Future<PackageInfo?>>()
+
+    /** Blocks until the background parse finishes; null when it was never started. */
+    private val archiveSignatures: PackageInfo?
+        get() = runCatching { signatureLoad.get()?.get() }.getOrNull()
+
+    private fun startSignatureLoad(hostContext: Context, apkPath: String, packageName: String) {
+        val task = java.util.concurrent.FutureTask {
+            val info = loadArchiveSignatures(hostContext, apkPath)
+            Diagnostics.info(
+                DiagChannel.LAUNCH, "SIGNATURES_LOADED",
+                mapOf(
+                    "package" to packageName,
+                    "signers" to signerCount(info).toString(),
+                    "hasSigningInfo" to (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && info?.signingInfo != null
+                        ).toString(),
+                ),
+            )
+            info
+        }
+        signatureLoad.set(task)
+        // A plain thread rather than a pool: it runs once per process and it must not be
+        // a daemon of anything the guest can shut down.
+        Thread(task, "unique-signatures").apply { isDaemon = true }.start()
+    }
 
     /**
      * How many signers the archive actually yielded, whichever form carried them.

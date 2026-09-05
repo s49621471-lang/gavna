@@ -319,11 +319,110 @@ object VirtualActivityManagerHook {
             }
         },
 
+        // What the guest sees when it looks at the process table.
+        //
+        // Registered before `callerIdentity`, which would otherwise claim these methods
+        // for the package rewrite alone and leave the result untouched.
+        shim("runningProcesses") {
+            matchMethods { method ->
+                method.name == "getRunningAppProcesses" || method.name == "getServices"
+            }
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            rewriteResult { result -> rewriteProcessList(result, virtualPackage, hostPackage) }
+        },
+
         shim("callerIdentity") {
             matchMethods { method -> carriesCallerIdentity(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
         },
     )
+
+    /**
+     * Rewrites the process table so a guest sees itself, and not UNIQUE.
+     *
+     * Three separate wrongs in one list, and the first is the one apps notice:
+     *
+     *  - **Its own process is UNIQUE's.** `RunningAppProcessInfo.processName` is
+     *    `com.unique:vapp0` and `pkgList` is `["com.unique"]`, so the extremely common
+     *    "am I in the foreground / is my own process running" check answers *no* about an
+     *    app that is plainly running. It is also the check a virtualization detector makes
+     *    first.
+     *  - **UNIQUE's other processes are visible.** `:core`, `:server` and the WebView probe
+     *    are in the list under UNIQUE's own name, which is a straightforward tell.
+     *  - **So are sibling instances.** Two instances of one app run in two `:vappN`
+     *    processes of the same uid; leaving both in the list lets either see the other,
+     *    which is the isolation this engine exists to provide.
+     *
+     * Everything of UNIQUE's uid other than this process is dropped, and this process is
+     * renamed to the guest's. Processes of *other* apps are untouched: they are what the
+     * platform would have shown, and hiding them would be inventing a device.
+     */
+    private fun rewriteProcessList(result: Any?, virtualPackage: String, hostPackage: String): Any? {
+        val list = ParceledLists.unwrap(result) ?: return null
+        if (list.isEmpty()) return null
+        val myPid = android.os.Process.myPid()
+        val myUid = android.os.Process.myUid()
+        val ready = AppBootstrap.current
+
+        var changed = false
+        val kept = ArrayList<Any?>(list.size)
+        for (element in list) {
+            if (element == null) continue
+            val uid = intField(element, "uid")
+            if (uid != myUid) {
+                kept += element
+                continue
+            }
+            if (intField(element, "pid") != myPid) {
+                // Another of UNIQUE's processes, including a sibling instance.
+                changed = true
+                continue
+            }
+            changed = renameProcessEntry(element, virtualPackage, hostPackage, ready) || changed
+            kept += element
+        }
+        if (!changed) return null
+        return ParceledLists.wrap(
+            if (result is List<*>) List::class.java else result!!.javaClass, kept,
+        )
+    }
+
+    /** Points one entry at the guest. Returns true when anything was written. */
+    private fun renameProcessEntry(
+        element: Any,
+        virtualPackage: String,
+        hostPackage: String,
+        ready: AppBootstrap.Result.Ready?,
+    ): Boolean {
+        var wrote = false
+        val processName = ready?.params?.processName ?: virtualPackage
+        if (Reflect.set(element.javaClass, "processName", element, processName)) wrote = true
+        // `service` on a RunningServiceInfo, whose ComponentName names a stub.
+        runCatching {
+            val field = element.javaClass.getDeclaredField("service").apply { isAccessible = true }
+            val component = field.get(element) as? ComponentName
+            if (component != null && component.packageName == hostPackage) {
+                val guest = StubRouter.parseStubService(component.className)
+                val entry = guest?.let { VirtualServiceRouter.resolve(component.className) }
+                if (entry != null) {
+                    field.set(element, ComponentName(virtualPackage, entry.className))
+                    wrote = true
+                }
+            }
+        }
+        runCatching {
+            val field = element.javaClass.getDeclaredField("pkgList").apply { isAccessible = true }
+            if (field.get(element) is Array<*>) {
+                field.set(element, arrayOf(virtualPackage))
+                wrote = true
+            }
+        }
+        return wrote
+    }
+
+    private fun intField(element: Any, name: String): Int = runCatching {
+        element.javaClass.getDeclaredField(name).apply { isAccessible = true }.getInt(element)
+    }.getOrDefault(-1)
 
     /**
      * Rewrites a service intent onto a stub, or returns it unchanged.
@@ -339,10 +438,31 @@ object VirtualActivityManagerHook {
         val ready = AppBootstrap.current ?: return intent
         val component = intent.component
         if (component == null) {
-            Diagnostics.warn(
-                DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
-                mapOf("action" to (intent.action ?: "-"), "package" to ready.params.packageName),
-            )
+            // Only a bind the guest meant for *itself* is a problem. An intent already
+            // scoped to another package — `pkg=com.android.vending` for Play's licensing
+            // service is the common one — is an ordinary cross-app bind that the platform
+            // resolves correctly, and warning about it filled a device log with thirty
+            // lines that named nothing wrong:
+            //
+            //   SERVICE_INTENT_IMPLICIT action=com.android.vending.licensing.ILicensingService
+            //
+            // The real failure there was a missing `<uses-permission>`, and this line was
+            // pointing away from it.
+            val target = intent.`package`
+            if (target == null || target == ready.params.packageName) {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
+                    mapOf(
+                        "action" to (intent.action ?: "-"),
+                        "package" to ready.params.packageName,
+                    ),
+                )
+            } else {
+                Diagnostics.event(
+                    DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_INTENT_CROSS_APP",
+                    mapOf("action" to (intent.action ?: "-"), "target" to target),
+                )
+            }
             return intent
         }
         if (component.packageName != ready.params.packageName) return intent

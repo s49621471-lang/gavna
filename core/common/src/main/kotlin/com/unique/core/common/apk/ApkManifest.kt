@@ -30,6 +30,77 @@ data class IntentFilterEntry(
             schemes.isNotEmpty()
 }
 
+/**
+ * One `<meta-data>` entry, kept in the form it was compiled in.
+ *
+ * A textual value is not enough. `android:value="@integer/google_play_services_version"`
+ * is a *reference*, and the platform resolves it against the app's own resources before
+ * putting an `int` in `ApplicationInfo.metaData`. Google Play services reads exactly that
+ * int, and a missing or stringified one is a hard stop:
+ *
+ * ```
+ * IllegalStateException: A required meta-data tag in your app's AndroidManifest.xml does
+ *     not exist. You must have the following declaration within the <application>
+ *     element: <meta-data android:name="com.google.android.gms.version" .../>
+ * ```
+ *
+ * So the type and the raw datum travel together, and whoever has the guest's `Resources`
+ * - which only a virtual process does - resolves them.
+ */
+data class MetaDataEntry(
+    val name: String,
+    /** `android:resource`, or 0 when the entry carries a value instead. */
+    val resourceId: Int = 0,
+    /** `android:value`'s compiled type, one of the `BinaryXml.TYPE_*` constants. */
+    val valueType: Int = BinaryXml.TYPE_NULL,
+    /** `android:value`'s compiled datum: an int, a boolean, a float's bits, or a res id. */
+    val valueData: Int = 0,
+    /** `android:value` when it compiled to a literal string. */
+    val valueString: String? = null,
+)
+
+/**
+ * The `<activity>` attributes that decide how the platform builds the window.
+ *
+ * Held as parsed booleans rather than as an `ActivityInfo.flags` bit set because
+ * `core/common` never depends on `android.*`; the bits are composed where the real
+ * constants are in scope. The default of [hardwareAccelerated] is the *application's*
+ * value, which the reader has already resolved - the platform's own two-level default
+ * (application, then activity, then `targetSdk >= 14`) collapsed into one answer.
+ */
+data class WindowAttributes(
+    val hardwareAccelerated: Boolean = true,
+    val softInputMode: Int = 0,
+    val uiOptions: Int = 0,
+    val documentLaunchMode: Int = 0,
+    val maxRecents: Int = -1,
+    val colorMode: Int = 0,
+    val rotationAnimation: Int = -1,
+    val lockTaskMode: Int = 0,
+    val persistableMode: Int = -1,
+    /** Null means "unstated", which the platform resolves from the target SDK. */
+    val resizeable: Boolean? = null,
+    val supportsPictureInPicture: Boolean = false,
+    val maxAspectRatio: Float = 0f,
+    val minAspectRatio: Float = 0f,
+    val excludeFromRecents: Boolean = false,
+    val allowTaskReparenting: Boolean = false,
+    val finishOnTaskLaunch: Boolean = false,
+    val clearTaskOnLaunch: Boolean = false,
+    val alwaysRetainTaskState: Boolean = false,
+    val stateNotNeeded: Boolean = false,
+    val noHistory: Boolean = false,
+    val multiprocess: Boolean = false,
+    val immersive: Boolean = false,
+    val showForAllUsers: Boolean = false,
+    val autoRemoveFromRecents: Boolean = false,
+    val relinquishTaskIdentity: Boolean = false,
+    val resumeWhilePausing: Boolean = false,
+    val showWhenLocked: Boolean = false,
+    val turnScreenOn: Boolean = false,
+    val directBootAware: Boolean = false,
+)
+
 data class ComponentEntry(
     val kind: ComponentKind,
     /** Always fully qualified, `.Foo` and `Foo` already resolved against the package. */
@@ -54,9 +125,28 @@ data class ComponentEntry(
      */
     val foregroundServiceType: Int = 0,
     val authorities: List<String> = emptyList(),
+    /** `<provider>` only. Null means the provider named no permission for that direction. */
+    val readPermission: String? = null,
+    val writePermission: String? = null,
+    /**
+     * `android:grantUriPermissions`.
+     *
+     * Was hard-coded to true wherever a `ProviderInfo` was built, which quietly widened
+     * every guest provider: a provider that never opted in could have a URI grant handed
+     * out for it. The manifest is the only place that decision belongs.
+     */
+    val grantUriPermissions: Boolean = false,
     val targetActivity: String? = null,
     val intentFilters: List<IntentFilterEntry> = emptyList(),
     val metaData: Map<String, String?> = emptyMap(),
+    /** The same entries, still typed, for building the platform's `Bundle`. */
+    val metaDataEntries: List<MetaDataEntry> = emptyList(),
+    /** Meaningful for activities and aliases only; the default for everything else. */
+    val window: WindowAttributes = WindowAttributes(),
+    /** `android:label`/`android:icon` on the component itself. Zero when unset. */
+    val labelResId: Int = 0,
+    val iconResId: Int = 0,
+    val labelText: String? = null,
 ) {
     val hasDeepLink: Boolean get() = intentFilters.any { it.isDeepLink }
 }
@@ -116,6 +206,22 @@ data class ApkManifest(
     val components: List<ComponentEntry>,
     val applicationMetaData: Map<String, String?>,
     val usesNativeLibraries: List<String>,
+    /** The `<application>` meta-data, still typed. See [MetaDataEntry]. */
+    val applicationMetaDataEntries: List<MetaDataEntry> = emptyList(),
+    /**
+     * `android:hardwareAccelerated` on `<application>`, already defaulted.
+     *
+     * The platform's default is `targetSdk >= 14`, and every activity inherits it unless
+     * it says otherwise. Resolved here so no consumer has to re-derive it.
+     */
+    val hardwareAccelerated: Boolean = true,
+    val largeHeap: Boolean = false,
+    val supportsRtl: Boolean = false,
+    val requestLegacyExternalStorage: Boolean = false,
+    val directBootAware: Boolean = false,
+    val roundIconResId: Int = 0,
+    val bannerResId: Int = 0,
+    val logoResId: Int = 0,
 ) {
     val activities: List<ComponentEntry> get() = components.filter { it.kind == ComponentKind.ACTIVITY }
     val services: List<ComponentEntry> get() = components.filter { it.kind == ComponentKind.SERVICE }

@@ -168,6 +168,151 @@ public class ProbeActivity extends Activity {
         }
     }
 
+    /**
+     * What the platform decided about this window, and what the manifest asked for.
+     *
+     * Hardware acceleration is the one that matters. It is not a property an app sets: it
+     * comes from `ActivityInfo.flags`, which `Activity.attach` passes straight to
+     * `Window.setWindowManager`. An engine that substitutes an `ActivityInfo` without that
+     * bit puts every app it hosts on the software rasteriser, and the app has no way to
+     * ask for it back.
+     */
+    private void collectWindow(Map<String, String> out) {
+        int windowFlags = getWindow().getAttributes().flags;
+        out.put("windowFlags", String.valueOf(windowFlags));
+        out.put("windowHardwareAccelerated", String.valueOf(
+                (windowFlags & android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
+                        != 0));
+        out.put("requestedOrientation", String.valueOf(getRequestedOrientation()));
+        out.put("configOrientation",
+                String.valueOf(getResources().getConfiguration().orientation));
+        try {
+            android.content.pm.ActivityInfo info = getPackageManager()
+                    .getActivityInfo(getComponentName(), 0);
+            out.put("activityInfoFlags", String.valueOf(info.flags));
+            out.put("activityInfoHardwareAccelerated", String.valueOf(
+                    (info.flags & android.content.pm.ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0));
+            out.put("activityInfoOrientation", String.valueOf(info.screenOrientation));
+        } catch (Throwable t) {
+            out.put("activityInfoError", t.toString());
+        }
+    }
+
+    /**
+     * What this app sees when it asks the package manager about itself and its device.
+     *
+     * Every one of these is ordinary application code that a virtualized app used to get
+     * a null or an empty list from, because the platform has never installed the package
+     * being asked about.
+     */
+    private void collectPackageManagerView(Map<String, String> out) {
+        android.content.pm.PackageManager pm = getPackageManager();
+        try {
+            out.put("launchIntentForSelf",
+                    String.valueOf(pm.getLaunchIntentForPackage(getPackageName()) != null));
+        } catch (Throwable t) {
+            out.put("launchIntentForSelf", "error: " + t);
+        }
+        try {
+            android.content.pm.ResolveInfo self = pm.resolveActivity(
+                    new Intent(this, ProbeActivity.class), 0);
+            out.put("resolveSelfActivity",
+                    self == null ? "null" : self.activityInfo.name);
+        } catch (Throwable t) {
+            out.put("resolveSelfActivity", "error: " + t);
+        }
+        try {
+            Intent service = new Intent(this, ProbeService.class);
+            out.put("resolveSelfService",
+                    String.valueOf(pm.queryIntentServices(service, 0).size()));
+        } catch (Throwable t) {
+            out.put("resolveSelfService", "error: " + t);
+        }
+        try {
+            android.os.Bundle meta = pm.getApplicationInfo(
+                    getPackageName(),
+                    android.content.pm.PackageManager.GET_META_DATA).metaData;
+            out.put("metaDataPresent", String.valueOf(meta != null));
+            out.put("metaDataNumber", meta == null ? "absent"
+                    : String.valueOf(meta.getInt("com.unique.probe.number", -1)));
+            out.put("metaDataText", meta == null ? "absent"
+                    : String.valueOf(meta.getString("com.unique.probe.text")));
+        } catch (Throwable t) {
+            out.put("metaDataPresent", "error: " + t);
+        }
+        try {
+            android.content.pm.PackageInfo info = pm.getPackageInfo(
+                    getPackageName(),
+                    android.content.pm.PackageManager.GET_ACTIVITIES
+                            | android.content.pm.PackageManager.GET_SERVICES);
+            out.put("ownActivityCount",
+                    String.valueOf(info.activities == null ? -1 : info.activities.length));
+            out.put("ownServiceCount",
+                    String.valueOf(info.services == null ? -1 : info.services.length));
+        } catch (Throwable t) {
+            out.put("ownActivityCount", "error: " + t);
+        }
+        try {
+            boolean sawSelf = false;
+            boolean sawHost = false;
+            for (android.content.pm.PackageInfo p : pm.getInstalledPackages(0)) {
+                if (getPackageName().equals(p.packageName)) sawSelf = true;
+                if ("com.unique".equals(p.packageName)) sawHost = true;
+            }
+            out.put("installedListHasSelf", String.valueOf(sawSelf));
+            out.put("installedListHasHost", String.valueOf(sawHost));
+        } catch (Throwable t) {
+            out.put("installedListHasSelf", "error: " + t);
+        }
+        try {
+            File external = getExternalFilesDir(null);
+            out.put("externalFilesDir", String.valueOf(external));
+            out.put("externalFilesDirWritable", String.valueOf(
+                    external != null && (external.isDirectory() || external.mkdirs())));
+            out.put("externalStorageDirectory",
+                    String.valueOf(android.os.Environment.getExternalStorageDirectory()));
+        } catch (Throwable t) {
+            out.put("externalFilesDir", "error: " + t);
+        }
+        out.put("procCmdline", readCmdline());
+        try {
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            String own = "absent";
+            boolean sawHostProcess = false;
+            java.util.List<android.app.ActivityManager.RunningAppProcessInfo> running =
+                    am.getRunningAppProcesses();
+            if (running != null) {
+                for (android.app.ActivityManager.RunningAppProcessInfo p : running) {
+                    if (p.pid == android.os.Process.myPid()) own = String.valueOf(p.processName);
+                    else if (p.uid == android.os.Process.myUid()) sawHostProcess = true;
+                }
+            }
+            out.put("runningProcessName", own);
+            out.put("runningSawSiblingProcess", String.valueOf(sawHostProcess));
+        } catch (Throwable t) {
+            out.put("runningProcessName", "error: " + t);
+        }
+    }
+
+    /** `/proc/self/cmdline`, which is what a detector reads to learn the real process. */
+    private String readCmdline() {
+        java.io.FileInputStream in = null;
+        try {
+            in = new java.io.FileInputStream("/proc/self/cmdline");
+            byte[] buffer = new byte[256];
+            int read = in.read(buffer);
+            if (read <= 0) return "empty";
+            int end = 0;
+            while (end < read && buffer[end] != 0) end++;
+            return new String(buffer, 0, end, StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "error: " + t;
+        } finally {
+            if (in != null) try { in.close(); } catch (IOException ignored) { }
+        }
+    }
+
     private void collect(Map<String, String> out) throws Exception {
         out.put("packageName", getPackageName());
         out.put("applicationClass", getApplication().getClass().getName());
@@ -199,6 +344,9 @@ public class ProbeActivity extends Activity {
         out.put("appInfoSourceDir", getApplicationInfo().sourceDir);
         out.put("appInfoNativeLibraryDir", String.valueOf(getApplicationInfo().nativeLibraryDir));
         out.put("targetSdk", String.valueOf(getApplicationInfo().targetSdkVersion));
+
+        collectWindow(out);
+        collectPackageManagerView(out);
 
         // A settings read, which is a content-provider call carrying this app's identity.
         //

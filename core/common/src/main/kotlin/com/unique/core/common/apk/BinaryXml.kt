@@ -16,7 +16,7 @@ import java.nio.ByteOrder
  * implemented; unknown chunk types are skipped by their declared size rather than
  * treated as an error, which is what keeps this forward-compatible.
  */
-internal object BinaryXml {
+object BinaryXml {
 
     // ResChunk_header.type
     const val RES_NULL_TYPE = 0x0000

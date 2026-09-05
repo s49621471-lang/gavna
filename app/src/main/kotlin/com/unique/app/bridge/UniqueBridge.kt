@@ -173,6 +173,7 @@ object UniqueBridge {
                 InstancePermissions.rows(context, (a["vuid"] as Number).toInt())
                     .map { it.toMap() }
             "setInstancePermission" -> setInstancePermission(context, a)
+            "openHostSettings" -> openHostSettings()
 
             else -> throw UnsupportedOperationException("Unknown bridge method: $method")
         }
@@ -509,6 +510,41 @@ object UniqueBridge {
         )
     }
 
+    /**
+     * Asks the platform for a permission on UNIQUE's own behalf.
+     *
+     * Only the UI process can do this: a runtime permission is granted through a dialog
+     * owned by an `Activity`, and `:vappN` has none of its own — its windows belong to
+     * stub activities that are, from the platform's point of view, UNIQUE's.
+     */
+    interface HostPermissions {
+        /** Shows the platform dialog and returns what was granted. */
+        suspend fun request(permissions: List<String>): Map<String, Boolean>
+
+        /** True when the platform will no longer show a dialog for [permission]. */
+        fun permanentlyDenied(permission: String): Boolean
+
+        /** Opens UNIQUE's own entry in system settings, for the permanently-denied case. */
+        fun openAppSettings(): Boolean
+    }
+
+    @Volatile
+    var hostPermissions: HostPermissions? = null
+
+    /**
+     * Turns one permission group on or off for one instance.
+     *
+     * Turning one *on* is where this stopped being a one-liner. UNIQUE can only narrow
+     * what it holds, so a group UNIQUE does not hold could never be granted — and the
+     * switch for it was simply disabled, leaving the user with a row that says "needs
+     * UNIQUE permission" and no way to give it one. The permission has to be asked for
+     * first, from the UI activity, and only then does the instance's grant mean anything.
+     *
+     * Three outcomes, all reported rather than swallowed: granted; refused this time
+     * (`ok` false, the switch stays off); or refused permanently, where the platform will
+     * not show a dialog again and the only remaining route is UNIQUE's own settings page,
+     * which the caller may open with `openHostSettings`.
+     */
     private suspend fun setInstancePermission(
         context: Context,
         a: Map<String, Any?>,
@@ -517,11 +553,58 @@ object UniqueBridge {
         val group = runCatching { PermissionGroup.valueOf(a["group"] as String) }.getOrNull()
             ?: return mapOf("ok" to false, "message" to "Unknown permission group.")
         val granted = a["granted"] as? Boolean ?: false
+
+        if (granted) {
+            val missing = group.permissions.filter {
+                context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+            }
+            if (missing.isNotEmpty()) {
+                val requester = hostPermissions
+                    ?: return mapOf(
+                        "ok" to false,
+                        "message" to "Open UNIQUE's main screen to grant ${group.label}.",
+                    )
+                val results = requester.request(missing)
+                if (results.none { it.value }) {
+                    val permanent = missing.all { requester.permanentlyDenied(it) }
+                    Diagnostics.info(
+                        DiagChannel.PROCESS, "HOST_PERMISSION_REFUSED",
+                        mapOf(
+                            "group" to group.name,
+                            "permissions" to missing.joinToString(","),
+                            "permanent" to permanent.toString(),
+                        ),
+                    )
+                    return mapOf(
+                        "ok" to false,
+                        "needsHostSettings" to permanent,
+                        "message" to if (permanent) {
+                            "Android will not ask again for ${group.label}. " +
+                                "Grant it to UNIQUE in system settings, then try again."
+                        } else {
+                            "${group.label} was not granted to UNIQUE, so it cannot be " +
+                                "granted to this app."
+                        },
+                    )
+                }
+                Diagnostics.info(
+                    DiagChannel.PROCESS, "HOST_PERMISSION_GRANTED",
+                    mapOf(
+                        "group" to group.name,
+                        "granted" to results.filterValues { it }.keys.joinToString(","),
+                    ),
+                )
+            }
+        }
+
         val state = if (granted) PermissionState.GRANTED else PermissionState.DENIED
         val ok = InstancePermissions.set(context, vuid, group, state)
         return if (ok) mapOf("ok" to true)
         else mapOf("ok" to false, "message" to "This app does not ask for ${group.label}.")
     }
+
+    private fun openHostSettings(): Map<String, Any?> =
+        mapOf("ok" to (hostPermissions?.openAppSettings() ?: false))
 
     private fun CreateResult.toMap(): Map<String, Any?> = when (this) {
         is CreateResult.Created -> mapOf(

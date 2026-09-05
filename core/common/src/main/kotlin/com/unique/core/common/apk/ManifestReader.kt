@@ -48,12 +48,23 @@ object ManifestReader {
         var usesCleartextTraffic: Boolean? = null
         var labelResId = 0
         var iconResId = 0
+        var roundIconResId = 0
+        var bannerResId = 0
+        var logoResId = 0
         var themeResId = 0
+        // Unstated until <application> is seen; resolved against targetSdk below, which is
+        // the platform's own rule and the reason every activity could inherit it.
+        var appHardwareAccelerated: Boolean? = null
+        var largeHeap = false
+        var supportsRtl = false
+        var requestLegacyExternalStorage = false
+        var appDirectBootAware = false
 
         val usesPermissions = LinkedHashSet<String>()
         val declaredPermissions = ArrayList<DeclaredPermission>()
         val components = ArrayList<ComponentEntry>()
         val appMetaData = LinkedHashMap<String, String?>()
+        val appMetaDataEntries = ArrayList<MetaDataEntry>()
         val nativeLibs = LinkedHashSet<String>()
 
         // Mutable state for the component currently being assembled.
@@ -62,6 +73,11 @@ object ManifestReader {
         // Depth at which the current component / filter started, so we know when it ends.
         var curDepth = -1
         var filterDepth = -1
+
+        // targetSdk is read from <uses-sdk>, which the tooling always emits before
+        // <application>; the fallback keeps a hand-written manifest that omits it from
+        // silently turning hardware acceleration off for every activity.
+        fun effectiveTargetSdk(): Int = if (targetSdk != 0) targetSdk else maxOf(minSdk, 14)
 
         fun flushFilter() {
             val f = curFilter ?: return
@@ -87,7 +103,7 @@ object ManifestReader {
                 curDepth = -1
                 return
             }
-            components += c.build(packageName)
+            components += c.build(packageName, appHardwareAccelerated ?: (effectiveTargetSdk() >= 14))
             cur = null
             curDepth = -1
         }
@@ -101,11 +117,13 @@ object ManifestReader {
                 "manifest" -> {
                     packageName = el.attrByName("package")?.asString().orEmpty()
                     versionCode = (el.attr(AndroidAttrs.VERSION_CODE, "versionCode")?.asInt(0) ?: 0).toLong() and 0xFFFFFFFFL
-                    versionCodeMajor = (el.attrByName("versionCodeMajor")?.asInt(0) ?: 0).toLong()
+                    versionCodeMajor =
+                        (el.attr(AndroidAttrs.VERSION_CODE_MAJOR, "versionCodeMajor")?.asInt(0) ?: 0).toLong()
                     versionName = el.attr(AndroidAttrs.VERSION_NAME, "versionName")?.asString()
                     sharedUserId = el.attr(AndroidAttrs.SHARED_USER_ID, "sharedUserId")?.asString()
                     splitName = el.attrByName("split")?.asString()
-                    isFeatureSplit = el.attrByName("isFeatureSplit")?.asBoolean(false) ?: false
+                    isFeatureSplit =
+                        el.attr(AndroidAttrs.IS_FEATURE_SPLIT, "isFeatureSplit")?.asBoolean(false) ?: false
                 }
                 "uses-sdk" -> {
                     minSdk = el.attr(AndroidAttrs.MIN_SDK_VERSION, "minSdkVersion")?.asInt(1) ?: 1
@@ -125,19 +143,36 @@ object ManifestReader {
                 "application" -> {
                     appClass = el.attr(AndroidAttrs.NAME, "name")?.asString()
                     appProcess = el.attr(AndroidAttrs.PROCESS, "process")?.asString()
-                    appComponentFactory = el.attrByName("appComponentFactory")?.asString()
+                    appComponentFactory =
+                        el.attr(AndroidAttrs.APP_COMPONENT_FACTORY, "appComponentFactory")?.asString()
                     hasCode = el.attr(AndroidAttrs.HAS_CODE, "hasCode")?.asBoolean(true) ?: true
-                    extractNativeLibs = el.attrByName("extractNativeLibs")?.asBoolean(true)
+                    extractNativeLibs =
+                        el.attr(AndroidAttrs.EXTRACT_NATIVE_LIBS, "extractNativeLibs")?.asBoolean(true)
                     val labelAttr = el.attr(AndroidAttrs.LABEL, "label")
                     label = labelAttr?.asString()
                     labelResId = labelAttr?.takeIf { it.dataType == BinaryXml.TYPE_REFERENCE }
                         ?.rawData ?: 0
                     iconResId = el.attr(AndroidAttrs.ICON, "icon")?.rawData ?: 0
+                    roundIconResId = el.attr(AndroidAttrs.ROUND_ICON, "roundIcon")?.rawData ?: 0
+                    bannerResId = el.attr(AndroidAttrs.BANNER, "banner")?.rawData ?: 0
+                    logoResId = el.attr(AndroidAttrs.LOGO, "logo")?.rawData ?: 0
                     networkSecurityConfigResId =
-                        el.attrByName("networkSecurityConfig")?.rawData ?: 0
+                        el.attr(AndroidAttrs.NETWORK_SECURITY_CONFIG, "networkSecurityConfig")
+                            ?.rawData ?: 0
                     usesCleartextTraffic =
-                        el.attrByName("usesCleartextTraffic")?.asBoolean(true)
+                        el.attr(AndroidAttrs.USES_CLEARTEXT_TRAFFIC, "usesCleartextTraffic")
+                            ?.asBoolean(true)
                     themeResId = el.attr(AndroidAttrs.THEME, "theme")?.rawData ?: 0
+                    appHardwareAccelerated =
+                        el.attr(AndroidAttrs.HARDWARE_ACCELERATED, "hardwareAccelerated")
+                            ?.asBoolean(true)
+                    largeHeap = el.attr(AndroidAttrs.LARGE_HEAP, "largeHeap")?.asBoolean(false) ?: false
+                    supportsRtl = el.attr(AndroidAttrs.SUPPORTS_RTL, "supportsRtl")?.asBoolean(false) ?: false
+                    requestLegacyExternalStorage = el.attr(
+                        AndroidAttrs.REQUEST_LEGACY_EXTERNAL_STORAGE, "requestLegacyExternalStorage",
+                    )?.asBoolean(false) ?: false
+                    appDirectBootAware =
+                        el.attr(AndroidAttrs.DIRECT_BOOT_AWARE, "directBootAware")?.asBoolean(false) ?: false
                 }
                 "activity", "activity-alias", "service", "receiver", "provider" -> {
                     flushComponent()
@@ -164,10 +199,26 @@ object ManifestReader {
                 }
                 "meta-data" -> {
                     val k = el.attr(AndroidAttrs.NAME, "name")?.asString()
-                    val v = el.attr(AndroidAttrs.VALUE, "value")?.asString()
-                        ?: el.attr(AndroidAttrs.RESOURCE, "resource")?.asString()
+                    val valueAttr = el.attr(AndroidAttrs.VALUE, "value")
+                    val resourceAttr = el.attr(AndroidAttrs.RESOURCE, "resource")
+                    val v = valueAttr?.asString() ?: resourceAttr?.asString()
                     if (k != null) {
-                        if (cur != null) cur!!.metaData[k] = v else appMetaData[k] = v
+                        val typed = MetaDataEntry(
+                            name = k,
+                            resourceId = resourceAttr?.rawData ?: 0,
+                            valueType = valueAttr?.dataType ?: BinaryXml.TYPE_NULL,
+                            valueData = valueAttr?.rawData ?: 0,
+                            valueString = valueAttr?.takeIf { it.dataType == BinaryXml.TYPE_STRING }
+                                ?.stringValue,
+                        )
+                        val component = cur
+                        if (component != null) {
+                            component.metaData[k] = v
+                            component.metaDataEntries += typed
+                        } else {
+                            appMetaData[k] = v
+                            appMetaDataEntries += typed
+                        }
                     }
                 }
                 "uses-library", "uses-native-library" -> {
@@ -204,6 +255,16 @@ object ManifestReader {
             components = components,
             applicationMetaData = appMetaData,
             usesNativeLibraries = nativeLibs.toList(),
+            applicationMetaDataEntries = appMetaDataEntries,
+            hardwareAccelerated = appHardwareAccelerated
+                ?: ((if (targetSdk == 0) minSdk else targetSdk) >= 14),
+            largeHeap = largeHeap,
+            supportsRtl = supportsRtl,
+            requestLegacyExternalStorage = requestLegacyExternalStorage,
+            directBootAware = appDirectBootAware,
+            roundIconResId = roundIconResId,
+            bannerResId = bannerResId,
+            logoResId = logoResId,
         )
     }
 
@@ -229,7 +290,7 @@ object ManifestReader {
     internal fun qualifyProcess(name: String, pkg: String): String =
         if (name.startsWith(":")) pkg + name else name
 
-    private class ComponentBuilder(val kind: ComponentKind, el: XmlElement) {
+    private class ComponentBuilder(val kind: ComponentKind, private val el: XmlElement) {
         val name = el.attr(AndroidAttrs.NAME, "name")?.asString().orEmpty()
         val process = el.attr(AndroidAttrs.PROCESS, "process")?.asString()
         // Android's own default for `exported` is "true if the component has an
@@ -247,11 +308,78 @@ object ManifestReader {
             el.attr(AndroidAttrs.FOREGROUND_SERVICE_TYPE, "foregroundServiceType")?.asInt(0) ?: 0
         val authorities = el.attr(AndroidAttrs.AUTHORITIES, "authorities")?.asString()
             ?.split(';')?.filter { it.isNotBlank() } ?: emptyList()
-        val targetActivity = el.attrByName("targetActivity")?.asString()
+        val readPermission = el.attr(AndroidAttrs.READ_PERMISSION, "readPermission")?.asString()
+        val writePermission = el.attr(AndroidAttrs.WRITE_PERMISSION, "writePermission")?.asString()
+        val grantUriPermissions =
+            el.attr(AndroidAttrs.GRANT_URI_PERMISSIONS, "grantUriPermissions")?.asBoolean(false) ?: false
+        val targetActivity = el.attr(AndroidAttrs.TARGET_ACTIVITY, "targetActivity")?.asString()
         val filters = ArrayList<IntentFilterEntry>()
         val metaData = LinkedHashMap<String, String?>()
+        val metaDataEntries = ArrayList<MetaDataEntry>()
 
-        fun build(pkg: String) = ComponentEntry(
+        private val labelAttr = el.attr(AndroidAttrs.LABEL, "label")
+        val labelResId = labelAttr?.takeIf { it.dataType == BinaryXml.TYPE_REFERENCE }?.rawData ?: 0
+        val labelText = labelAttr?.takeIf { it.dataType == BinaryXml.TYPE_STRING }?.stringValue
+        val iconResId = el.attr(AndroidAttrs.ICON, "icon")?.rawData ?: 0
+
+        /**
+         * The window and task attributes, read whether or not this is an activity.
+         *
+         * Reading them unconditionally costs one pass over an attribute list that is
+         * already in memory, and it means a `<service>` that grows a window attribute in
+         * some future release does not need this code changed to notice.
+         */
+        fun window(hardwareAcceleratedDefault: Boolean) = WindowAttributes(
+            hardwareAccelerated = el.attr(AndroidAttrs.HARDWARE_ACCELERATED, "hardwareAccelerated")
+                ?.asBoolean(hardwareAcceleratedDefault) ?: hardwareAcceleratedDefault,
+            softInputMode = el.attr(AndroidAttrs.WINDOW_SOFT_INPUT_MODE, "windowSoftInputMode")
+                ?.asInt(0) ?: 0,
+            uiOptions = el.attr(AndroidAttrs.UI_OPTIONS, "uiOptions")?.asInt(0) ?: 0,
+            documentLaunchMode = el.attr(AndroidAttrs.DOCUMENT_LAUNCH_MODE, "documentLaunchMode")
+                ?.asInt(0) ?: 0,
+            maxRecents = el.attr(AndroidAttrs.MAX_RECENTS, "maxRecents")?.asInt(-1) ?: -1,
+            colorMode = el.attr(AndroidAttrs.COLOR_MODE, "colorMode")?.asInt(0) ?: 0,
+            rotationAnimation = el.attr(AndroidAttrs.ROTATION_ANIMATION, "rotationAnimation")
+                ?.asInt(-1) ?: -1,
+            lockTaskMode = el.attr(AndroidAttrs.LOCK_TASK_MODE, "lockTaskMode")?.asInt(0) ?: 0,
+            persistableMode = el.attr(AndroidAttrs.PERSISTABLE_MODE, "persistableMode")?.asInt(-1) ?: -1,
+            resizeable = el.attr(AndroidAttrs.RESIZEABLE_ACTIVITY, "resizeableActivity")?.asBoolean(true),
+            supportsPictureInPicture = el.attr(
+                AndroidAttrs.SUPPORTS_PICTURE_IN_PICTURE, "supportsPictureInPicture",
+            )?.asBoolean(false) ?: false,
+            maxAspectRatio = floatAttr(el.attr(AndroidAttrs.MAX_ASPECT_RATIO, "maxAspectRatio")),
+            minAspectRatio = floatAttr(el.attr(AndroidAttrs.MIN_ASPECT_RATIO, "minAspectRatio")),
+            excludeFromRecents = flag(AndroidAttrs.EXCLUDE_FROM_RECENTS, "excludeFromRecents"),
+            allowTaskReparenting = flag(AndroidAttrs.ALLOW_TASK_REPARENTING, "allowTaskReparenting"),
+            finishOnTaskLaunch = flag(AndroidAttrs.FINISH_ON_TASK_LAUNCH, "finishOnTaskLaunch"),
+            clearTaskOnLaunch = flag(AndroidAttrs.CLEAR_TASK_ON_LAUNCH, "clearTaskOnLaunch"),
+            alwaysRetainTaskState = flag(AndroidAttrs.ALWAYS_RETAIN_TASK_STATE, "alwaysRetainTaskState"),
+            stateNotNeeded = flag(AndroidAttrs.STATE_NOT_NEEDED, "stateNotNeeded"),
+            noHistory = flag(AndroidAttrs.NO_HISTORY, "noHistory"),
+            multiprocess = flag(AndroidAttrs.MULTIPROCESS, "multiprocess"),
+            immersive = flag(AndroidAttrs.IMMERSIVE, "immersive"),
+            showForAllUsers = flag(AndroidAttrs.SHOW_FOR_ALL_USERS, "showForAllUsers"),
+            autoRemoveFromRecents = flag(AndroidAttrs.AUTO_REMOVE_FROM_RECENTS, "autoRemoveFromRecents"),
+            relinquishTaskIdentity = flag(AndroidAttrs.RELINQUISH_TASK_IDENTITY, "relinquishTaskIdentity"),
+            resumeWhilePausing = flag(AndroidAttrs.RESUME_WHILE_PAUSING, "resumeWhilePausing"),
+            showWhenLocked = flag(AndroidAttrs.SHOW_WHEN_LOCKED, "showWhenLocked"),
+            turnScreenOn = flag(AndroidAttrs.TURN_SCREEN_ON, "turnScreenOn"),
+            directBootAware = flag(AndroidAttrs.DIRECT_BOOT_AWARE, "directBootAware"),
+        )
+
+        private fun flag(id: Int, name: String): Boolean =
+            el.attr(id, name)?.asBoolean(false) ?: false
+
+        /** `android:maxAspectRatio` is a float; anything else means "unstated". */
+        private fun floatAttr(attr: XmlAttribute?): Float = when (attr?.dataType) {
+            null -> 0f
+            BinaryXml.TYPE_FLOAT -> java.lang.Float.intBitsToFloat(attr.rawData)
+            BinaryXml.TYPE_STRING -> attr.stringValue?.trim()?.toFloatOrNull() ?: 0f
+            BinaryXml.TYPE_NULL, BinaryXml.TYPE_REFERENCE -> 0f
+            else -> attr.rawData.toFloat()
+        }
+
+        fun build(pkg: String, hardwareAcceleratedDefault: Boolean) = ComponentEntry(
             kind = kind,
             className = qualify(name, pkg),
             processName = process?.let { qualifyProcess(it, pkg) } ?: pkg,
@@ -265,9 +393,17 @@ object ManifestReader {
             configChanges = configChanges,
             foregroundServiceType = foregroundServiceType,
             authorities = authorities,
+            readPermission = readPermission,
+            writePermission = writePermission,
+            grantUriPermissions = grantUriPermissions,
             targetActivity = targetActivity?.let { qualify(it, pkg) },
             intentFilters = filters.toList(),
             metaData = metaData.toMap(),
+            metaDataEntries = metaDataEntries.toList(),
+            window = window(hardwareAcceleratedDefault),
+            labelResId = labelResId,
+            iconResId = iconResId,
+            labelText = labelText,
         )
     }
 

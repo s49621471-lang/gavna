@@ -158,6 +158,13 @@ class UniqueBridgeClient {
       _outcome('setInstancePermission',
           {'vuid': vuid, 'group': group, 'granted': granted});
 
+  /// Opens UNIQUE's own page in Android settings.
+  ///
+  /// The one route left when the platform has stopped offering a permission dialog:
+  /// telling the user to "grant it in settings" without taking them there is the kind of
+  /// instruction people give up on.
+  Future<EngineOutcome> openHostSettings() async => _outcome('openHostSettings', {});
+
   /// What this device can offer a virtualized app's Google flows.
   Future<GoogleStatus> googleStatus() async {
     final result = await _method.invokeMapMethod<Object?, Object?>('googleStatus');

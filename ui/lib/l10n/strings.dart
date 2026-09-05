@@ -159,9 +159,10 @@ class Strings {
     'details.noPermissions': 'None requested',
     'details.noPermissionsBody': 'This app asks for no runtime permissions',
     'details.hostMissing':
-        'Grant it to UNIQUE first — it cannot pass on what it does not hold.',
+        'Not held by UNIQUE yet — turn this on and it will ask.',
     'details.allowed': 'Allowed',
     'details.notAllowed': 'Not allowed',
+    'details.openSettings': 'Settings',
     'details.storage': 'Storage',
     'details.data': 'Data',
     'details.cache': 'Cache',
@@ -276,6 +277,10 @@ class Strings {
     'perm.FILES': 'Files',
     'perm.NOTIFICATIONS': 'Notifications',
     'perm.CONTACTS': 'Contacts',
+    'perm.CALENDAR': 'Calendar',
+    'perm.NEARBY_DEVICES': 'Nearby devices',
+    'perm.PHYSICAL_ACTIVITY': 'Physical activity',
+    'perm.BODY_SENSORS': 'Body sensors',
     'perm.PHONE': 'Phone',
   };
 
@@ -355,9 +360,10 @@ class Strings {
     'details.noPermissions': 'Не запрошены',
     'details.noPermissionsBody': 'Это приложение не запрашивает разрешений во время работы',
     'details.hostMissing':
-        'Сначала выдайте его самому UNIQUE — он не может передать то, чего у него нет.',
+        'У UNIQUE его пока нет — включите, и он его запросит.',
     'details.allowed': 'Разрешено',
     'details.notAllowed': 'Запрещено',
+    'details.openSettings': 'Настройки',
     'details.storage': 'Хранилище',
     'details.data': 'Данные',
     'details.cache': 'Кэш',
@@ -468,6 +474,10 @@ class Strings {
     'perm.FILES': 'Файлы',
     'perm.NOTIFICATIONS': 'Уведомления',
     'perm.CONTACTS': 'Контакты',
+    'perm.CALENDAR': 'Календарь',
+    'perm.NEARBY_DEVICES': 'Устройства поблизости',
+    'perm.PHYSICAL_ACTIVITY': 'Физическая активность',
+    'perm.BODY_SENSORS': 'Датчики тела',
     'perm.PHONE': 'Телефон',
   };
 }

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window and task attributes an activity carries, and the two-level default behind
+  the most important of them.
+
+  `hardwareAccelerated` is declared on `<application>` and overridden on one activity, so
+  the reader is held to the platform's own rule: the activity value wins, the application
+  value is the default for the rest, and `targetSdk >= 14` is the default for the
+  application. Getting that wrong put every virtual app on the software rasteriser -
+  which is a lag report from a user and, for anything drawing through a RenderNode, a
+  crash.
+
+  `screenOrientation` is here because a stub activity is declared `unspecified`: the value
+  the platform uses is the stub's, so the guest's has to be read and applied by hand.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.window"
+    android:versionCode="12"
+    android:versionName="1.2">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
+    <application
+        android:label="Window Sample"
+        android:hardwareAccelerated="true"
+        android:largeHeap="true"
+        android:supportsRtl="true">
+
+        <meta-data android:name="com.example.flag" android:value="true" />
+        <meta-data android:name="com.example.count" android:value="7" />
+        <meta-data android:name="com.example.layout" android:resource="@android:layout/simple_list_item_1" />
+
+        <activity
+            android:name=".GameActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustPan"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:maxAspectRatio="2.4"
+            android:resizeableActivity="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".SoftwareActivity"
+            android:exported="false"
+            android:hardwareAccelerated="false"
+            android:screenOrientation="portrait" />
+
+        <activity android:name=".PlainActivity" android:exported="false" />
+
+        <provider
+            android:name=".QuietProvider"
+            android:authorities="com.example.window.quiet"
+            android:exported="false"
+            android:readPermission="com.example.window.READ" />
+    </application>
+</manifest>

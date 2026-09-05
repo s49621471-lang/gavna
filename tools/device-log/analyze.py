@@ -41,7 +41,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -654,6 +654,118 @@ def check_known_limits(run: Run) -> Check:
     return check
 
 
+def check_rendering(run: Run) -> Check:
+    """Whether any guest was put on the software rasteriser.
+
+    Added because a whole phone run went by without this being named. Every guest UNIQUE
+    had ever launched was rendering in software — the substituted `ActivityInfo` carried
+    no `flags`, and `Activity.attach` reads exactly `FLAG_HARDWARE_ACCELERATED` out of it
+    — and the only evidence in 39,958 lines was one app's crash, which reads like the
+    app's bug until you know what to look for:
+
+        IllegalArgumentException: Software rendering doesn't support drawRenderNode
+
+    Two signals, because they fail at different times. The crash is loud and late; a
+    `drawSoftware` frame in any stack from a guest process is the same fact, quietly,
+    whether or not anything crashed.
+    """
+    check = Check("render", "Was any guest rendering in software?")
+    seen: Set[str] = set()
+    for line in run.lines:
+        if "Software rendering doesn't support" in line.message:
+            if "renderNode" in seen:
+                continue
+            seen.add("renderNode")
+            check.fail(
+                "a guest drew through a RenderNode on the software rasteriser — its "
+                "ActivityInfo has no FLAG_HARDWARE_ACCELERATED",
+                line.lineno,
+                line.message.strip()[:200],
+            )
+        elif "ViewRootImpl.drawSoftware" in line.message and "drawSoftware" not in seen:
+            seen.add("drawSoftware")
+            check.fail(
+                "a guest's window was drawn by ViewRootImpl.drawSoftware, so hardware "
+                "acceleration was off for it",
+                line.lineno,
+                line.message.strip()[:200],
+            )
+    return check
+
+
+def check_startup_refusals(run: Run) -> Check:
+    """Refusals that make an app exit rather than misbehave.
+
+    A crash is visible; these are not. Play's licence check binds to a service guarded by
+    `com.android.vending.CHECK_LICENSE`, and every application Google re-signs with PAIRIP
+    treats a failed bind as tampering:
+
+        E LicenseClient: Not allowed to bind with the licensing service
+        I System.exit called, status: 0
+
+    There is no exception, no tombstone and no UNIQUE event — the app simply stops, and the
+    log says only that a process went away. The same shape covers Play services being told
+    the app has no manifest, which throws on a worker thread where nothing catches it.
+    """
+    check = Check("startup", "Did an app refuse to start for a reason UNIQUE can fix?")
+    # Folded on the cause, not reported per line: the licence client retries three times
+    # per launch and the log carried twenty copies of one fact, which buries the others.
+    causes: Dict[str, Tuple[int, int, str]] = {}
+
+    def add(cause: str, line: LogLine) -> None:
+        first, count, evidence = causes.get(cause, (line.lineno, 0, line.message.strip()[:200]))
+        causes[cause] = (first, count + 1, evidence)
+
+    exits = 0
+    for line in run.lines:
+        message = line.message
+        if "Not allowed to bind" in message and "licensing" in message.lower():
+            add(
+                "Play's licence check could not bind: UNIQUE must declare "
+                "com.android.vending.CHECK_LICENSE, and a PAIRIP-signed app exits without it",
+                line,
+            )
+        elif "com.google.android.gms.version" in message and "does not exist" in message:
+            add(
+                "Google Play services found no gms.version meta-data: "
+                "ApplicationInfo.metaData was not populated for the guest",
+                line,
+            )
+        elif "System.exit called" in message:
+            exits += 1
+    for cause, (lineno, count, evidence) in causes.items():
+        suffix = f" (x{count})" if count > 1 else ""
+        check.fail(cause + suffix, lineno, evidence)
+    if exits:
+        check.note(f"a guest called System.exit {exits}x — an app deciding to stop, not a crash")
+    return check
+
+
+def check_orientation(run: Run) -> Check:
+    """Whether a guest that declared an orientation was given it.
+
+    The platform builds a window's orientation from the `ActivityRecord` it made in
+    `system_server` from the *stub's* manifest entry, which says `unspecified`. UNIQUE has
+    to put the guest's own back with `setRequestedOrientation`, and when it does it says
+    so; a launch with no such event is one where the app got whatever the phone was
+    holding.
+    """
+    check = Check("orientation", "Was a guest's declared orientation applied?")
+    applied = run.by_code("ACTIVITY_ORIENTATION_APPLIED")
+    for event in applied:
+        if (event["applied"] or "true") != "true":
+            check.fail(
+                f"{event['activity']} declares orientation {event['orientation']} and the "
+                "platform refused it",
+                event.lineno,
+            )
+    if applied:
+        check.note(f"{len(applied)} activity launches carried a declared orientation")
+    else:
+        check.note("no launch in this run declared an orientation")
+    return check
+
+
 CHECKS = (
     check_engine_started,
     check_launches,
@@ -665,6 +777,9 @@ CHECKS = (
     check_providers,
     check_isolation,
     check_ui,
+    check_rendering,
+    check_startup_refusals,
+    check_orientation,
     check_known_limits,
 )
 

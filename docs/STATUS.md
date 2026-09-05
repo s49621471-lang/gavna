@@ -41,8 +41,9 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Per-instance permission store | 12 | Undecided install-time is granted, undecided runtime is not, and neither can exceed the host |
 | Device-log analyzer | 26 | Against a real Android 15 run, plus a synthetic healthy one |
 | APK survey (DEX reader, service map) | 15 | The reader is checked against a real checked-in APK |
+| Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**162 JVM tests, 15 Dart tests, 34 native checks, 41 off-device tool tests — all passing.**
+**171 JVM tests, 15 Dart tests, 34 native checks, 43 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -471,6 +472,127 @@ JIT-only cold start takes. Nothing was dropping frames: that run has **one** ski
 event in 37,775 lines. Both overrides are gone; the platform's own behaviour is back.
 Unconfirmed on hardware, like everything else here.
 
+### Reading the fourth run's log again: what was still wrong with every launch
+
+The fourth run's log was read once for the two crashes it names above. Read end to end —
+39,958 lines, four applications, ten launches — it says four more things, and the first of
+them was true of **every application UNIQUE has ever run**.
+
+**Every guest was rendering in software.** `AppBootstrap.buildActivityInfo` builds the
+`ActivityInfo` the platform launches a guest with and never set `flags`. That field has
+exactly one consumer at attach time:
+
+```java
+// Activity.attach
+mWindow.setWindowManager(…, mToken, mComponent.flattenToString(),
+        (info.flags & ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0);
+```
+
+so every virtual activity was created with the hardware renderer switched off. `android:
+hardwareAccelerated` was not read by the manifest parser at all — neither the activity
+attribute nor the `<application>` default of `targetSdk >= 14` that every modern app
+inherits. Two symptoms, one cause:
+
+- Everything drew slowly. That is the second half of "the screen is laggy"; the first half
+  was the stub theme, and both were real.
+- Anything drawing through a `RenderNode` — Compose, any hardware layer, most modern view
+  code — died on its first frame:
+
+```
+CRASH u1 clear.una UNCAUGHT_EXCEPTION thread=main
+  reason=IllegalArgumentException: Software rendering doesn't support drawRenderNode
+    at android.view.RecordingCanvas.drawRenderNode
+    at …DecorView.draw / ViewRootImpl.drawSoftware
+```
+
+`drawSoftware` in that stack is the platform saying so in as many words.
+
+**A Play-protected app killed itself before drawing anything.** `1Tap Cleaner` is signed by
+Google's PAIRIP, and PAIRIP checks the licence on startup:
+
+```
+E LicenseClient: Not allowed to bind with the licensing service:
+    com.android.vending.licensing.ILicensingService
+  Caused by: java.lang.SecurityException: Not allowed to bind to service
+      Intent { act=com.android.vending.licensing.ILicensingService pkg=com.android.vending }
+I System.exit called, status: 0
+```
+
+The service is exported and Play was installed; what was missing is that Play guards it
+with `com.android.vending.CHECK_LICENSE`, and a permission is checked against the *calling
+uid*, which is UNIQUE's. The guest declared it and UNIQUE did not. Every application
+Google re-signs — which is every paid app and a large share of free ones — performs this
+check, treats a bind failure as tampering, and exits. The log line UNIQUE printed beside it
+pointed the other way: `SERVICE_INTENT_IMPLICIT`, thirty times, for an intent that was
+scoped to `com.android.vending` and perfectly ordinary.
+
+**Google Play services was told the app had no manifest.** `ApplicationInfo.metaData` was
+never populated, so:
+
+```
+E FA: Task exception on worker thread: java.lang.IllegalStateException: A required
+  meta-data tag in your app's AndroidManifest.xml does not exist. You must have the
+  following declaration within the <application> element:
+  <meta-data android:name="com.google.android.gms.version" …/>
+```
+
+on both the Unity game and ChatGPT. The apps declare it. `android:value` there is a
+*reference* into the app's resource table, which is why carrying the manifest's text was
+not enough: the type and the compiled datum have to travel together and be resolved
+against the guest's own resources, which only a virtual process has.
+
+**A landscape game opened portrait.** `screenOrientation` was parsed and put on the
+substituted `ActivityInfo`, where nothing reads it: the platform takes a window's
+orientation from the `ActivityRecord` it built in `system_server` from the *stub's*
+manifest entry, and the stub says `unspecified`. `vri size:1080x2400` on a Unity game that
+declares landscape is the whole of "игры запускаются вертикально".
+
+Two smaller things from the same log:
+
+- **`service download was not proxied: service not available`, ten times.**
+  `Context.DOWNLOAD_SERVICE` is the string `"download"` and there is no binder service of
+  that name — `DownloadManager` is built from a `ContentResolver`. The APK survey counted
+  the *manager*. Removed, which is rule 8.
+- **A 1.6 GB APK stalled the launch for 2.5 seconds on the main thread**, inside
+  `getPackageArchiveInfo`, which digests every byte of the APK to verify its signing block.
+  The OEM's hang watchdog saw it before the user could:
+  `MIUIScout App: Enter APP_SCOUT_WARNING State (duration=2501ms … w=159)`. Nothing in the
+  graft needs the signature, so it is loaded on a thread of its own and waited for only by
+  a caller that asked for it.
+
+### What that pass changed, and one bug it found on the way
+
+Everything above is fixed, and six things around them that the same reading turned up:
+
+| Found | Fixed by |
+|---|---|
+| The `ActivityInfo` carried no `flags`, `softInputMode`, `uiOptions`, resize mode or aspect-ratio clamp — the manifest parser read none of them | `WindowAttributes` on every component entry, composed into `ActivityInfo` with the platform's own constants. `WindowAttributesTest` holds the two-level `hardwareAccelerated` default against real `aapt2` output |
+| `ApplicationInfo` claimed none of the screen-support flags, so `CompatibilityInfo` was entitled to put every guest in screen-compatibility mode — a scaled, letterboxed window with the density lied about | The flags `PackageParser` sets for a modern target SDK, plus `FLAG_HARDWARE_ACCELERATED`, `FLAG_LARGE_HEAP`, `FLAG_SUPPORTS_RTL` and legacy-storage |
+| `getPackageInfo` ignored its `flags`, so `GET_ACTIVITIES`, `GET_SERVICES`, `GET_PROVIDERS` and `GET_META_DATA` all came back null | `GuestComponents`, which also answers `getServiceInfo`, `getReceiverInfo` and `getProviderInfo` — three siblings of `getActivityInfo` that were never hooked |
+| `getLaunchIntentForPackage(getPackageName())` returned null, and so did `resolveActivity` for the guest's own component: the platform has never installed the package being asked about | `GuestIntentResolution`, scoped strictly to intents that name the guest — an `https` VIEW still belongs to the device's browser |
+| A guest enumerating installed packages did not find *itself* and did find `com.unique` | Both corrected in `getInstalledPackages`/`getInstalledApplications`; nothing else in the list is touched |
+| `getExternalFilesDir()` returned a path scoped storage will not let UNIQUE create, because it is named for the guest's package and UNIQUE's is `com.unique` | The `mount` proxy rewrites `getVolumeList`, which is the one place `Environment` builds every external path from |
+| `/proc/self/cmdline` read `com.unique:vapp0`, and `getRunningAppProcesses` showed UNIQUE's processes and sibling instances | `Process.setArgV0`, as `handleBindApplication` does it, and a process-table rewrite that also stops one instance seeing another |
+| A permission the *host* lacks could never be granted to an instance: the switch in App Details was disabled, and the row explained a problem with nothing to press | The switch asks Android for the permission on UNIQUE's behalf, and offers the settings page when the platform has stopped asking |
+
+The bug found on the way is the one worth naming, because it is a *launch* failure and it
+was reachable on any slow device:
+
+```
+PROVIDER_READY_NOT_SEEN slot=0 vuid=0 waitedMillis=45147 rewarms=2
+ANR in com.unique:vapp0   Reason: executing service com.unique/.stub.ServiceStub_p0_s6
+Killing 5384:com.unique:vapp0/u0a108 (adj 0): bg anr
+```
+
+A caller waiting for a slot re-warms it only when the slot is *not* already grafting —
+there is a whole announcement, `slotStarting`, whose stated purpose is to prevent exactly
+this. It never fired. `AppBootstrap.announce` begins `val host = hostPackage ?: return`,
+and `hostPackage` is set part-way through the graft, after the announcement is made. On a
+cold process it was always null, so the announcement was a no-op precisely in the case it
+exists for, the caller re-warmed a busy process twice, and ActivityManager killed the
+process it was waiting for. Before the graft the context still is UNIQUE's, so its own
+package name is both available and correct.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -510,6 +632,19 @@ visible to unit tests:
 | `IAccountManager` was declared in `TARGETS` and installed by nothing, so the Play Store died asking about accounts — and a guest saw the host's real Google accounts | fixed (installed; the accounts a guest *should* see is a separate open question) |
 | The `search` hook bound to nothing nine times a run: `ISearchManager` takes no String on API 35 | fixed (removed, and recorded as a deliberate omission the survey no longer nags about) |
 | A guest's launch had no starting window and no transition animation, from two undocumented overrides on the stub theme | fixed (both removed; the platform's own behaviour) |
+| **Every virtual activity rendered in software**: the substituted `ActivityInfo` carried no `flags`, and `Activity.attach` reads exactly that bit to decide. Slow for everything, fatal for anything drawing through a `RenderNode` | fixed (`android:hardwareAccelerated` parsed with the platform's two-level default; `WindowAttributesTest`, `t39`) |
+| A landscape game opened portrait: the platform takes the orientation from the *stub's* manifest entry | fixed (`setRequestedOrientation` before the guest's `onCreate`; `t40`) |
+| A guest whose manifest does not declare a config change was never relaunched for one, because the stub declares them all | fixed (an undeclared change the guest cares about produces `Activity.recreate`, which is the platform's own answer) |
+| PAIRIP-signed apps killed themselves at startup: Play's licensing service is guarded by `com.android.vending.CHECK_LICENSE`, which the guest declared and UNIQUE did not | fixed (declared, with `READ_GSERVICES`, the FCM receive permission and the install-referrer bind) |
+| `ApplicationInfo.metaData` was always null, so Play services threw `A required meta-data tag … does not exist` on an app that declares it | fixed (typed meta-data entries, resolved against the guest's own resources; `t41`) |
+| `getPackageInfo` ignored its flags — `GET_ACTIVITIES`, `GET_SERVICES`, `GET_META_DATA` all returned null | fixed (`GuestComponents`; `t42`) |
+| `getLaunchIntentForPackage` and `resolveActivity` for the guest's own components returned nothing | fixed (`GuestIntentResolution`, scoped to intents that name the guest; `t42`) |
+| `getExternalFilesDir()` named a scoped-storage directory UNIQUE may not create, so external storage read as unavailable | fixed (the `mount` proxy rewrites `getVolumeList`, which `Environment` builds every external path from; `t44`) |
+| `/proc/self/cmdline` said `com.unique:vapp0`, and the process table showed UNIQUE's own processes and sibling instances | fixed (`Process.setArgV0` as `handleBindApplication` does it, plus a process-table rewrite; `t43`) |
+| A permission UNIQUE does not hold could never be granted to an instance — the switch was disabled and the row explained a problem the user could not act on | fixed (the switch asks Android for it, and offers the settings page when the platform has stopped asking) |
+| **The `slotStarting` announcement was a no-op on a cold process** (`hostPackage` is set later in the graft), so a waiting caller re-warmed a process that was mid-graft and ActivityManager killed it: `bg anr`, forty-five seconds into a launch | fixed (the announcement falls back to the context's own package, which before the graft is UNIQUE's) |
+| A 1.6 GB APK's signature was verified on the main thread during the graft, 2.5 s, tripping the OEM hang watchdog | fixed (loaded on its own thread, waited for only by a caller that asked for signatures) |
+| `service download was not proxied: service not available`, ten times a run — there is no binder service called `download` | fixed (removed; `DownloadManager` is a `ContentResolver` client) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step

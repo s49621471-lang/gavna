@@ -2484,4 +2484,201 @@ class VirtualLaunchTest {
     } catch (e: ErrnoException) {
         e.errno != OsConstants.ESRCH
     }
+
+    // -----------------------------------------------------------------------------
+    // The window the platform built, and the manifest attributes behind it.
+    // -----------------------------------------------------------------------------
+
+    /**
+     * A virtual activity is hardware accelerated, and knows it.
+     *
+     * `Activity.attach` decides this from one bit:
+     *
+     * ```java
+     * mWindow.setWindowManager(…, (info.flags & FLAG_HARDWARE_ACCELERATED) != 0);
+     * ```
+     *
+     * and `info` is the `ActivityInfo` UNIQUE substitutes. That substitution never set
+     * `flags` at all, so the bit was clear for every app UNIQUE has ever run and every one
+     * of them drew in software. It was reported as the screen being laggy, and for
+     * anything that renders through a `RenderNode` it was not slow but fatal:
+     *
+     * ```
+     * CRASH u1 clear.una UNCAUGHT_EXCEPTION thread=main
+     *   reason=IllegalArgumentException: Software rendering doesn't support drawRenderNode
+     * ```
+     *
+     * The probe declares nothing about acceleration, which is the case that matters: the
+     * platform's default is on for `targetSdk >= 14`, and reproducing that default is what
+     * was missing.
+     */
+    @Test
+    fun t39_theGuestsWindowIsHardwareAccelerated() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        assertThat(UniqueEngine.launch(context, instance.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val observed = awaitResult(instance)
+
+        // What the app was told about its own manifest entry, through UNIQUE's
+        // PackageManager - which is also the value ActivityThread launched it with.
+        assertThat(observed["activityInfoHardwareAccelerated"]).isEqualTo("true")
+        // And what the platform actually put on the window.
+        assertThat(observed["windowHardwareAccelerated"]).isEqualTo("true")
+    }
+
+    /**
+     * A landscape activity opens landscape.
+     *
+     * The system builds the window from the manifest entry it has *installed*, which under
+     * UNIQUE is a stub declaring `unspecified`; the guest's own `android:screenOrientation`
+     * reaches the client and nothing else. `ProbeSecondActivity` declares `landscape`, and
+     * a tester's report that games opened vertically is exactly this.
+     *
+     * Asserted on `getRequestedOrientation`, not on the resulting configuration: whether
+     * the display actually rotates depends on the device, and a headless emulator's does
+     * not. What UNIQUE is responsible for is that the request reached the platform.
+     */
+    @Test
+    fun t40_theGuestsDeclaredOrientationIsApplied() = runBlocking {
+        val instance = requireInstance()
+        val secondResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-second.properties")
+        secondResult.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.startSecond", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+        awaitResult(instance)
+        val second = awaitFile(secondResult)
+
+        // SCREEN_ORIENTATION_LANDSCAPE
+        assertThat(second["requestedOrientation"]).isEqualTo("0")
+        // The same window is accelerated, for the same reason as t39.
+        assertThat(second["windowHardwareAccelerated"]).isEqualTo("true")
+    }
+
+    /**
+     * The guest's own meta-data is there, and a reference in it resolved to a number.
+     *
+     * `ApplicationInfo.metaData` was always null, because UNIQUE built the
+     * `ApplicationInfo` and never filled it. Google Play services reads exactly one
+     * integer out of it and throws when it is absent:
+     *
+     * ```
+     * FA: Task exception on worker thread: java.lang.IllegalStateException: A required
+     *   meta-data tag in your app's AndroidManifest.xml does not exist. You must have the
+     *   following declaration within the <application> element:
+     *   <meta-data android:name="com.google.android.gms.version" …/>
+     * ```
+     *
+     * The probe declares the same *shape*: a literal string and a reference to an integer
+     * resource. The reference is the half that needs the guest's own resources, which is
+     * why it can only be resolved inside the virtual process.
+     */
+    @Test
+    fun t41_theGuestReadsItsOwnMetaData() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        assertThat(UniqueEngine.launch(context, instance.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val observed = awaitResult(instance)
+
+        assertThat(observed["metaDataPresent"]).isEqualTo("true")
+        assertThat(observed["metaDataText"]).isEqualTo("probe-meta")
+        // @integer/probe_number, resolved against the guest's resource table.
+        assertThat(observed["metaDataNumber"]).isEqualTo("240508")
+    }
+
+    /**
+     * The guest can look itself up in the package manager.
+     *
+     * Every call here is ordinary application code that returned null or an empty list,
+     * because `PackageManagerService` has never installed the package being asked about:
+     * `getLaunchIntentForPackage(getPackageName())` is how an app restarts itself,
+     * `resolveActivity` is the guard in front of most `startActivity` calls, and
+     * `getPackageInfo(GET_ACTIVITIES)` is how a launcher-shortcut or deep-link helper
+     * checks its own manifest.
+     */
+    @Test
+    fun t42_theGuestResolvesItsOwnComponents() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        assertThat(UniqueEngine.launch(context, instance.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val observed = awaitResult(instance)
+
+        assertThat(observed["launchIntentForSelf"]).isEqualTo("true")
+        assertThat(observed["resolveSelfActivity"]).isEqualTo("$probePackage.ProbeActivity")
+        assertThat(observed["resolveSelfService"]!!.toInt()).isAtLeast(1)
+        assertThat(observed["ownActivityCount"]!!.toInt()).isAtLeast(3)
+        assertThat(observed["ownServiceCount"]!!.toInt()).isAtLeast(1)
+        // An installed app is in the device's own list; UNIQUE is not in the guest's.
+        assertThat(observed["installedListHasSelf"]).isEqualTo("true")
+        assertThat(observed["installedListHasHost"]).isEqualTo("false")
+    }
+
+    /**
+     * The guest looks like itself from inside the process, not like UNIQUE.
+     *
+     * `/proc/self/cmdline` is the cheapest virtualization check there is — one read, no
+     * permission, no API — and it read `com.unique:vapp0` for every guest UNIQUE has run.
+     * `ActivityThread.handleBindApplication` sets it with `Process.setArgV0` for an
+     * installed app; UNIQUE now does the same with the guest's process name, which is what
+     * the platform would have done.
+     *
+     * The process table is the same question asked through the framework: an app checking
+     * whether its own process is running found UNIQUE's name and concluded it was not.
+     */
+    @Test
+    fun t43_theGuestSeesItsOwnProcessAndNotUniques() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        assertThat(UniqueEngine.launch(context, instance.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val observed = awaitResult(instance)
+
+        assertThat(observed["procCmdline"]).isEqualTo(probePackage)
+        assertThat(observed["runningProcessName"]).isEqualTo(probePackage)
+        // No other process of UNIQUE's uid — neither :core nor a sibling instance.
+        assertThat(observed["runningSawSiblingProcess"]).isEqualTo("false")
+    }
+
+    /**
+     * External storage resolves inside the instance, and can be written to.
+     *
+     * `ContextImpl` derives it from the *package name*, so a guest was handed
+     * `/storage/emulated/0/Android/data/<guest>/files` — a scoped-storage directory
+     * UNIQUE may not create, because the package it is named for is not UNIQUE. The
+     * platform's own `ensureExternalDirsExistOrFilter` then returned null, and an app that
+     * keeps downloads or caches there sees storage as unavailable.
+     */
+    @Test
+    fun t44_theGuestsExternalStorageIsItsOwnAndUsable() = runBlocking {
+        val instance = requireInstance()
+        clearResult(instance)
+        assertThat(UniqueEngine.launch(context, instance.vuid))
+            .isInstanceOf(LaunchResult.Started::class.java)
+        val observed = awaitResult(instance)
+
+        // The layout the platform builds from a volume path is exactly the one the path
+        // model describes: <root>/Android/data/<pkg>/files. Asserted as equality rather
+        // than as a prefix, because a near-miss here is a directory two apps share.
+        assertThat(observed["externalStorageDirectory"])
+            .isEqualTo(model.externalRoot(instance.vuid))
+        assertThat(observed["externalFilesDir"])
+            .isEqualTo(model.externalFilesDir(instance.vuid, probePackage))
+        assertThat(observed["externalFilesDirWritable"]).isEqualTo("true")
+    }
 }

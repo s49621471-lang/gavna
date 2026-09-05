@@ -19,7 +19,7 @@ mkdir -p "$dest"
 
 echo "Fixtures -> $dest"
 # APK manifests are compiled from the sources under tools/fixtures/.
-for name in base split-abi split-feature; do
+for name in base split-abi split-feature window; do
     src="$root/tools/fixtures/$name.xml"
     "$BUILD_TOOLS/aapt2" link -o "$work/$name.apk" --manifest "$src" -I "$PLATFORM"
     cp "$work/$name.apk" "$dest/sample-$name.apk"

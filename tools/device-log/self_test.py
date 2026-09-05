@@ -30,6 +30,8 @@ import uniquelog  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "fixtures", "redmi-android15.log")
 FIXTURE_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15.device.txt")
+FIXTURE4 = os.path.join(HERE, "fixtures", "redmi-android15-run4.log")
+FIXTURE4_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run4.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -205,6 +207,47 @@ class RedmiRunTest(unittest.TestCase):
         self.assertTrue(any(c.verdict == analyze.FAIL for c in self.checks.values()))
 
 
+class RedmiRun4Test(unittest.TestCase):
+    """The fourth run on the same phone: every launch reached the guest's Activity.
+
+    A second fixture rather than a replacement, because the two runs fail differently and
+    both are worth keeping. The third run is the one where nothing launched; this is the
+    one where everything launched and was wrong anyway — rendering in software, refused a
+    licence check, and handed an empty meta-data bundle. Every one of those went unnamed
+    the first time this log was read, which is why the checks that name them exist.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE4, FIXTURE4_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_every_launch_reached_the_guest(self):
+        check = self.checks["launch"]
+        self.assertEqual(check.verdict, analyze.PASS)
+        self.assertIn("10/10", notes(check))
+
+    def test_software_rendering_is_named_once_per_cause(self):
+        check = self.checks["render"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        # Both signals are present in this run and each is reported once: the crash that
+        # names the RenderNode, and the `drawSoftware` frame that is the same fact quietly.
+        self.assertIn("FLAG_HARDWARE_ACCELERATED", findings(check))
+        self.assertIn("hardware acceleration was off", findings(check))
+        self.assertEqual(len(check.findings), 2)
+
+    def test_the_licence_bind_is_reported_with_its_repeat_count(self):
+        check = self.checks["startup"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("CHECK_LICENSE", findings(check))
+        # Folded: the licence client retries, and twenty copies of one fact bury the rest.
+        self.assertEqual(len([f for f in check.findings if "CHECK_LICENSE" in f.detail]), 1)
+        self.assertIn("System.exit", notes(check))
+
+    def test_the_missing_gms_meta_data_is_found(self):
+        self.assertIn("metaData", findings(self.checks["startup"]))
+
+
 HEALTHY = """\
 2026-01-01 10:00:00.000 I PROCESS PROCESS_START process=com.unique kind=CORE sdk=35 abi=arm64-v8a
 2026-01-01 10:00:00.010 I NATIVE NATIVE_LOADED pageSize=4096
@@ -313,6 +356,56 @@ class BrokenRunTest(unittest.TestCase):
         )
         self.assertEqual(check.verdict, analyze.PASS)
         self.assertIn("it was ended first", notes(check))
+
+    def test_a_render_node_crash_on_the_software_rasteriser_fails(self):
+        check = self.check_for(
+            "2026-01-01 10:00:05.000 E AndroidRuntime java.lang.IllegalArgumentException: "
+            "Software rendering doesn't support drawRenderNode\n",
+            "render",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("FLAG_HARDWARE_ACCELERATED", findings(check))
+
+    def test_a_healthy_run_is_not_reported_as_rendering_in_software(self):
+        check = self.check_for("", "render")
+        self.assertEqual(check.verdict, analyze.PASS)
+
+    def test_the_missing_gms_meta_data_is_a_startup_failure(self):
+        check = self.check_for(
+            "2026-01-01 10:00:05.000 E FA Task exception on worker thread: "
+            "java.lang.IllegalStateException: A required meta-data tag in your app's "
+            "AndroidManifest.xml does not exist. You must have the following declaration "
+            "within the <application> element: <meta-data "
+            'android:name="com.google.android.gms.version" />\n',
+            "startup",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("metaData", findings(check))
+
+    def test_an_exit_on_its_own_is_a_note_not_a_failure(self):
+        # An app may legitimately call System.exit. It is worth seeing beside a refusal
+        # and is not evidence of one on its own.
+        check = self.check_for(
+            "2026-01-01 10:00:05.000 I om.unique:vapp0 System.exit called, status: 0\n",
+            "startup",
+        )
+        self.assertEqual(check.verdict, analyze.PASS)
+        self.assertIn("System.exit", notes(check))
+
+    def test_a_refused_orientation_fails_and_an_applied_one_does_not(self):
+        refused = self.check_for(
+            "2026-01-01 10:00:05.000 W LAUNCH u0 com.example.app ACTIVITY_ORIENTATION_APPLIED "
+            "activity=com.example.app.Game orientation=6 applied=false\n",
+            "orientation",
+        )
+        self.assertEqual(refused.verdict, analyze.FAIL)
+        applied = self.check_for(
+            "2026-01-01 10:00:05.000 I LAUNCH u0 com.example.app ACTIVITY_ORIENTATION_APPLIED "
+            "activity=com.example.app.Game orientation=6 applied=true\n",
+            "orientation",
+        )
+        self.assertEqual(applied.verdict, analyze.PASS)
+        self.assertIn("declared orientation", notes(applied))
 
     def test_a_native_scan_with_a_broken_watch_fails(self):
         check = self.check_for(

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The value a meta-data *reference* resolves to.
+
+  Kept in the resource table rather than written into the manifest so the probe exercises
+  the path the platform actually takes: `android:value="@integer/probe_number"` compiles
+  to a reference, and only an engine that resolves it against the app's own resources can
+  hand back the number. UNIQUE handed back nothing at all, and Play services throws on
+  precisely that.
+-->
+<resources>
+    <integer name="probe_number">240508</integer>
+</resources>

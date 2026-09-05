@@ -188,6 +188,8 @@ class AppState extends ChangeNotifier {
   Future<EngineOutcome> setInstancePermission(int vuid, String group, bool granted) =>
       _bridge.setInstancePermission(vuid, group, granted);
 
+  Future<EngineOutcome> openHostSettings() => _bridge.openHostSettings();
+
   void _listenToDiagnostics() {
     _bridge.diagnostics().listen((record) {
       _diagnostics.insert(0, record);

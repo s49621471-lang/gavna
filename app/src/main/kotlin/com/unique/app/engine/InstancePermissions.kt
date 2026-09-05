@@ -36,6 +36,13 @@ object InstancePermissions {
         val permissions: List<String>,
         val state: PermissionState,
         val blockedByHost: Boolean,
+        /**
+         * The permissions of this group UNIQUE itself does not hold.
+         *
+         * Carried to the UI because "blocked" is not the end of the story: the user can
+         * unblock it, and the switch is what should ask. See [UniqueBridge].
+         */
+        val missingHostPermissions: List<String> = emptyList(),
     ) {
         fun toMap(): Map<String, Any?> = mapOf(
             "group" to group.name,
@@ -44,6 +51,7 @@ object InstancePermissions {
             "state" to state.name,
             "blockedByHost" to blockedByHost,
             "granted" to (state == PermissionState.GRANTED),
+            "missingHostPermissions" to missingHostPermissions,
         )
     }
 
@@ -73,6 +81,9 @@ object InstancePermissions {
                 permissions = mine,
                 state = if (hostHolds) state else PermissionState.DENIED,
                 blockedByHost = !hostHolds,
+                missingHostPermissions = mine.filter {
+                    context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                },
             )
         }
     }

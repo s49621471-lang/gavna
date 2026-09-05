@@ -58,16 +58,10 @@ object VirtualProviderRegistry {
             val result = runCatching {
                 val clazz = Class.forName(entry.className, true, ready.application.classLoader)
                 val provider = clazz.getDeclaredConstructor().newInstance() as ContentProvider
-                val info = ProviderInfo().apply {
-                    name = entry.className
-                    packageName = ready.params.packageName
-                    processName = ready.params.processName
-                    applicationInfo = ready.applicationInfo
-                    authority = entry.authorities.joinToString(";")
-                    exported = entry.exported
-                    enabled = entry.enabled
-                    grantUriPermissions = true
-                }
+                // Built where every other component info is built, so a provider reports
+                // the same meta-data, permissions and `grantUriPermissions` here as it
+                // does through the guest's own PackageManager.
+                val info = AppBootstrap.buildProviderInfo(ready.applicationInfo, ready.params, entry)
                 // attachInfo runs the provider's own onCreate, exactly as the platform
                 // does at process start.
                 provider.attachInfo(ready.application, info)
