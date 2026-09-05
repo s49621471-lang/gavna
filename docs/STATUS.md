@@ -43,7 +43,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | APK survey (DEX reader, service map) | 15 | The reader is checked against a real checked-in APK |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**171 JVM tests, 15 Dart tests, 34 native checks, 43 off-device tool tests — all passing.**
+**177 JVM tests, 15 Dart tests, 34 native checks, 52 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -69,9 +69,13 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-125829-4200`, the `verify` build a tester is handed, Android 14 x86_64,
-probe **not installed on the device**. **38 of 38 pass.**
-Full output in `docs/evidence/phase3-4-instrumentation.txt`.
+Android 14 x86_64, probe **not installed on the device**. The suite is **46 tests**, and
+the newest run — `RUN_ID=final`, the `debug` build — passes all of them.
+
+The last run of the `verify` build a tester is actually handed, `20260905-125829-4200`,
+was **38 of 38** against the suite as it stood then; `t39`–`t46` were added after it and
+have only been run on `debug`. Full output of that run in
+`docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
 |---|---|
@@ -113,6 +117,14 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t36` a guest reaching another app's provider gets a well-formed answer | **PASS** |
 | `t37` the device report, the checklist and an export that carries no app data | **PASS** |
 | `t38` a guest reads a setting, and is called by its own name | **PASS** |
+| `t39` the guest's window is hardware-accelerated, read after it was attached | **PASS** |
+| `t40` the guest's declared `screenOrientation` reaches the platform | **PASS** |
+| `t41` the guest reads its own meta-data, with a resource reference resolved | **PASS** |
+| `t42` the guest resolves its own components through its own PackageManager | **PASS** |
+| `t43` the guest sees its own process name, and not UNIQUE's | **PASS** |
+| `t44` the guest's external storage is its own, and can be written to | **PASS** |
+| `t45` a launch redelivered to a running activity arrives as the guest's own intent | **PASS** |
+| `t46` the guest starts its own service by action, with no class named | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -593,6 +605,34 @@ exists for, the caller re-warmed a busy process twice, and ActivityManager kille
 process it was waiting for. Before the graft the context still is UNIQUE's, so its own
 package name is both available and correct.
 
+### Putting it on the emulator: five more faults the reading could not have found
+
+The pass above was reasoned from a phone log. Running it produced five faults that no
+amount of re-reading would have:
+
+| Found on the emulator | Fixed by |
+|---|---|
+| `windowHardwareAccelerated=false` **with** `activityInfoFlags=512`. The `ActivityInfo` carried the bit, `Activity.attach` is where the platform reads it, and the window still came up without it | The window is told directly, with `Window.setFlags` from `onActivityPreCreated` — before `setContentView` builds the decor, and recorded as a *forced* flag so `generateLayout` cannot clear it. The `ActivityInfo` keeps the bit as well |
+| `metaDataNumber` came back as the resource id rather than `240508`: `LoadedApk.getResources()` is null that early, so a `@integer` reference had nothing to resolve against | The `metaData` bundle is rebuilt from the `Application`'s own resources once `makeApplication` has run |
+| `getExternalFilesDir()` threw `SecurityException: callingPackage does not match UID` — the `mount` guard shadows the generic caller-package rewrite, because the first shim that binds to a method wins | The guard carries the rewrite itself, and says why at [`VirtualExternalStorage.shims`] |
+| With that fixed, external storage still pointed at `/storage/emulated/0`: `StorageVolume.mPath` is a `File`, and writing a `String` into it is an `IllegalArgumentException` that the surrounding `runCatching` turned into a quiet false | The field's declared type is read and the value built to match; the repoint is now reported (`EXTERNAL_VOLUME_REPOINTED`) rather than only its failure |
+| A second launch of a running app produced nothing at all. `FLAG_ACTIVITY_NEW_TASK` onto a task already running the component is `START_DELIVERED_TO_TOP`, and the intent that arrives is UNIQUE's *stub* intent — which `ActivityThread` then assigns to `Activity.mIntent`, so `getIntent()` answers with it for the rest of that activity's life | `NewIntentItem` is rewritten in place, keeping the `ReferrerIntent` the platform reads the referrer from (`t45`) |
+
+Two more came from reading the fourth log once more with the emulator's answers in hand:
+
+| Found | Fixed by |
+|---|---|
+| An implicit service start scoped to the guest — `new Intent(ACTION).setPackage(getPackageName())`, how a great many SDKs reach their own worker — resolved to nothing, because the platform has no filters for a package it never installed | Resolved against the guest's own manifest, and only when exactly one service matches; more than one is refused rather than guessed, as `bindService` refuses it (`t46`) |
+| A Settings screen an app opens about itself named the guest in a `package:` URI, so the device's Settings had nothing to open. In the fourth log a cleaner app sent `MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` and it left the guest for `com.android.settings`, which could only fail | The URI is retargeted to UNIQUE, whose uid is the one that would actually hold the access — so the switch the user is sent to is the switch that works |
+
+And one thing that was not UNIQUE at all, but was making every run after `t36` unreadable:
+this emulator's Bluetooth stack cannot finish its own handshake under load
+(`AdapterState TURNING_ON : BREDR_START_TIMEOUT`), dies, is restarted by
+`BluetoothManagerService`, and from then on `com.android.bluetooth` restarts every twenty
+seconds. One run cost 45 process starts and four tests timed out waiting for an app that
+was simply not being scheduled. `tools/verify-device.sh` now turns Bluetooth off **on an
+emulator only** — a physical device's is the owner's to decide.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -634,7 +674,6 @@ visible to unit tests:
 | A guest's launch had no starting window and no transition animation, from two undocumented overrides on the stub theme | fixed (both removed; the platform's own behaviour) |
 | **Every virtual activity rendered in software**: the substituted `ActivityInfo` carried no `flags`, and `Activity.attach` reads exactly that bit to decide. Slow for everything, fatal for anything drawing through a `RenderNode` | fixed (`android:hardwareAccelerated` parsed with the platform's two-level default; `WindowAttributesTest`, `t39`) |
 | A landscape game opened portrait: the platform takes the orientation from the *stub's* manifest entry | fixed (`setRequestedOrientation` before the guest's `onCreate`; `t40`) |
-| A guest whose manifest does not declare a config change was never relaunched for one, because the stub declares them all | fixed (an undeclared change the guest cares about produces `Activity.recreate`, which is the platform's own answer) |
 | PAIRIP-signed apps killed themselves at startup: Play's licensing service is guarded by `com.android.vending.CHECK_LICENSE`, which the guest declared and UNIQUE did not | fixed (declared, with `READ_GSERVICES`, the FCM receive permission and the install-referrer bind) |
 | `ApplicationInfo.metaData` was always null, so Play services threw `A required meta-data tag … does not exist` on an app that declares it | fixed (typed meta-data entries, resolved against the guest's own resources; `t41`) |
 | `getPackageInfo` ignored its flags — `GET_ACTIVITIES`, `GET_SERVICES`, `GET_META_DATA` all returned null | fixed (`GuestComponents`; `t42`) |
@@ -645,6 +684,15 @@ visible to unit tests:
 | **The `slotStarting` announcement was a no-op on a cold process** (`hostPackage` is set later in the graft), so a waiting caller re-warmed a process that was mid-graft and ActivityManager killed it: `bg anr`, forty-five seconds into a launch | fixed (the announcement falls back to the context's own package, which before the graft is UNIQUE's) |
 | A 1.6 GB APK's signature was verified on the main thread during the graft, 2.5 s, tripping the OEM hang watchdog | fixed (loaded on its own thread, waited for only by a caller that asked for signatures) |
 | `service download was not proxied: service not available`, ten times a run — there is no binder service called `download` | fixed (removed; `DownloadManager` is a `ContentResolver` client) |
+| The hardware-acceleration bit was on the `ActivityInfo` and the window still came up without it on an Android 14 device | fixed (`Window.setFlags` before the guest's `onCreate`, which also records it as forced so `generateLayout` cannot clear it; `t39`) |
+| A `@integer` reference in the guest's meta-data resolved to its resource id, because `LoadedApk.getResources()` is null during the graft | fixed (the bundle is rebuilt from the `Application`'s own resources once `makeApplication` has run; `t41`) |
+| `getVolumeList` was refused with `callingPackage does not match UID` **after** `mount` was proxied: the external-storage guard shadows the generic caller-package rewrite, because the first shim that binds to a method wins | fixed (the guard carries the rewrite itself, and says so where a reader will look) |
+| With that fixed, external storage still pointed at `/storage/emulated/0`: `StorageVolume.mPath` is a `File`, and writing a `String` into it is an `IllegalArgumentException` the surrounding `runCatching` turned into a quiet false | fixed (the field's declared type is read and the value built to match; the repoint is reported, not only its failure; `t44`) |
+| **A second launch of an app that was already running produced nothing.** `FLAG_ACTIVITY_NEW_TASK` onto a task already running the component is `START_DELIVERED_TO_TOP`, and the intent delivered was UNIQUE's *stub* intent — which `ActivityThread` assigns to `Activity.mIntent`, so `getIntent()` answered with it from then on | fixed (`NewIntentItem` rewritten in place, keeping the `ReferrerIntent` the platform reads the referrer from; `t45`) |
+| An implicit service start scoped to the guest resolved to nothing, because the platform has no filters for a package it never installed — the shape a great many SDKs use to reach their own worker | fixed (resolved against the guest's own manifest, and only when exactly one service matches; `t46`) |
+| A Settings screen an app opens about itself named the guest in a `package:` URI, so the device's Settings had nothing to open and a cleaner app's onboarding dead-ended | fixed (retargeted to UNIQUE, whose uid is the one that would hold the access) |
+| `getInstallerPackageName` threw `IllegalArgumentException: Unknown package` for the guest — unchecked, and called by nearly every analytics and update SDK on launch | fixed (answered as null, which is what a sideloaded app gets and what UNIQUE is; `t42`) |
+| A Chromium renderer crash from the WebView test arrived two seconds into the *next* test and killed the process it had just started, reporting a Chromium fault as `t31` failing to resolve an implicit intent | fixed in the suite (`t30` retires the process that hosted the WebView, so the abort has nothing left to take with it) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step
@@ -692,6 +740,20 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
   worth carrying to hardware.
 
 
+- **A guest is never relaunched for a config change it did not declare.**
+  `ActivityRecord.shouldRelaunchLocked` reads the *stub's* `android:configChanges`, and the
+  stub declares every change it can, so a guest that did not declare `orientation` keeps
+  the layout it loaded in the other one after a rotation. Calling `Activity.recreate()` for
+  an undeclared change is the obvious answer and was tried: in the acceptance suite it
+  resurrected an activity from an earlier test, which re-applied its landscape orientation
+  and rotated the display around a permission request, destroying the activity that was
+  waiting for the result. A stale layout is a cosmetic fault; a lost activity result is
+  not. It stays a limit until there is a way to do it that cannot touch an activity with
+  work in flight.
+- **An implicit service intent with no package at all cannot be helped.**
+  `ContextImpl.validateServiceIntent` throws in the *app's* own process, before any call
+  reaches ActivityManager, so UNIQUE never sees it. What UNIQUE can resolve — and now
+  does — is the far commoner shape, `setPackage(getPackageName())` with no component.
 - **No AOT.** Since Android 10 an app cannot invoke `dex2oat`, so virtual apps are
   JIT-only and cold start is slower than an installed app. This is a platform property.
 - **Attestation.** Play Integrity, Play Games and Play Billing are expected not to work
@@ -742,9 +804,14 @@ caught `restrictions`, `locale` and `connectivity` before one did.
    procedure, in the order that makes one failure explain the next.
 4. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-5. **Verifying the minified release build.** The artifact a tester is actually given is
+5. **Re-running the `verify` build.** Eight tests (`t39`–`t46`) have only been run on
+   `debug`, and the `verify` build is what a tester installs — the difference is not
+   cosmetic: it is unminified but non-debuggable, so ActivityManager holds it to the
+   ordinary ten-second process-start budget.
+6. **Verifying the minified release build.** The artifact a tester is actually given is
    already covered: `BUILD_TYPE=verify ./tools/verify-device.sh` runs the whole suite
-   against the exact APK in `dist/` — not a near neighbour of it — and passes 37 of 37.
+   against the exact APK in `dist/` — not a near neighbour of it — and passed 38 of 38
+   against the suite as it stood then.
    What is left is R8. The minified build assembles and signs, and its keep rules hold
    structurally: the stub pool, the router and shared providers, `UniqueNative` and the
    native entry points all survive, checked on the artifact. But the suite cannot be

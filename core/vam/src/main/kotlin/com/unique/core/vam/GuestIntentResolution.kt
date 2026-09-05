@@ -98,6 +98,20 @@ internal object GuestIntentResolution {
     }
 
     /**
+     * The guest's own service declarations that would serve [intent].
+     *
+     * Exposed because a *start* has the same question as a query: an SDK that binds its
+     * own worker by action rather than by class — `new Intent(ACTION_MY_SERVICE)` — is
+     * asking the platform to resolve against a package the platform has never installed.
+     * See `VirtualActivityManagerHook.routeService`.
+     */
+    fun serviceEntries(
+        manifest: ApkManifest,
+        intent: Intent,
+        guestPackage: String,
+    ): List<ComponentEntry> = componentsFor(manifest, intent, guestPackage, ComponentKind.SERVICE)
+
+    /**
      * Filter matching for a service or a receiver.
      *
      * `VirtualIntentResolver` covers activities only, because that is the kind whose

@@ -119,6 +119,9 @@ object LaunchInterceptor {
                         report("TRANSACTION_REWRITE_FAILED",
                             mapOf("error" to it.toString(), "seen" to transactionsSeen.toString()))
                     }
+                    runCatching { rewriteNewIntents(msg) }.onFailure {
+                        report("NEW_INTENT_REWRITE_FAILED", mapOf("error" to it.toString()))
+                    }
                     runCatching { observePermissionResult(msg) }.onFailure {
                         report("PERMISSION_RESULT_READ_FAILED", mapOf("error" to it.toString()))
                     }
@@ -351,6 +354,103 @@ object LaunchInterceptor {
     }
 
     // ---------------------------------------------------------------------------------
+    // Redelivered intents
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * Gives a redelivered intent back to the guest before `onNewIntent` sees it.
+     *
+     * A launch does not always create an activity. `FLAG_ACTIVITY_NEW_TASK` alone is
+     * enough for the platform to find the task that is already running the same component
+     * and hand the intent to the activity on top of it instead —
+     *
+     * ```
+     * START u0 {…cmp=com.unique/.stub.ActivityStub_p0_m0_a0} … result code=3
+     * ```
+     *
+     * `START_DELIVERED_TO_TOP`, which is what "tap the app again and it comes back where
+     * you left it" is. It is the right behaviour and UNIQUE keeps it. But the intent that
+     * arrives is the *stub's*: it names `com.unique/.stub.ActivityStub_p0_m0_a0` and
+     * carries UNIQUE's routing extras, and `ActivityThread.deliverNewIntents` assigns it
+     * to `Activity.mIntent` — so from that moment `getIntent()` answers with it too, for
+     * the rest of the activity's life.
+     *
+     * An app that reads its own intent in `onNewIntent` is not doing anything unusual:
+     * that is how a notification tap, a deep link and every `singleTop` screen carry their
+     * argument. Left alone it would read a component that is not its own and find none of
+     * the extras it sent.
+     *
+     * Rewritten **in place** rather than replaced: the list is declared
+     * `List<ReferrerIntent>` and the platform reads `mReferrer` off each element, so a
+     * plain `Intent` substituted for one would lose the referrer and could not be stored
+     * back into the list on a release that copies it.
+     */
+    private fun rewriteNewIntents(msg: Message) {
+        val transaction = msg.obj ?: return
+        // Cheapest test first: this runs on the main thread for every transaction the
+        // process receives, and before the graft there is nothing to rewrite anyway.
+        val ready = AppBootstrap.current ?: return
+        val items = findItems(transaction, "NewIntentItem")
+        if (items.isEmpty()) return
+
+        for (item in items) {
+            val listField = fieldOfType(item.javaClass, List::class.java) ?: run {
+                report("NEW_INTENT_SHAPE_UNKNOWN", mapOf("class" to item.javaClass.name))
+                null
+            } ?: continue
+            val intents = listField.get(item) as? List<*> ?: continue
+            for (element in intents) {
+                val stubIntent = element as? Intent ?: continue
+                val params = VirtualLaunchParams.from(stubIntent) ?: continue
+                if (params.packageName != ready.params.packageName) {
+                    report(
+                        "NEW_INTENT_WRONG_GUEST",
+                        mapOf("carried" to params.packageName, "running" to ready.params.packageName),
+                    )
+                    continue
+                }
+                val entry = AppBootstrap.resolveActivity(ready.manifest, params.targetComponent)
+                if (entry == null) {
+                    report(
+                        "NEW_INTENT_ACTIVITY_NOT_FOUND",
+                        mapOf(
+                            "package" to params.packageName,
+                            "requested" to (params.targetComponent ?: "<launcher>"),
+                        ),
+                    )
+                    continue
+                }
+                unwrapActivityIntentInPlace(stubIntent, params.packageName, entry.className)
+                Diagnostics.info(
+                    DiagChannel.LAUNCH, "NEW_INTENT_REWRITTEN",
+                    mapOf(
+                        "package" to params.packageName,
+                        "activity" to entry.className,
+                        "vuid" to params.vuid.toString(),
+                        "item" to item.javaClass.simpleName,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Restores the guest's component and identifier and strips UNIQUE's routing extras. */
+    private fun unwrapActivityIntentInPlace(intent: Intent, packageName: String, className: String) {
+        val guestIdentifier = intent.getStringExtra(VirtualLaunchIntent.KEY_GUEST_IDENTIFIER)
+        intent.component = ComponentName(packageName, className)
+        intent.setPackage(null)
+        intent.identifier = guestIdentifier
+        intent.removeExtra(VirtualLaunchParams.KEY_VUID)
+        intent.removeExtra(VirtualLaunchParams.KEY_PACKAGE)
+        intent.removeExtra(VirtualLaunchParams.KEY_VERSION_CODE)
+        intent.removeExtra(VirtualLaunchParams.KEY_COMPONENT)
+        intent.removeExtra(VirtualLaunchParams.KEY_KIND)
+        intent.removeExtra(VirtualLaunchParams.KEY_PROCESS)
+        intent.removeExtra(VirtualLaunchParams.KEY_SLOT)
+        intent.removeExtra(VirtualLaunchIntent.KEY_GUEST_IDENTIFIER)
+    }
+
+    // ---------------------------------------------------------------------------------
 
     private fun rewrite(msg: Message) {
         val transaction = msg.obj ?: return
@@ -494,6 +594,35 @@ object LaunchInterceptor {
 
     private fun isLaunchItem(value: Any?): Boolean =
         value != null && value.javaClass.simpleName == "LaunchActivityItem"
+
+    /**
+     * Every item in a `ClientTransaction` whose class has this simple name.
+     *
+     * Same reason as [findLaunchItem] for scanning both list-valued and direct fields, and
+     * the same reason for matching on the simple name: these classes are `@hide` and not
+     * on the app's classpath, so there is no type to compare against.
+     */
+    private fun findItems(transaction: Any, simpleName: String): List<Any> {
+        val out = ArrayList<Any>(1)
+        var clazz: Class<*>? = transaction.javaClass
+        while (clazz != null && clazz != Any::class.java) {
+            for (field in clazz.declaredFields) {
+                field.isAccessible = true
+                val value = runCatching { field.get(transaction) }.getOrNull() ?: continue
+                if (value is List<*>) {
+                    for (element in value) {
+                        if (element != null && element.javaClass.simpleName == simpleName) {
+                            out.add(element)
+                        }
+                    }
+                } else if (value.javaClass.simpleName == simpleName) {
+                    out.add(value)
+                }
+            }
+            clazz = clazz.superclass
+        }
+        return out
+    }
 
     /** One-line description of a transaction's fields, for the NO_LAUNCH_ITEM report. */
     private fun describe(transaction: Any): String = buildString {

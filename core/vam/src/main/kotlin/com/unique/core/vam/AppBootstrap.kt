@@ -381,6 +381,22 @@ object AppBootstrap {
 
         Reflect.set(activityThreadClass, "mInitialApplication", activityThread, application)
 
+        // Meta-data, resolved for real this time.
+        //
+        // The first attempt is made as soon as the `LoadedApk` exists, because a provider's
+        // `onCreate` is the earliest thing that can read `ApplicationInfo.metaData` — but
+        // `LoadedApk.getResources()` that early came back null on an Android 14 device, and
+        // the bundle then carried the resource *id* where the value should be:
+        //
+        //   metaDataNumber=2130771968      (0x7f010000, the reference itself)
+        //
+        // Google Play services reads exactly such an int, so an id is as wrong as nothing.
+        // The Application's own `Resources` are the guest's by construction, and this runs
+        // before its `onCreate` and before its providers.
+        guestResources = runCatching { (application as Application).resources }.getOrNull()
+            ?: guestResources
+        appInfo.metaData = GuestMetaData.bundle(manifest.applicationMetaDataEntries, guestResources)
+
         // The guest's own network security policy, replacing the one the platform installed
         // for UNIQUE before this process was anybody. Cleartext rules and pinning are the
         // guest's decisions; running its traffic under the host's policy is wrong even when

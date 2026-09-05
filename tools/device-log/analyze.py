@@ -641,7 +641,7 @@ def check_known_limits(run: Run) -> Check:
     check = Check("limits", "Which known-unsupported paths did this run reach?")
     codes = {
         "PENDING_INTENT_RECEIVER_UNSUPPORTED": "a PendingIntent aimed at a guest receiver",
-        "SERVICE_INTENT_IMPLICIT": "an implicit service intent the guest could not be given",
+        "SERVICE_INTENT_IMPLICIT": "an implicit service intent no service of the guest matched",
         "ALARM_EXACT_UNAVAILABLE": "exact alarms, which UNIQUE does not hold the permission for",
         "APP_LOCALE_SET_UNSUPPORTED": "a guest setting its own app locale",
         "FGS_TYPE_UNSUPPORTED": "a foreground-service type UNIQUE cannot declare",

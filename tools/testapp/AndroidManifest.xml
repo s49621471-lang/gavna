@@ -9,8 +9,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.unique.probe"
-    android:versionCode="39"
-    android:versionName="1.0.9">
+    android:versionCode="40"
+    android:versionName="1.1.0">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
@@ -52,7 +52,17 @@
              acceptance path is unaffected until the tests exercise them. -->
         <service
             android:name="com.unique.probe.ProbeService"
-            android:exported="false" android:foregroundServiceType="dataSync" />
+            android:exported="false" android:foregroundServiceType="dataSync">
+            <!--
+              Reachable by action, which is how a great many SDKs reach their own worker:
+              the action is a constant they own and the resolution never leaves their
+              package. Under virtualization there is no installed package to resolve
+              against, so this filter is what UNIQUE has to answer from.
+            -->
+            <intent-filter>
+                <action android:name="com.unique.probe.START_BY_ACTION" />
+            </intent-filter>
+        </service>
 
         <!--
           Declares an orientation, which is the point of it.

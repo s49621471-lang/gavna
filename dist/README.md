@@ -24,8 +24,8 @@ rule produces an app that works everywhere except the build people install.
 
 `unique-arm64-v8a-minified.apk` assembles, signs, and its keep rules hold *structurally*:
 the minified dex still carries the stub pool, the router and shared providers,
-`UniqueNative` and the native entry points, and the manifest still declares 272 stub
-components. That was checked on the artifact. It is not the same as running: the
+`UniqueNative` and the native entry points, and the manifest still declares all 281
+components. That was checked on this artifact. It is not the same as running: the
 instrumented suite cannot be pointed at it, because `androidx.tracing.Trace` reaches
 `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so no
 keep rule applies. Install it only to see whether it starts — and if it behaves
@@ -40,17 +40,52 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
-The graft now completes and the guest's activity is launched — the previous build got that
-far and then died reading a setting, on the raw binder, with UNIQUE's wrapper nowhere in
-the stack. `ActivityThread` keeps a *second* cache (`mProviderRefCountMap`) that finds the
-pre-graft record by the wrapper's own binder and discards the wrapper; that one is evicted
-too now, and the wrapper is installed into each `Settings` holder by hand rather than
-arranged for.
+This build answers the four things that log was actually reporting, and eighteen more
+found on the way. The four:
 
-Also from that capture: a guest now gets its **own** network security policy instead of
-UNIQUE's (an app died in Conscrypt closing a TLS socket, and pinning and cleartext rules
-were the host's either way), and a `<provider>` with no `android:name` no longer produces
-six `ClassNotFoundException`s per launch.
+- **Everything was drawing in software.** The `ActivityInfo` UNIQUE substitutes carried no
+  `flags`, and `Activity.attach` reads exactly `FLAG_HARDWARE_ACCELERATED` out of it — so
+  every app UNIQUE has ever run rendered on the CPU. That is the "screen lags" report, and
+  for anything drawing through a `RenderNode` it was not slow but fatal:
+  `IllegalArgumentException: Software rendering doesn't support drawRenderNode`. The window
+  is now told twice — through the `ActivityInfo` and directly, before the app's `onCreate`,
+  because on an Android 14 device the first was not enough.
+- **A landscape game opened portrait.** The platform takes a window's orientation from the
+  manifest entry it has *installed*, which under UNIQUE is a stub declaring `unspecified`.
+  The app's own `android:screenOrientation` is applied before it reads the display size.
+- **`ApplicationInfo.metaData` was empty**, so Google Play services threw on every app that
+  declares `com.google.android.gms.version` — which is most of them. Meta-data is carried
+  now in both shapes, and a `@integer` reference is resolved against the app's own
+  resources.
+- **Play's licence check could not bind**, because UNIQUE never declared
+  `com.android.vending.CHECK_LICENSE`. A PAIRIP-protected app calls `System.exit(0)` when
+  that bind is refused, which is an app vanishing with no crash and no message.
+
+And, from putting all of that on the emulator:
+
+- A **second tap on a running app did nothing**: the platform delivers the launch to the
+  activity that is already there, and what arrived was UNIQUE's routing intent rather than
+  the app's own — which `ActivityThread` then stores as `getIntent()` for the rest of that
+  screen's life.
+- **External storage was unusable.** `getExternalFilesDir()` named a scoped-storage
+  directory UNIQUE may not create, so apps that keep downloads or caches there saw storage
+  as unavailable. It now resolves inside the instance.
+- **An app could not tell you who it was.** `/proc/self/cmdline` read `com.unique:vapp0`,
+  the process list showed UNIQUE's processes, `getLaunchIntentForPackage` for its own
+  package returned null, and `getInstallerPackageName` threw. All four are answers an app
+  expects to be able to get about itself, and apps that check them concluded they were
+  running somewhere they should not.
+- **A permission screen the app opened about itself went nowhere**, because the package it
+  named is not installed. It is retargeted to UNIQUE, which is the uid that actually holds
+  the access.
+
+Also: a guest gets its **own** network security policy instead of UNIQUE's (an app died in
+Conscrypt closing a TLS socket, and pinning and cleartext rules were the host's either
+way), and a `<provider>` with no `android:name` no longer produces six
+`ClassNotFoundException`s per launch.
+
+The on-device suite is **46 of 46** on an Android 14 x86_64 emulator. None of it has been
+back on a phone; `docs/COMPATIBILITY.md` says so per row.
 
 ## What changed since the first phone run
 

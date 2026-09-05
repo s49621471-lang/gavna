@@ -425,46 +425,76 @@ object VirtualActivityManagerHook {
     }.getOrDefault(-1)
 
     /**
+     * The guest's own service an implicit intent names, if exactly one does.
+     *
+     * `new Intent(ACTION_MY_SERVICE)` is how a great many SDKs reach their own worker —
+     * the action is a constant they own, and on a device the resolution never leaves
+     * their package. Under virtualization it leaves nothing at all: the guest is not
+     * installed, so `PackageManagerService` has no filters to match and the start reaches
+     * no one. Resolving it here against the guest's own manifest is the same answer the
+     * platform would have given.
+     *
+     * Three rules keep it from doing harm:
+     *
+     *  - An intent already scoped to *another* package — `pkg=com.android.vending` for
+     *    Play's licensing service is the common one — is left alone. That is an ordinary
+     *    cross-app bind and the platform resolves it correctly. Warning about it filled a
+     *    device log with thirty lines that named nothing wrong, while the real failure was
+     *    a missing `<uses-permission>`.
+     *  - More than one match is refused rather than guessed. The platform would refuse
+     *    too: `bindService` with an implicit intent that resolves to several services is
+     *    an error, not a choice.
+     *  - No match is reported and left alone, so the start still reaches the platform and
+     *    whatever the device would have done, it still does.
+     */
+    private fun resolveImplicitService(
+        ready: AppBootstrap.Result.Ready,
+        intent: Intent,
+    ): ComponentName? {
+        val guest = ready.params.packageName
+        val target = intent.`package`
+        if (target != null && target != guest) {
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_INTENT_CROSS_APP",
+                mapOf("action" to (intent.action ?: "-"), "target" to target),
+            )
+            return null
+        }
+        val matches = GuestIntentResolution.serviceEntries(ready.manifest, intent, guest)
+        if (matches.size != 1) {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
+                mapOf(
+                    "action" to (intent.action ?: "-"),
+                    "package" to guest,
+                    "matches" to matches.size.toString(),
+                ),
+            )
+            return null
+        }
+        val resolved = ComponentName(guest, matches.single().className)
+        Diagnostics.info(
+            DiagChannel.PROCESS, "SERVICE_INTENT_RESOLVED_IN_GUEST",
+            mapOf("action" to (intent.action ?: "-"), "service" to resolved.className),
+        )
+        return resolved
+    }
+
+    /**
      * Rewrites a service intent onto a stub, or returns it unchanged.
      *
      * Unchanged is the right answer for anything that is not a virtual service: UNIQUE's
      * own components share this process, and rewriting their intents would break them.
      *
-     * Implicit intents - no component - are left alone and reported. Resolving one needs
-     * the guest's intent filters, which is provider/receiver work; silently starting the
-     * wrong service would be far worse than a start that visibly does nothing.
+     * An intent with no component is resolved against the *guest's* own manifest first,
+     * because the platform cannot: the guest's package is not installed, so
+     * `PackageManagerService` has no filters for it. Only a match inside the guest is
+     * acted on, and only when there is exactly one — see [resolveImplicitService].
      */
     internal fun routeService(hostPackage: String, intent: Intent): Intent {
         val ready = AppBootstrap.current ?: return intent
-        val component = intent.component
-        if (component == null) {
-            // Only a bind the guest meant for *itself* is a problem. An intent already
-            // scoped to another package — `pkg=com.android.vending` for Play's licensing
-            // service is the common one — is an ordinary cross-app bind that the platform
-            // resolves correctly, and warning about it filled a device log with thirty
-            // lines that named nothing wrong:
-            //
-            //   SERVICE_INTENT_IMPLICIT action=com.android.vending.licensing.ILicensingService
-            //
-            // The real failure there was a missing `<uses-permission>`, and this line was
-            // pointing away from it.
-            val target = intent.`package`
-            if (target == null || target == ready.params.packageName) {
-                Diagnostics.warn(
-                    DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
-                    mapOf(
-                        "action" to (intent.action ?: "-"),
-                        "package" to ready.params.packageName,
-                    ),
-                )
-            } else {
-                Diagnostics.event(
-                    DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_INTENT_CROSS_APP",
-                    mapOf("action" to (intent.action ?: "-"), "target" to target),
-                )
-            }
-            return intent
-        }
+        val component = intent.component ?: resolveImplicitService(ready, intent)
+        if (component == null) return intent
         if (component.packageName != ready.params.packageName) return intent
 
         val entry = ready.manifest.components.firstOrNull {

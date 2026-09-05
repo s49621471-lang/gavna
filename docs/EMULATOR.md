@@ -140,7 +140,7 @@ are the knobs; the script's own header documents them.
 
 ## When it breaks
 
-Three failures accounted for every bad run here, and none of them was UNIQUE's fault.
+Four failures accounted for every bad run here, and none of them was UNIQUE's fault.
 
 **1. Disk.** The container has a fixed allowance and the SDK alone is ~12 GB. When it fills,
 the emulator does not say so — it fails to activate its APEX modules and dies in a boot
@@ -169,7 +169,26 @@ machine and not the engine. `tools/verify-device.sh` now runs `./gradlew --stop`
 building and before instrumenting; the same emulator went to load 1 and cold start dropped
 from 37.5 s to 12.1 s.
 
-**3. A degraded long-running instance.** After many hours the emulator gets slower in ways
+**3. The Bluetooth stack, crash-looping.** It cannot finish its own handshake under load:
+
+```
+E/AdapterState: TURNING_ON : BREDR_START_TIMEOUT
+I/ActivityManager: Process com.android.bluetooth (pid 8156) has died: psvc PER
+```
+
+`BluetoothManagerService` restarts it, it times out again, and from then on the process
+restarts every twenty seconds for the rest of the run. One run cost **45** process starts:
+guest launches that took seconds began taking minutes and four tests timed out waiting for
+an app that was simply not being scheduled. Nothing in UNIQUE touches Bluetooth.
+`tools/verify-device.sh` now disables it before instrumenting — **on an emulator only**,
+because a physical device's Bluetooth belongs to whoever owns the phone. To do it by hand:
+
+```bash
+adb shell svc bluetooth disable
+adb shell settings put global bluetooth_on 0
+```
+
+**4. A degraded long-running instance.** After many hours the emulator gets slower in ways
 that look like engine flakiness — a broadcast delivered two seconds after its 180-second
 timeout, for example. The remedy is to restart it, not to raise a timeout. A timeout raised
 to accommodate a sick machine stops measuring anything.
@@ -185,6 +204,10 @@ Written here because it is the reason `docs/COMPATIBILITY.md` has a second colum
   path.
 - **WebView rendering.** Chromium's renderer crashes here *outside* virtualization too, so
   the test asserts only that the WebView was created with the instance's own data directory.
+  The crash also aborts the process that embedded it, by design, and it arrives a second or
+  two late — so `t30` ends by retiring that process rather than leaving the abort to land in
+  the middle of the next test, which is how a Chromium fault once came back as `t31` failing
+  to resolve an implicit intent.
 - **Anything Google.** `aosp_atd` has no Play services, so every answer is correctly
   "absent" and nothing about a real Google stack is exercised.
 - **OEM framework forks.** HyperOS, One UI and the rest diverge from AOSP in exactly the

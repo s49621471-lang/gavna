@@ -28,6 +28,12 @@ public class ProbeActivity extends Activity {
     /** When this Activity's onCreate began, on the same clock as the process start. */
     private long activityOnCreateUptime = 0L;
 
+    /** How many times this *instance* has been created. A redelivery does not increment it. */
+    private int mCreateCount = 0;
+
+    /** Set once the re-entry below has been started, so onResume does it exactly once. */
+    private boolean mReenterStarted = false;
+
     /** Permission answers seen before the request and in the callback, written once. */
     private final Map<String, String> mPermissionObservations = new LinkedHashMap<String, String>();
 
@@ -35,6 +41,7 @@ public class ProbeActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         activityOnCreateUptime = android.os.SystemClock.uptimeMillis();
+        mCreateCount++;
 
         TextView view = new TextView(this);
         view.setTextColor(Color.WHITE);
@@ -58,12 +65,27 @@ public class ProbeActivity extends Activity {
         }
         view.setText(text.toString());
 
+        // Reported again once the window has been added, which is the only moment
+        // `View.isHardwareAccelerated` means anything: `onCreate` runs before the decor is
+        // attached to a `ViewRootImpl`, and the renderer is decided there. Written to a
+        // file of its own so it cannot race the result the rest of the suite waits for.
+        view.post(new Runnable() {
+            @Override public void run() { writeWindowResult(); }
+        });
+
         Intent request = getIntent();
         if (request != null && request.getBooleanExtra("probe.startService", false)) {
             Log.i(TAG, "starting own service");
             startService(new Intent(this, ProbeService.class)
                     .putExtra("probe.foreground",
                             request.getBooleanExtra("probe.foreground", false)));
+        }
+        if (request != null && request.getBooleanExtra("probe.startServiceByAction", false)) {
+            // No class, only an action — which is how an SDK reaches its own worker, and
+            // the shape the platform cannot resolve for a package it never installed.
+            Log.i(TAG, "starting own service by action");
+            startService(new Intent("com.unique.probe.START_BY_ACTION")
+                    .setPackage(getPackageName()));
         }
         if (request != null && request.getBooleanExtra("probe.bindService", false)) {
             Log.i(TAG, "binding own service");
@@ -214,6 +236,15 @@ public class ProbeActivity extends Activity {
             out.put("launchIntentForSelf", "error: " + t);
         }
         try {
+            // Analytics and update SDKs ask this on nearly every launch. For a package
+            // the platform never installed it threw `IllegalArgumentException: Unknown
+            // package`, which is unchecked and takes the app with it.
+            out.put("installerPackageName",
+                    String.valueOf(pm.getInstallerPackageName(getPackageName())));
+        } catch (Throwable t) {
+            out.put("installerPackageName", "error: " + t);
+        }
+        try {
             android.content.pm.ResolveInfo self = pm.resolveActivity(
                     new Intent(this, ProbeActivity.class), 0);
             out.put("resolveSelfActivity",
@@ -310,6 +341,129 @@ public class ProbeActivity extends Activity {
             return "error: " + t;
         } finally {
             if (in != null) try { in.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    /**
+     * Starts this same activity again with `FLAG_ACTIVITY_SINGLE_TOP`, once, from `onResume`.
+     *
+     * The shape every `singleTop` screen has, and the one a notification tap produces: the
+     * platform does not create a second activity, it hands the intent to this one through
+     * `onNewIntent`. Started from `onResume` rather than `onCreate` because the platform
+     * only *delivers* a new intent while the activity is resumed or paused — before that it
+     * parks it for later.
+     */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Intent request = getIntent();
+        if (!mReenterStarted && request != null
+                && request.getBooleanExtra("probe.reenterSingleTop", false)) {
+            mReenterStarted = true;
+            Log.i(TAG, "re-entering itself with FLAG_ACTIVITY_SINGLE_TOP");
+            getWindow().getDecorView().post(new Runnable() {
+                @Override public void run() {
+                    startActivity(new Intent(ProbeActivity.this, ProbeActivity.class)
+                            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            .putExtra("probe.newIntentExtra", "carried-to-new-intent"));
+                }
+            });
+        }
+    }
+
+    /** What arrived at `onNewIntent`, which is a different intent from the one at create. */
+    public static final String NEW_INTENT_RESULT_FILE = "probe-newintent.properties";
+
+    /**
+     * A launch that reached an activity already running.
+     *
+     * This is `START_DELIVERED_TO_TOP`, which the platform does whenever a task with this
+     * component is already up. What is written here is what the app was handed: its own
+     * component and its own extras, or the routing wrapper the launch travelled in.
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            out.put("activityClass", getClass().getName());
+            out.put("component", intent.getComponent() == null
+                    ? "null" : intent.getComponent().flattenToShortString());
+            out.put("package", String.valueOf(intent.getPackage()));
+            out.put("identifier", String.valueOf(intent.getIdentifier()));
+            out.put("extra", String.valueOf(intent.getStringExtra("probe.newIntentExtra")));
+            StringBuilder keys = new StringBuilder();
+            if (intent.getExtras() != null) {
+                for (String key : intent.getExtras().keySet()) {
+                    if (keys.length() > 0) keys.append(',');
+                    keys.append(key);
+                }
+            }
+            out.put("extraKeys", keys.toString());
+            out.put("createCount", String.valueOf(mCreateCount));
+            // The same question `getIntent()` answers for the rest of this activity's life:
+            // `ActivityThread` assigns the delivered intent to it before this method runs.
+            Intent current = getIntent();
+            out.put("getIntentComponent", current == null || current.getComponent() == null
+                    ? "null" : current.getComponent().flattenToShortString());
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+        }
+        writeProperties(NEW_INTENT_RESULT_FILE, out);
+
+        // The ordinary result is written again, because this activity was *not* created
+        // for this launch and `onCreate` will not run. Anything waiting for the app to
+        // report — the suite, and a person watching the screen — would otherwise see the
+        // launch produce nothing at all.
+        Map<String, String> observations = new LinkedHashMap<String, String>();
+        try {
+            collect(observations);
+        } catch (Throwable t) {
+            observations.put("error", t.toString());
+            Log.e(TAG, "probe failed on redelivery", t);
+        }
+        writeResult(observations);
+        writeWindowResult();
+    }
+
+    /** What the window turned out to be, after it was attached. */
+    public static final String WINDOW_RESULT_FILE = "probe-window.properties";
+
+    private void writeWindowResult() {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        try {
+            int flags = getWindow().getAttributes().flags;
+            out.put("windowFlags", String.valueOf(flags));
+            out.put("windowHardwareAccelerated", String.valueOf(
+                    (flags & android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
+                            != 0));
+            // The question the flag exists to answer: is this view drawing through a
+            // hardware renderer? False on a device with no GPU whatever the flag says, so
+            // the two are reported separately and read separately.
+            out.put("decorHardwareAccelerated",
+                    String.valueOf(getWindow().getDecorView().isHardwareAccelerated()));
+            out.put("requestedOrientation", String.valueOf(getRequestedOrientation()));
+            out.put("activityClass", getClass().getName());
+        } catch (Throwable t) {
+            out.put("error", t.toString());
+        }
+        writeProperties(WINDOW_RESULT_FILE, out);
+    }
+
+    /** Writes one observation file, and logs it, so a failed run is readable from logcat. */
+    private void writeProperties(String name, Map<String, String> out) {
+        try {
+            FileOutputStream stream = new FileOutputStream(new File(getFilesDir(), name), false);
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> e : out.entrySet()) {
+                body.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+                Log.i(TAG, name + " " + e.getKey() + "=" + e.getValue());
+            }
+            stream.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            stream.close();
+        } catch (Throwable t) {
+            Log.e(TAG, "could not write " + name, t);
         }
     }
 

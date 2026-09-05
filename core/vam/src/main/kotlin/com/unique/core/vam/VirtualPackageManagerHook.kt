@@ -214,9 +214,12 @@ object VirtualPackageManagerHook {
          * the device really has and inventing one would be worse than either problem.
          */
         shim("installedPackages") {
+            // Not `getPackagesHoldingPermissions`, which asks a *question* about each
+            // entry: adding the guest to that answer would claim it holds a permission
+            // nobody checked. The guest's own permission state is answered where it
+            // belongs, by `permissionCheck` below.
             matchMethods { method ->
-                method.name == "getInstalledPackages" || method.name == "getInstalledApplications" ||
-                    method.name == "getPackagesHoldingPermissions"
+                method.name == "getInstalledPackages" || method.name == "getInstalledApplications"
             }
             // `replaceWith` rather than `rewriteResult`, because completing the list needs
             // the *flags* the caller passed, and only the call carries those.
@@ -260,6 +263,28 @@ object VirtualPackageManagerHook {
             replaceWith { call ->
                 val uid = call.args.filterIsInstance<Int>().firstOrNull()
                 if (uid == Process.myUid()) packageName else call.proceed()
+            }
+        },
+
+        // Who installed this app.
+        //
+        // `IPackageManager.getInstallerPackageName` throws for a package it does not know:
+        //
+        //   IllegalArgumentException: Unknown package: com.unique.probe
+        //
+        // and that is an *unchecked* exception, unlike the `NameNotFoundException` the
+        // rest of this interface answers a missing package with. Analytics and update
+        // SDKs call it on almost every launch and few of them catch it, so an app asking a
+        // question with an obvious answer crashed on the answer being an error.
+        //
+        // Answered as null, which is what a sideloaded app gets on a real device — and
+        // what UNIQUE actually is, since it imports an APK rather than installing one.
+        // Naming `com.android.vending` would read as "installed from Play" and send apps
+        // down licensing, update and billing paths that cannot work here.
+        shim("getInstallerPackageName") {
+            replaceWith { call ->
+                if (call.args.filterIsInstance<String>().firstOrNull() == packageName) null
+                else call.proceed()
             }
         },
 

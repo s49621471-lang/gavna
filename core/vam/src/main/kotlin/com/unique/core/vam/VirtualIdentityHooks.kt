@@ -214,7 +214,8 @@ object VirtualIdentityHooks {
             ?: return false
         val report = SystemServiceHook.install(
             target,
-            guards(serviceName) + shims(virtualPackage, hostPackage),
+            guards(serviceName, virtualPackage, hostPackage) +
+                shims(virtualPackage, hostPackage),
         )
         if (!report.installed) {
             Diagnostics.warn(
@@ -259,11 +260,23 @@ object VirtualIdentityHooks {
      * Reads are untouched: `getApplicationLocales` returns UNIQUE's, which is the device
      * default, which is what the guest would have seen before it ever set one.
      */
-    private fun guards(serviceName: String): List<MethodShim> = when (serviceName) {
+    /**
+     * Per-service rewrites that go *before* the generic caller-package one.
+     *
+     * A guard shadows it: the first shim that binds to a method wins, so a guard on a
+     * method that also carries a calling-package argument must rewrite that argument
+     * itself. `mount` is the one where this is load-bearing and it is documented at
+     * [VirtualExternalStorage.shims] — which is why the packages are passed in here.
+     */
+    private fun guards(
+        serviceName: String,
+        virtualPackage: String,
+        hostPackage: String,
+    ): List<MethodShim> = when (serviceName) {
         // The volume rewrite is prepended here rather than installed on its own, because
         // installing a service twice replaces the whole proxy: the second install wraps
         // the real interface again and whatever the first bound is gone.
-        "mount" -> VirtualExternalStorage.shims()
+        "mount" -> VirtualExternalStorage.shims(virtualPackage, hostPackage)
         "locale" -> listOf(
             shim("setApplicationLocales") {
                 replaceWith {

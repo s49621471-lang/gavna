@@ -80,6 +80,18 @@ internal object GuestMetaData {
     private fun putReference(bundle: Bundle, entry: MetaDataEntry, resources: Resources?) {
         val id = entry.valueData
         if (resources == null || id == 0) {
+            // Reported, because the difference between "the id" and "the value" is
+            // invisible in the bundle and decides whether Play services throws.
+            if (id != 0) {
+                Diagnostics.warn(
+                    DiagChannel.PROCESS, "META_DATA_NOT_RESOLVED",
+                    mapOf(
+                        "name" to entry.name,
+                        "id" to "0x${Integer.toHexString(id)}",
+                        "reason" to "the guest's resources were not available yet",
+                    ),
+                )
+            }
             bundle.putInt(entry.name, id)
             return
         }

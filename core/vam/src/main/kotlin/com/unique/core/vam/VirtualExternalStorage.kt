@@ -110,12 +110,30 @@ internal object VirtualExternalStorage {
      * It lives there rather than being installed separately because installing a service
      * twice replaces the whole proxy: the second `SystemServiceHook.install` wraps the
      * *real* interface again, and whatever the first one bound is gone.
+     *
+     * It carries the caller-package rewrite itself, and it has to. The first shim that
+     * binds to a method wins, so this one *shadows* the generic rewrite for exactly the
+     * method that most needs it:
+     *
+     * ```java
+     * StorageVolume[] getVolumeList(int uid, String callingPackage, int flags);
+     * ```
+     *
+     * `IStorageManager` checks that `callingPackage` belongs to `uid`, and under
+     * virtualization the package is the guest's while the uid is UNIQUE's. Without the
+     * rule here, the result rewrite below is never reached — the call is refused first:
+     *
+     * ```
+     * SecurityException: callingPackage does not match UID
+     *   at IStorageManager$Stub$Proxy.getVolumeList
+     * ```
      */
-    fun shims(): List<MethodShim> {
+    fun shims(virtualPackage: String, hostPackage: String): List<MethodShim> {
         if (root == null) return emptyList()
         return listOf(
             shim("volumeList") {
                 matchMethods { it.name == "getVolumeList" || it.name == "getVolumes" }
+                rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
                 rewriteResult { result -> rewriteVolumes(result) }
             },
         )
@@ -141,16 +159,31 @@ internal object VirtualExternalStorage {
         return out
     }
 
-    /** Writes the instance's path into a `StorageVolume`, in both spellings it carries. */
+    /**
+     * Writes the instance's path into a `StorageVolume`, in both spellings it carries.
+     *
+     * Written through the field's *declared type* rather than as a string. `mPath` and
+     * `mInternalPath` are `File` on every release this has been read on, and handing a
+     * `String` to `Field.set` is an `IllegalArgumentException` that the surrounding
+     * `runCatching` turns into a quiet false — which is what
+     * `EXTERNAL_VOLUME_SHAPE_UNKNOWN class=android.os.storage.StorageVolume` was: the
+     * field was found, and the value was the wrong type. Reading the type keeps this
+     * correct if a release ever changes it back to a string.
+     */
     private fun repoint(volume: StorageVolume, path: String): Boolean {
-        var wrote = false
-        for (field in listOf("mPath", "mInternalPath")) {
-            if (Reflect.set(StorageVolume::class.java, field, volume, path)) wrote = true
+        val written = ArrayList<String>(2)
+        for (name in listOf("mPath", "mInternalPath")) {
+            if (writePath(volume, name, path)) written += name
         }
-        if (!wrote) {
+        if (written.isEmpty()) {
             Diagnostics.warn(
                 DiagChannel.STORAGE, "EXTERNAL_VOLUME_SHAPE_UNKNOWN",
-                mapOf("class" to volume.javaClass.name),
+                mapOf(
+                    "class" to volume.javaClass.name,
+                    "fields" to volume.javaClass.declaredFields.joinToString(",") {
+                        "${it.name}:${it.type.simpleName}"
+                    }.take(300),
+                ),
             )
             return false
         }
@@ -160,6 +193,21 @@ internal object VirtualExternalStorage {
         Reflect.set(StorageVolume::class.java, "mPrimary", volume, true)
         Reflect.set(StorageVolume::class.java, "mEmulated", volume, true)
         Reflect.set(StorageVolume::class.java, "mRemovable", volume, false)
+        Diagnostics.info(
+            DiagChannel.STORAGE, "EXTERNAL_VOLUME_REPOINTED",
+            mapOf("path" to path, "fields" to written.joinToString(",")),
+        )
         return true
+    }
+
+    /** Sets one path-valued field, as whatever type this release declares it to be. */
+    private fun writePath(volume: StorageVolume, name: String, path: String): Boolean {
+        val field = Reflect.findField(StorageVolume::class.java, name) ?: return false
+        val value: Any = when (field.type) {
+            File::class.java -> File(path)
+            String::class.java -> path
+            else -> return false
+        }
+        return Reflect.set(StorageVolume::class.java, name, volume, value)
     }
 }

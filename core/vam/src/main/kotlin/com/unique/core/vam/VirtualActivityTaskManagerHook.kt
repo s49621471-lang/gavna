@@ -114,7 +114,8 @@ object VirtualActivityTaskManagerHook {
         // Before anything else: a `content://` URI belonging to this guest is unusable to
         // anyone outside UNIQUE, and this is the last point at which it can be made usable.
         // See VirtualUriGrants.
-        val intent = VirtualUriGrants.rewriteOutgoing(hostPackage, rawIntent, ready)
+        val granted = VirtualUriGrants.rewriteOutgoing(hostPackage, rawIntent, ready)
+        val intent = retargetSettingsIntent(hostPackage, granted, ready)
         val component = intent.component
         if (component == null) return routeImplicit(hostPackage, intent, ready)
         if (component.packageName != ready.params.packageName) return intent
@@ -137,6 +138,106 @@ object VirtualActivityTaskManagerHook {
             ),
         )
         return stubIntent
+    }
+
+    /** Settings screens an app opens *about itself*, all of them naming it in the data URI. */
+    private const val SETTINGS_ACTION_PREFIX = "android.settings."
+
+    /** `Settings.EXTRA_APP_PACKAGE` — the notification screens name the app in an extra. */
+    private const val EXTRA_APP_PACKAGE = "android.provider.extra.APP_PACKAGE"
+
+    /**
+     * Points a guest's "open my settings page" intent at UNIQUE's, which is the real one.
+     *
+     * Every special access an app cannot request with a dialog — all-files access, usage
+     * access, overlay, exact alarms, unknown sources, and the notification screens — is
+     * asked for by starting a Settings activity that names the app in a `package:` URI:
+     *
+     * ```java
+     * startActivity(new Intent(ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+     *                          Uri.parse("package:" + getPackageName())));
+     * ```
+     *
+     * On a device that opens the app's own page. Under UNIQUE the package named is not
+     * installed, so Settings has nothing to open — in the fourth device log a cleaner app
+     * sent exactly this and it left the guest for `com.android.settings`, which could only
+     * fail. The user is left with a dead end in the middle of the app's own onboarding.
+     *
+     * The uid that would actually hold the access is UNIQUE's — a guest runs inside it —
+     * so UNIQUE's page is not a substitute for the guest's page, it *is* the page where
+     * this decision is made. Retargeting the URI takes the user to the switch that works.
+     *
+     * Narrow on purpose: only `android.settings.*` actions, only when the package named is
+     * this guest's. A guest opening some other app's settings page, or a Settings screen
+     * that is not about a package at all, is left exactly as it was.
+     */
+    private fun retargetSettingsIntent(
+        hostPackage: String,
+        intent: Intent,
+        ready: AppBootstrap.Result.Ready,
+    ): Intent {
+        // The action is checked before anything else so an ordinary start costs one
+        // string comparison: reading an extra unparcels the whole bundle, and an intent
+        // that came from another app can carry a class this process cannot load.
+        val action = intent.action ?: return intent
+        if (!action.startsWith(SETTINGS_ACTION_PREFIX)) return intent
+        val guest = ready.params.packageName
+        val uri = intent.data
+        val decision = settingsRetarget(
+            action = action,
+            dataScheme = uri?.scheme,
+            dataPackage = uri?.schemeSpecificPart,
+            extraPackage = runCatching { intent.getStringExtra(EXTRA_APP_PACKAGE) }.getOrNull(),
+            guestPackage = guest,
+        )
+        if (!decision.needed) return intent
+
+        val retargeted = Intent(intent).apply {
+            if (decision.rewriteData) {
+                setData(android.net.Uri.fromParts("package", hostPackage, null))
+            }
+            if (decision.rewriteExtra) putExtra(EXTRA_APP_PACKAGE, hostPackage)
+        }
+        Diagnostics.info(
+            DiagChannel.LAUNCH, "SETTINGS_INTENT_RETARGETED",
+            mapOf(
+                "action" to action,
+                "package" to guest,
+                "to" to hostPackage,
+                "detail" to "the guest's package is not installed, and the access this " +
+                    "screen grants is held by UNIQUE's uid",
+            ),
+        )
+        return retargeted
+    }
+
+    /** Which halves of a Settings intent name the guest. */
+    internal data class SettingsRetarget(val rewriteData: Boolean, val rewriteExtra: Boolean) {
+        val needed: Boolean get() = rewriteData || rewriteExtra
+    }
+
+    /**
+     * The decision behind [retargetSettingsIntent], as plain strings so it can be tested.
+     *
+     * Both halves are checked independently because an app may set either: the all-files
+     * and overlay screens read the `package:` URI, the notification screens read
+     * `Settings.EXTRA_APP_PACKAGE`, and `APP_NOTIFICATION_SETTINGS` is sometimes sent with
+     * both.
+     */
+    internal fun settingsRetarget(
+        action: String?,
+        dataScheme: String?,
+        dataPackage: String?,
+        extraPackage: String?,
+        guestPackage: String,
+    ): SettingsRetarget {
+        if (action == null || !action.startsWith(SETTINGS_ACTION_PREFIX)) {
+            return SettingsRetarget(rewriteData = false, rewriteExtra = false)
+        }
+        return SettingsRetarget(
+            rewriteData = dataScheme == "package" && dataPackage == guestPackage,
+            rewriteExtra = extraPackage == guestPackage,
+        )
     }
 
     /** Builds the stub intent for a guest activity that has already been chosen. */

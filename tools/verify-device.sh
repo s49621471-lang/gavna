@@ -147,6 +147,24 @@ if adb shell pm path com.unique.probe 2>/dev/null | grep -q package; then
 fi
 echo "   probe carried in the test APK, not installed on the device"
 
+# Bluetooth off, on an emulator.
+#
+# Nothing in UNIQUE touches Bluetooth, but on this software-only emulator the stack
+# cannot finish its own handshake under load: `AdapterState TURNING_ON :
+# BREDR_START_TIMEOUT`, the process dies, `BluetoothManagerService` starts it again, and
+# from then on `com.android.bluetooth` restarts every twenty seconds for the rest of the
+# run. In the run before this line existed that loop began during `t36` and cost 45
+# process starts; the guest launches after it took minutes instead of seconds and four
+# tests timed out waiting for an app that was simply not being scheduled.
+#
+# Only on an emulator: a physical device's Bluetooth is the owner's to decide, and a run
+# must not turn theirs off.
+if adb shell getprop ro.build.characteristics | grep -q emulator; then
+    adb shell svc bluetooth disable > /dev/null 2>&1 || true
+    adb shell settings put global bluetooth_on 0 > /dev/null 2>&1 || true
+    echo "   bluetooth disabled (emulator only; its stack crash-loops under load here)"
+fi
+
 echo "== run acceptance suite =="
 adb logcat -c 2>/dev/null
 adb logcat -v time > "$logs/logcat.txt" 2>&1 &

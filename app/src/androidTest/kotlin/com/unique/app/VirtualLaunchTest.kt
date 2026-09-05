@@ -1602,7 +1602,8 @@ class VirtualLaunchTest {
         assertThat(created["createError"]).isNull()
         assertThat(created["created"]).isEqualTo("true")
         assertThat(created["packageName"]).isEqualTo(probePackage)
-        assertThat(created["callerPid"]!!.toInt()).isNotEqualTo(Process.myPid())
+        val guestPid = created["callerPid"]!!.toInt()
+        assertThat(guestPid).isNotEqualTo(Process.myPid())
 
         // WebView is a separate APK loaded into the guest's process as a shared library.
         // Creating one at all means the class loader and the native loader both coped with
@@ -1629,6 +1630,7 @@ class VirtualLaunchTest {
                     "one correctly: provider=${created["provider"]} " +
                     "dataDir=${created["databasePath"]}",
             )
+            retireWebViewProcess(guestPid)
             return@runBlocking
         }
 
@@ -1643,6 +1645,34 @@ class VirtualLaunchTest {
         // executed still reports "loaded", which is the failure this catches.
         assertThat(loaded["title"]).isEqualTo("ready:2")
         assertThat(loaded["destroyed"]).isEqualTo("true")
+        retireWebViewProcess(guestPid)
+    }
+
+    /**
+     * Ends the process that hosted a WebView, and waits for it to be gone.
+     *
+     * Not tidiness. When a Chromium renderer dies the embedding process is aborted with
+     * it, on purpose:
+     *
+     * ```
+     * F/DEBUG: Abort message: '[FATAL:crashpad_client_linux.cc(732)] Render process
+     *   (12997)'s crash wasn't handled by all associated webviews, triggering
+     *   application crash.'
+     * I/ActivityManager: Process com.unique:vapp0 (pid 12943) has died: fg TOP
+     * ```
+     *
+     * On this emulator that renderer crash is reliable — it is why WebView rendering is
+     * `NOT_TESTED` here at all — and it arrives *asynchronously*, a second or two later.
+     * In one run it landed two seconds into the next test's launch and killed the process
+     * that test had just started, reporting a Chromium fault as `t31` failing to resolve
+     * an implicit intent. Retiring the process here means the abort has nothing left to
+     * take with it.
+     *
+     * Failures are swallowed: the process may already be gone, which is the same outcome.
+     */
+    private fun retireWebViewProcess(pid: Int) {
+        runCatching { killAndWait(pid) }
+        Thread.sleep(2_000)
     }
 
     /**
@@ -2515,16 +2545,24 @@ class VirtualLaunchTest {
     @Test
     fun t39_theGuestsWindowIsHardwareAccelerated() = runBlocking {
         val instance = requireInstance()
+        val windowResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-window.properties")
+        windowResult.delete()
         clearResult(instance)
-        assertThat(UniqueEngine.launch(context, instance.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
+        // Cleared rather than resumed: this test is about what the guest
+        // observes at create, and a launch onto a task that already has the
+        // activity is delivered to it instead (`t45` is the test for that).
+        launchProbeWith(instance) { }
         val observed = awaitResult(instance)
 
-        // What the app was told about its own manifest entry, through UNIQUE's
-        // PackageManager - which is also the value ActivityThread launched it with.
+        // What the app is told about its own manifest entry, through UNIQUE's
+        // PackageManager — which is also the value `ActivityThread` launched it with.
         assertThat(observed["activityInfoHardwareAccelerated"]).isEqualTo("true")
-        // And what the platform actually put on the window.
-        assertThat(observed["windowHardwareAccelerated"]).isEqualTo("true")
+
+        // And what the window actually is, read after it was attached. `onCreate` is too
+        // early for this: the decor has no `ViewRootImpl` yet.
+        val window = awaitFile(windowResult)
+        assertThat(window["windowHardwareAccelerated"]).isEqualTo("true")
     }
 
     /**
@@ -2565,8 +2603,6 @@ class VirtualLaunchTest {
 
         // SCREEN_ORIENTATION_LANDSCAPE
         assertThat(second["requestedOrientation"]).isEqualTo("0")
-        // The same window is accelerated, for the same reason as t39.
-        assertThat(second["windowHardwareAccelerated"]).isEqualTo("true")
     }
 
     /**
@@ -2591,8 +2627,10 @@ class VirtualLaunchTest {
     fun t41_theGuestReadsItsOwnMetaData() = runBlocking {
         val instance = requireInstance()
         clearResult(instance)
-        assertThat(UniqueEngine.launch(context, instance.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
+        // Cleared rather than resumed: this test is about what the guest
+        // observes at create, and a launch onto a task that already has the
+        // activity is delivered to it instead (`t45` is the test for that).
+        launchProbeWith(instance) { }
         val observed = awaitResult(instance)
 
         assertThat(observed["metaDataPresent"]).isEqualTo("true")
@@ -2615,8 +2653,10 @@ class VirtualLaunchTest {
     fun t42_theGuestResolvesItsOwnComponents() = runBlocking {
         val instance = requireInstance()
         clearResult(instance)
-        assertThat(UniqueEngine.launch(context, instance.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
+        // Cleared rather than resumed: this test is about what the guest
+        // observes at create, and a launch onto a task that already has the
+        // activity is delivered to it instead (`t45` is the test for that).
+        launchProbeWith(instance) { }
         val observed = awaitResult(instance)
 
         assertThat(observed["launchIntentForSelf"]).isEqualTo("true")
@@ -2627,6 +2667,10 @@ class VirtualLaunchTest {
         // An installed app is in the device's own list; UNIQUE is not in the guest's.
         assertThat(observed["installedListHasSelf"]).isEqualTo("true")
         assertThat(observed["installedListHasHost"]).isEqualTo("false")
+        // `getInstallerPackageName` threw `IllegalArgumentException: Unknown package` for
+        // a package the platform never installed — unchecked, so it took the app with it.
+        // Answered as "null", which is what a sideloaded app gets and what UNIQUE is.
+        assertThat(observed["installerPackageName"]).isEqualTo("null")
     }
 
     /**
@@ -2645,8 +2689,10 @@ class VirtualLaunchTest {
     fun t43_theGuestSeesItsOwnProcessAndNotUniques() = runBlocking {
         val instance = requireInstance()
         clearResult(instance)
-        assertThat(UniqueEngine.launch(context, instance.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
+        // Cleared rather than resumed: this test is about what the guest
+        // observes at create, and a launch onto a task that already has the
+        // activity is delivered to it instead (`t45` is the test for that).
+        launchProbeWith(instance) { }
         val observed = awaitResult(instance)
 
         assertThat(observed["procCmdline"]).isEqualTo(probePackage)
@@ -2668,8 +2714,10 @@ class VirtualLaunchTest {
     fun t44_theGuestsExternalStorageIsItsOwnAndUsable() = runBlocking {
         val instance = requireInstance()
         clearResult(instance)
-        assertThat(UniqueEngine.launch(context, instance.vuid))
-            .isInstanceOf(LaunchResult.Started::class.java)
+        // Cleared rather than resumed: this test is about what the guest
+        // observes at create, and a launch onto a task that already has the
+        // activity is delivered to it instead (`t45` is the test for that).
+        launchProbeWith(instance) { }
         val observed = awaitResult(instance)
 
         // The layout the platform builds from a volume path is exactly the one the path
@@ -2680,5 +2728,100 @@ class VirtualLaunchTest {
         assertThat(observed["externalFilesDir"])
             .isEqualTo(model.externalFilesDir(instance.vuid, probePackage))
         assertThat(observed["externalFilesDirWritable"]).isEqualTo("true")
+    }
+
+    /**
+     * A launch delivered to an activity that is already running arrives as the guest's own.
+     *
+     * Not every launch creates an activity. `FLAG_ACTIVITY_SINGLE_TOP` — and, for a task
+     * already running the component, `FLAG_ACTIVITY_NEW_TASK` on its own — makes the
+     * platform hand the intent to the activity on top instead:
+     *
+     * ```
+     * START u0 {…cmp=com.unique/.stub.ActivityStub_p0_m0_a0} … result code=3
+     * ```
+     *
+     * `START_DELIVERED_TO_TOP`. It is what returning to an app you already opened is, and
+     * what every `singleTop` screen, notification tap and deep link relies on. It happened
+     * five times in the run that added the tests above.
+     *
+     * The intent that arrives is UNIQUE's stub intent, and `ActivityThread` assigns it to
+     * `Activity.mIntent`, so it is also what `getIntent()` answers for the rest of the
+     * activity's life. An app reading it in `onNewIntent` would find a component that is
+     * not its own and none of the extras that were sent.
+     *
+     * Driven from *inside* the guest, from `onResume`, because that is the only way to be
+     * sure the platform delivers rather than queues. `ActivityRecord.deliverNewIntentLocked`
+     * sends the transaction only while the activity is `RESUMED` or `PAUSED`; otherwise it
+     * parks the intent for the next resume, and on this headless emulator the home activity
+     * holds focus, so a guest activity that has drawn is stopped moments later and never
+     * resumed again. A start the guest itself makes while it is on screen has no such race.
+     */
+    @Test
+    fun t45_aRedeliveredIntentIsTheGuestsOwn() = runBlocking {
+        val instance = requireInstance()
+        val redelivery =
+            File(model.filesDir(instance.vuid, probePackage), "probe-newintent.properties")
+        redelivery.delete()
+        clearResult(instance)
+
+        launchProbeWith(instance) { it.putExtra("probe.reenterSingleTop", true) }
+        awaitResult(instance)
+        val observed = awaitFile(redelivery)
+
+        assertThat(observed["component"]).isEqualTo("$probePackage/.ProbeActivity")
+        // And the same after `ActivityThread` stored it: `getIntent()` is what most apps
+        // actually read, and it is assigned from the delivered intent.
+        assertThat(observed["getIntentComponent"]).isEqualTo("$probePackage/.ProbeActivity")
+        assertThat(observed["extra"]).isEqualTo("carried-to-new-intent")
+        // None of UNIQUE's routing keys reach the app.
+        assertThat(observed["extraKeys"]!!.split(",")).doesNotContain("unique.package")
+        assertThat(observed["extraKeys"]!!.split(",")).doesNotContain("unique.component")
+        assertThat(observed["extraKeys"]!!.split(",")).doesNotContain("unique.vuid")
+        // The guest's own activity was not created a second time: this was a redelivery.
+        assertThat(observed["createCount"]).isEqualTo("1")
+    }
+
+    /**
+     * The guest starts its own service by action, with no class named.
+     *
+     * `new Intent(ACTION_MY_SERVICE)` is how a great many SDKs reach their own worker: the
+     * action is a constant they own, and on a device the resolution never leaves their
+     * package. Under virtualization it resolved to nothing — `PackageManagerService` has
+     * no filters for a package it never installed — and the start silently reached no one.
+     * Thirty of these went out in one device log, all of them from real apps.
+     *
+     * Resolved against the guest's own manifest instead, which is the same answer the
+     * platform would have given, and only when exactly one service matches.
+     */
+    @Test
+    fun t46_theGuestStartsItsOwnServiceByAction() = runBlocking {
+        val instance = requireInstance()
+        val serviceResult =
+            File(model.filesDir(instance.vuid, probePackage), "probe-service.properties")
+        serviceResult.delete()
+        clearResult(instance)
+
+        val params = VirtualLaunchParams(
+            vuid = instance.vuid,
+            packageName = probePackage,
+            versionCode = instance.versionCode,
+            targetComponent = "$probePackage.ProbeActivity",
+            processName = probePackage,
+            slot = slotOf(instance.vuid),
+        )
+        context.startActivity(
+            VirtualLaunchIntent.build(context.packageName, params, launchMode = 0)
+                .putExtra("probe.startServiceByAction", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+        awaitResult(instance)
+        val service = awaitFileWhere(serviceResult) { it["stage"] == "started" }
+
+        assertThat(service["className"]).isEqualTo("$probePackage.ProbeService")
+        // The action survives the trip through the stub, which is what the service reads
+        // to tell one kind of start from another.
+        assertThat(service["startAction"]).isEqualTo("com.unique.probe.START_BY_ACTION")
+        assertThat(service["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
     }
 }

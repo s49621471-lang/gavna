@@ -42,10 +42,17 @@ public class ProbeService extends Service {
         write("created");
     }
 
+    /** The action the start named, so a start resolved by filter is distinguishable. */
+    private String mStartAction = "-";
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         mStartCount++;
-        Log.i(TAG, "Service.onStartCommand startId=" + startId + " count=" + mStartCount);
+        if (intent != null && intent.getAction() != null) {
+            mStartAction = intent.getAction();
+        }
+        Log.i(TAG, "Service.onStartCommand startId=" + startId + " count=" + mStartCount
+                + " action=" + mStartAction);
         if (intent != null && intent.getBooleanExtra("probe.foreground", false)) {
             goForeground();
         }
@@ -114,6 +121,7 @@ public class ProbeService extends Service {
                     + "startCount=" + mStartCount + "\n"
                     + "bindCount=" + mBindCount + "\n"
                     + "bindComponent=" + mBindComponent + "\n"
+                    + "startAction=" + mStartAction + "\n"
                     + "foreground=" + mForeground + "\n";
             out.write(body.getBytes(StandardCharsets.UTF_8));
             out.close();

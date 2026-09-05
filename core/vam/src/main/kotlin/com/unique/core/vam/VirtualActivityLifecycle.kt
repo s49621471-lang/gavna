@@ -2,16 +2,13 @@ package com.unique.core.vam
 
 import android.app.Activity
 import android.app.Application
-import android.content.ComponentCallbacks
 import android.content.pm.ActivityInfo
-import android.content.res.Configuration
 import android.os.Bundle
 import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
 import com.unique.core.diagnostics.Diagnostics
-import java.lang.ref.WeakReference
 
 /**
  * Gives a guest activity the window behaviour its own manifest asked for.
@@ -27,35 +24,34 @@ import java.lang.ref.WeakReference
  *    same call an app makes at runtime and it reaches the same record, so this is not a
  *    workaround: it is the API for saying exactly this.
  *
- *  - **`android:configChanges`.** `ActivityRecord.shouldRelaunchLocked` reads the stub's,
- *    and the stub declares every change it can (it has to: the stub pool cannot know what
- *    a guest will want). The result is that a guest which did *not* declare, say,
- *    `orientation` is never relaunched on rotation — it just keeps the layout it loaded in
- *    the other orientation. The platform's own answer to that situation is
- *    `Activity.recreate()`, so a change the guest did not declare produces one.
+ *  - **`FLAG_HARDWARE_ACCELERATED`.** See [applyHardwareAcceleration]: the substituted
+ *    `ActivityInfo` carries the bit, and on an Android 14 device the window still came up
+ *    without it, so the window is told directly through the API that exists for saying so.
  *
  * Both are applied from `Application.ActivityLifecycleCallbacks`, which is the guest's own
  * `Application` — the callbacks run for its activities and nothing else in the process.
+ *
+ * ## What is deliberately *not* done here
+ *
+ * `android:configChanges` has the same shape of problem — `ActivityRecord.shouldRelaunchLocked`
+ * reads the stub's, and the stub declares every change it can, so a guest that did not
+ * declare `orientation` is never relaunched on rotation and keeps the layout it loaded in
+ * the other one. Calling `Activity.recreate()` for an undeclared change looks like the
+ * obvious answer and was tried: in the acceptance suite it resurrected an activity from
+ * an earlier test, that activity re-applied its landscape orientation, the display rotated
+ * twice around a permission request, and the activity waiting for the result was destroyed
+ * before it arrived. A stale layout after a rotation is a cosmetic fault; losing an
+ * activity result is not. It stays a known limit until there is a way to do it that does
+ * not touch an activity with work in flight.
  */
 internal object VirtualActivityLifecycle {
 
     @Volatile private var installed = false
 
-    /** Every live guest activity, with the manifest entry it was launched from. */
-    private val live = ArrayList<Tracked>()
-
-    private class Tracked(activity: Activity, val entry: ComponentEntry) {
-        val ref = WeakReference(activity)
-        /** The configuration this activity last saw, for diffing. */
-        var config: Configuration = Configuration(activity.resources.configuration)
-    }
-
     @Synchronized
     fun install(ready: AppBootstrap.Result.Ready) {
         if (installed) return
-        val application = ready.application
-        application.registerActivityLifecycleCallbacks(callbacks(ready))
-        application.registerComponentCallbacks(configWatcher(ready))
+        ready.application.registerActivityLifecycleCallbacks(callbacks(ready))
         installed = true
         Diagnostics.info(
             DiagChannel.LAUNCH, "ACTIVITY_LIFECYCLE_INSTALLED",
@@ -66,7 +62,6 @@ internal object VirtualActivityLifecycle {
     @Synchronized
     fun reset() {
         installed = false
-        live.clear()
     }
 
     private fun callbacks(ready: AppBootstrap.Result.Ready) =
@@ -80,10 +75,7 @@ internal object VirtualActivityLifecycle {
              */
             override fun onActivityPreCreated(activity: Activity, savedInstanceState: Bundle?) {
                 val entry = entryFor(ready, activity) ?: return
-                synchronized(this@VirtualActivityLifecycle) {
-                    live.removeAll { it.ref.get() == null || it.ref.get() === activity }
-                    live += Tracked(activity, entry)
-                }
+                applyHardwareAcceleration(activity, entry)
                 applyOrientation(activity, entry)
             }
 
@@ -93,13 +85,56 @@ internal object VirtualActivityLifecycle {
             override fun onActivityPaused(activity: Activity) = Unit
             override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-
-            override fun onActivityDestroyed(activity: Activity) {
-                synchronized(this@VirtualActivityLifecycle) {
-                    live.removeAll { it.ref.get() == null || it.ref.get() === activity }
-                }
-            }
+            override fun onActivityDestroyed(activity: Activity) = Unit
         }
+
+    /**
+     * Turns the hardware renderer on for the guest's window, explicitly.
+     *
+     * The `ActivityInfo` UNIQUE substitutes carries `FLAG_HARDWARE_ACCELERATED` now, and
+     * that is where `Activity.attach` reads it:
+     *
+     * ```java
+     * mWindow.setWindowManager(…, (info.flags & ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0);
+     * ```
+     *
+     * On an Android 14 device that was still not enough. The launch item is rewritten
+     * before `ActivityThread` acts on it and the guest's `ActivityInfo` reports
+     * `flags=512` when the guest asks its own `PackageManager` — and the window came up
+     * without the flag anyway:
+     *
+     * ```
+     * activityInfoFlags=512  activityInfoHardwareAccelerated=true
+     * windowFlags=0x80810100 windowHardwareAccelerated=false
+     * ```
+     *
+     * — against `LAYOUT_IN_SCREEN LAYOUT_INSET_DECOR SPLIT_TOUCH HARDWARE_ACCELERATED
+     * DRAWS_SYSTEM_BAR_BACKGROUNDS` for an ordinary installed app on the same device. So
+     * the window is told directly, through the public API that exists for saying exactly
+     * this, before the guest's `onCreate` and therefore before `setContentView` builds the
+     * decor. `Window.setFlags` also records it as a *forced* flag, so `generateLayout`
+     * cannot clear it afterwards.
+     *
+     * The `ActivityInfo` keeps the bit as well. It is what a guest reading its own
+     * manifest sees, and it is what the platform would use if a release moves this
+     * decision somewhere else.
+     */
+    private fun applyHardwareAcceleration(activity: Activity, entry: ComponentEntry) {
+        if (!entry.window.hardwareAccelerated) return
+        val flag = android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        val already = (activity.window.attributes.flags and flag) != 0
+        val applied = already || runCatching { activity.window.setFlags(flag, flag) }.isSuccess
+        Diagnostics.event(
+            DiagChannel.LAUNCH,
+            if (applied) DiagLevel.INFO else DiagLevel.WARN,
+            "ACTIVITY_HARDWARE_ACCELERATED",
+            mapOf(
+                "activity" to entry.className,
+                "fromActivityInfo" to already.toString(),
+                "applied" to applied.toString(),
+            ),
+        )
+    }
 
     private fun applyOrientation(activity: Activity, entry: ComponentEntry) {
         val orientation = entry.screenOrientation
@@ -119,55 +154,6 @@ internal object VirtualActivityLifecycle {
             ),
         )
     }
-
-    /**
-     * Recreates the activities whose guest manifest does not declare the change.
-     *
-     * Only the bits the guest did *not* claim are considered, and only the ones that
-     * actually invalidate resources — a change nobody reloads for would turn every
-     * keyboard slide into a restart.
-     */
-    private fun configWatcher(ready: AppBootstrap.Result.Ready) = object : ComponentCallbacks {
-        override fun onConfigurationChanged(newConfig: Configuration) {
-            val snapshot = synchronized(this@VirtualActivityLifecycle) { live.toList() }
-            for (tracked in snapshot) {
-                val activity = tracked.ref.get() ?: continue
-                val changed = tracked.config.diff(newConfig)
-                tracked.config = Configuration(newConfig)
-                val undeclared = changed and tracked.entry.configChanges.inv() and RECREATE_ON
-                if (undeclared == 0) continue
-                Diagnostics.info(
-                    DiagChannel.LAUNCH, "ACTIVITY_RECREATED_FOR_CONFIG",
-                    mapOf(
-                        "package" to ready.params.packageName,
-                        "activity" to tracked.entry.className,
-                        "changed" to "0x${Integer.toHexString(changed)}",
-                        "declared" to "0x${Integer.toHexString(tracked.entry.configChanges)}",
-                        "undeclared" to "0x${Integer.toHexString(undeclared)}",
-                    ),
-                )
-                runCatching { activity.recreate() }
-            }
-        }
-
-        override fun onLowMemory() = Unit
-    }
-
-    /**
-     * The changes an app that did not declare them expects to be restarted for.
-     *
-     * Deliberately narrow. `CONFIG_FONT_SCALE` is excluded because the platform reports it
-     * on changes an app never asked about, and a restart loop is far worse than a stale
-     * font metric.
-     */
-    private val RECREATE_ON = ActivityInfo.CONFIG_ORIENTATION or
-        ActivityInfo.CONFIG_SCREEN_SIZE or
-        ActivityInfo.CONFIG_SCREEN_LAYOUT or
-        ActivityInfo.CONFIG_SMALLEST_SCREEN_SIZE or
-        ActivityInfo.CONFIG_DENSITY or
-        ActivityInfo.CONFIG_LOCALE or
-        ActivityInfo.CONFIG_UI_MODE or
-        ActivityInfo.CONFIG_KEYBOARD_HIDDEN
 
     /**
      * The manifest entry an activity was launched from.

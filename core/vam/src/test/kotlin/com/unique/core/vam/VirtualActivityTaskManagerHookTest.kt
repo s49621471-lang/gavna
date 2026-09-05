@@ -51,4 +51,77 @@ class VirtualActivityTaskManagerHookTest {
             assertThat(VirtualActivityTaskManagerHook.startsActivity(method(name))).isFalse()
         }
     }
+
+    // -----------------------------------------------------------------------------------
+    // Settings screens an app opens about itself
+    // -----------------------------------------------------------------------------------
+
+    private val guest = "com.example.guest"
+
+    private fun retarget(
+        action: String?,
+        scheme: String? = null,
+        dataPackage: String? = null,
+        extraPackage: String? = null,
+    ) = VirtualActivityTaskManagerHook.settingsRetarget(
+        action, scheme, dataPackage, extraPackage, guest,
+    )
+
+    @Test fun `a settings screen the guest opens about itself is retargeted`() {
+        // What an app sends for all-files access, overlay, usage access, exact alarms and
+        // its own app-info page: the action, and itself named in a package URI.
+        val decision = retarget(
+            action = "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION",
+            scheme = "package",
+            dataPackage = guest,
+        )
+        assertThat(decision.rewriteData).isTrue()
+        assertThat(decision.rewriteExtra).isFalse()
+        assertThat(decision.needed).isTrue()
+    }
+
+    @Test fun `the notification screens name the app in an extra instead`() {
+        val decision = retarget(
+            action = "android.settings.APP_NOTIFICATION_SETTINGS",
+            extraPackage = guest,
+        )
+        assertThat(decision.rewriteExtra).isTrue()
+        assertThat(decision.needed).isTrue()
+    }
+
+    @Test fun `both halves are rewritten when both name the guest`() {
+        val decision = retarget(
+            action = "android.settings.APP_NOTIFICATION_SETTINGS",
+            scheme = "package",
+            dataPackage = guest,
+            extraPackage = guest,
+        )
+        assertThat(decision.rewriteData).isTrue()
+        assertThat(decision.rewriteExtra).isTrue()
+    }
+
+    @Test fun `another app's settings page is left alone`() {
+        // A guest may legitimately open somebody else's page, and pointing that at UNIQUE
+        // would be a lie about which app the user is looking at.
+        val decision = retarget(
+            action = "android.settings.APPLICATION_DETAILS_SETTINGS",
+            scheme = "package",
+            dataPackage = "com.android.chrome",
+        )
+        assertThat(decision.needed).isFalse()
+    }
+
+    @Test fun `a settings screen that is not about a package is left alone`() {
+        assertThat(retarget("android.settings.WIFI_SETTINGS").needed).isFalse()
+        assertThat(retarget("android.settings.SETTINGS").needed).isFalse()
+    }
+
+    @Test fun `an intent that is not a settings intent is left alone`() {
+        // The same `package:` URI shape is used by the package installer, and a VIEW of it
+        // is not a screen UNIQUE has any business redirecting.
+        assertThat(
+            retarget("android.intent.action.VIEW", scheme = "package", dataPackage = guest).needed
+        ).isFalse()
+        assertThat(retarget(null, scheme = "package", dataPackage = guest).needed).isFalse()
+    }
 }
