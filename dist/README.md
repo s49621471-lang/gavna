@@ -38,6 +38,20 @@ Both are signed with Android's **debug key** (`CN=Android Debug`, SHA-256
 test-signing arrangement and is marked as such: these must not be distributed as a
 release, and an app signed with a real key later will not install over them.
 
+## What changed since the last phone run
+
+The graft now completes and the guest's activity is launched — the previous build got that
+far and then died reading a setting, on the raw binder, with UNIQUE's wrapper nowhere in
+the stack. `ActivityThread` keeps a *second* cache (`mProviderRefCountMap`) that finds the
+pre-graft record by the wrapper's own binder and discards the wrapper; that one is evicted
+too now, and the wrapper is installed into each `Settings` holder by hand rather than
+arranged for.
+
+Also from that capture: a guest now gets its **own** network security policy instead of
+UNIQUE's (an app died in Conscrypt closing a TLS socket, and pinning and cleartext rules
+were the host's either way), and a `<provider>` with no `android:name` no longer produces
+six `ClassNotFoundException`s per launch.
+
 ## What changed since the first phone run
 
 That run imported two apps and launched neither. Both causes are fixed here.
