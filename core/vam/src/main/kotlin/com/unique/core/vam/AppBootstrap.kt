@@ -244,8 +244,12 @@ object AppBootstrap {
         installIoRedirection(hostContext, effective, appInfo)
 
         // Must happen before any guest code can touch a WebView, and cannot be undone
-        // afterwards. See webViewDataDirectorySuffix.
+        // afterwards. See setWebViewDataDirectorySuffix.
         setWebViewDataDirectorySuffix(effective)
+
+        // Before any guest native code can run, for the same reason the Java handler is
+        // installed early: the earliest crashes are the ones with no other trace.
+        installNativeCrashHandler(model, effective)
 
         // Where a crash record goes when this process stops existing. Installed before
         // any guest code runs, because the earliest crashes are the ones with no other
@@ -325,6 +329,89 @@ object AppBootstrap {
         )
         return ready
     }
+
+    /**
+     * Records a native crash where UNIQUE can read it afterwards.
+     *
+     * A SIGSEGV inside a guest's own `.so` left the platform's tombstone and UNIQUE's
+     * events up to the crash, and nothing written *by* UNIQUE — so a diagnostics export
+     * said "the app stopped" and no more. Rule 10 is about a trace the user can hand to
+     * someone, and a tombstone on a device they no longer have is not one.
+     *
+     * Written under the instance's own diagnostics directory, so two instances of one app
+     * cannot overwrite each other's last crash.
+     */
+    private fun installNativeCrashHandler(model: VirtualPathModel, params: VirtualLaunchParams) {
+        val dir = File(model.diagnosticsDir(params.vuid, params.packageName))
+        val ok = runCatching { dir.mkdirs() }.isSuccess
+        if (!ok && !dir.isDirectory) {
+            Diagnostics.warn(
+                DiagChannel.NATIVE, "NATIVE_CRASH_HANDLER_NO_DIR",
+                mapOf("dir" to dir.absolutePath),
+            )
+            return
+        }
+        // One file per *process*, not per instance. Two reasons, both learned by the file
+        // coming back empty:
+        //
+        //  - Several processes of one instance (`:alt`, a provider slot) each install a
+        //    handler, and a shared path means the second one's O_TRUNC erases the first
+        //    one's crash — the record most worth keeping.
+        //  - The fd is opened at install time and held open until the process dies, so
+        //    anything that *unlinks* the path leaves the handler writing into a nameless
+        //    inode. It succeeds, and nothing appears.
+        pruneCrashRecords(dir)
+        val file = File(dir, nativeCrashFileFor(Process.myPid()))
+        val status = runCatching {
+            UniqueNative.installCrashHandler(file.absolutePath)
+        }.getOrElse {
+            Diagnostics.error(
+                DiagChannel.NATIVE, "NATIVE_CRASH_HANDLER_FAILED",
+                mapOf("error" to it.toString()),
+            )
+            return
+        }
+        Diagnostics.info(
+            DiagChannel.NATIVE, "NATIVE_CRASH_HANDLER",
+            mapOf("status" to status.name, "file" to file.absolutePath),
+        )
+    }
+
+    /** Where one virtual process's native crash record lands, inside [diagnosticsDir]. */
+    fun nativeCrashFileFor(pid: Int): String = "$NATIVE_CRASH_PREFIX$pid.properties"
+
+    /** Matches every native crash record an instance has accumulated. */
+    const val NATIVE_CRASH_PREFIX = "native-crash-"
+
+    /**
+     * Keeps the newest few records, without ever unlinking one a live process is holding.
+     *
+     * One record per process means one per launch, so they do need pruning. But an *empty*
+     * record is not a spent one — it is a process that has not crashed yet, holding that
+     * exact fd open until it does. Deleting it leaves the handler writing into a nameless
+     * inode: the write succeeds and nothing appears. That is precisely how this went wrong,
+     * with one instance's `:alt` slot quietly erasing the record of the process that was
+     * about to crash.
+     *
+     * Age is used instead of a liveness check because `/proc` is not readable here
+     * (`hidepid`), and an empty record an hour old belongs to a process that is certainly
+     * gone. Non-empty records are real crashes and only ever pruned by count.
+     */
+    private fun pruneCrashRecords(dir: File, keep: Int = 8) {
+        val records = dir.listFiles { f ->
+            f.isFile && f.name.startsWith(NATIVE_CRASH_PREFIX)
+        }?.toList().orEmpty()
+        val now = System.currentTimeMillis()
+        records.filter { it.length() == 0L && now - it.lastModified() > EMPTY_RECORD_TTL_MILLIS }
+            .forEach { it.delete() }
+        records.filter { it.length() > 0L }
+            .sortedByDescending { it.lastModified() }
+            .drop(keep)
+            .forEach { it.delete() }
+    }
+
+    /** How long an empty crash record is assumed to still belong to a running process. */
+    private const val EMPTY_RECORD_TTL_MILLIS = 60L * 60L * 1000L
 
     /**
      * Gives this process its own WebView data directory.

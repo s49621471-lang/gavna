@@ -448,10 +448,27 @@ never fires. Routing them through the same rewrite reproduces the stub intent ex
 because `VirtualServiceRouter.outbound` returns the stub already reserved for that service
 and `filterEquals` ignores the extras that differ.
 
-**What the client side still sees.** `onServiceConnected` receives the *stub's*
-`ComponentName`, because that is the component AMS knows about. The binder is the guest's
-own object. Apps overwhelmingly ignore that argument, but this is a real divergence and it
-is recorded in the probe's `probe-connection.properties` rather than asserted away.
+**What the client side sees.** `onServiceConnected` used to receive the *stub's*
+`ComponentName`, because that is the component AMS knows about:
+
+```
+onServiceConnected com.unique/.stub.ServiceStub_p0_s0
+```
+
+That is a real divergence, and not a harmless one: code that switches on
+`name.getClassName()` to tell two of its own services apart takes the wrong branch every
+time, silently. `t07` now asserts the guest's own name.
+
+The interception is on the *receiving* side, and the obvious alternative is worth
+recording because it looks right and does nothing. Wrapping the `IServiceConnection` on its
+way out to `system_server` accomplishes exactly nothing: only `asBinder()` is marshalled,
+so AMS ends up holding the real `InnerConnection` and calls back on that, straight past
+the wrapper. The first version did this and the rename never fired once. The outgoing
+argument is instead used only as a *handle*: `InnerConnection` holds a weak reference to
+its `LoadedApk.ServiceDispatcher`, and the dispatcher holds the app's own
+`ServiceConnection`, which is what gets wrapped. Nothing that crosses the Binder is
+touched, and a callback naming something that is not one of UNIQUE's stubs is passed
+through exactly as it arrived.
 
 **Foreground services on Android 14+** are the sharpest edge:
 `Service.startForeground(id, notification, type)` requires (a) the *type* be declared on
@@ -1556,9 +1573,42 @@ derived from the exception chain's *root* cause rather than the outermost wrappe
 usually a framework `RuntimeException` that says nothing. Stack traces live only in
 diagnostics.
 
-A native signal handler is **not implemented**: a SIGSEGV in a guest's own `.so` today
-leaves the platform's tombstone and UNIQUE's last events before the crash, but no record
-written by UNIQUE.
+A native signal handler is installed too, before any guest native code can run, and `t33`
+covers it: a null dereference inside the guest's own `.so` leaves
+
+```
+signal=SIGSEGV
+signalNumber=11
+code=1
+faultAddress=0x0
+pid=22811
+tid=22811
+```
+
+under that instance's diagnostics directory, and the diagnostics export picks it up. The
+platform's tombstone is still produced — the previous handler is chained to rather than
+replaced — because a process that survives a SIGSEGV is in an undefined state, and because
+UNIQUE's job here is to *add* a record the user can hand to someone, not to take one away.
+
+Three constraints shape that handler, and each was learned by getting it wrong.
+
+**A signal handler may do almost nothing.** It runs on a thread whose state is undefined,
+possibly holding the heap lock the crashing code just took, so `malloc`, `snprintf` and
+`dladdr` are all unavailable — not stylistically, but because using one turns a crash that
+would have produced a tombstone into a hang that produces nothing. The file is opened
+*before* the handler is installed, the record is formatted into a stack buffer with
+hand-rolled integer conversion, and it goes out in a single `write(2)`.
+
+**Symbolisation is deliberately absent.** Resolving an address to a library and offset
+means `dladdr`, which takes the linker's lock — and a crash *inside* the linker is not
+rare. The addresses go out raw; the tombstone is where they get names.
+
+**A record is per process, and an empty one is not a spent one.** The fd is held open from
+the graft until the process dies, so anything that *unlinks* the path leaves the handler
+writing into a nameless inode: the write succeeds and nothing appears. Two versions failed
+this way — first the test deleting the file it was waiting for, then UNIQUE's own pruning
+tidying away the still-empty record of a process that was about to crash. Records are
+pruned by age, never by emptiness alone.
 
 ---
 

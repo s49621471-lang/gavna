@@ -5,6 +5,7 @@ import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
@@ -237,6 +238,11 @@ object VirtualActivityManagerHook {
             matchMethods { method -> dispatchesServiceIntent(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
             rewriteFirst<Intent> { intent -> routeService(hostPackage, intent) }
+            // The connection callback travels outward on a bind and comes back holding
+            // the *stub's* name. See wrapServiceConnection.
+            rewriteAll<Any>(matching = { isServiceConnection(it) }) { connection ->
+                renameServiceConnection(connection)
+            }
         },
 
         shim("callerIdentity") {
@@ -520,6 +526,100 @@ object VirtualActivityManagerHook {
                 DiagChannel.PROCESS, "PROVIDER_HOLDER_AUTHORITY_UNCHANGED",
                 mapOf("authority" to guestAuthority, "error" to it.toString()),
             )
+        }
+    }
+
+    /**
+     * Gives `onServiceConnected` the guest's own `ComponentName`.
+     *
+     * A bind comes back naming the component AMS actually started, which is a stub:
+     *
+     * ```
+     * onServiceConnected com.unique/.stub.ServiceStub_p0_s0
+     * ```
+     *
+     * That is the name AMS holds and it cannot be anything else, but the app never asked
+     * about a stub. Plenty of code switches on `name.getClassName()` to tell two of its own
+     * services apart, and every such branch silently takes the wrong path.
+     *
+     * **The obvious interception does not work, and the reason is worth keeping.** Wrapping
+     * the `IServiceConnection` argument on its way out to `system_server` accomplishes
+     * nothing: only `asBinder()` is marshalled, so AMS ends up holding the *real*
+     * `InnerConnection` and calls back on that, straight past the wrapper. The first
+     * version did exactly this and the rename never fired once.
+     *
+     * The callback is therefore intercepted where it lands. `InnerConnection` holds a weak
+     * reference to its `LoadedApk.ServiceDispatcher`, and the dispatcher holds the app's
+     * own `ServiceConnection` — so the outgoing argument is used only as a *handle* to
+     * reach that field and replace it. What crosses the Binder is untouched.
+     */
+    private fun renameServiceConnection(connection: Any?): Any? {
+        if (connection == null) return connection
+        runCatching {
+            val dispatcher = dispatcherOf(connection) ?: return connection
+            val field = dispatcher.javaClass.getDeclaredField("mConnection")
+                .apply { isAccessible = true }
+            val existing = field.get(dispatcher) as? ServiceConnection ?: return connection
+            if (existing is RenamingConnection) return connection
+            field.set(dispatcher, RenamingConnection(existing))
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_CONNECTION_WRAPPED",
+                mapOf("connection" to existing.javaClass.name),
+            )
+        }.onFailure {
+            // Reported rather than swallowed: the bind still works, but every
+            // onServiceConnected will name a stub, and that is a fidelity bug the app
+            // cannot see the cause of.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "SERVICE_CONNECTION_WRAP_FAILED",
+                mapOf("class" to connection.javaClass.name, "error" to it.toString()),
+            )
+        }
+        return connection
+    }
+
+    /** The `LoadedApk.ServiceDispatcher` behind an `InnerConnection`, if that is what this is. */
+    private fun dispatcherOf(connection: Any): Any? {
+        val field = connection.javaClass.declaredFields.firstOrNull {
+            java.lang.ref.Reference::class.java.isAssignableFrom(it.type)
+        } ?: return null
+        field.isAccessible = true
+        return (field.get(connection) as? java.lang.ref.Reference<*>)?.get()
+    }
+
+    private fun isServiceConnection(value: Any?): Boolean {
+        if (value == null) return false
+        val iface = Reflect.findClass("android.app.IServiceConnection") ?: return false
+        return iface.isInstance(value)
+    }
+
+    /**
+     * The app's own `ServiceConnection`, with stub names translated back.
+     *
+     * Only names UNIQUE itself invented are translated; anything else — a host service the
+     * guest legitimately bound — is passed through exactly as it arrived.
+     */
+    private class RenamingConnection(private val delegate: ServiceConnection) : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: android.os.IBinder?) =
+            delegate.onServiceConnected(translate(name), service)
+
+        override fun onServiceDisconnected(name: ComponentName?) =
+            delegate.onServiceDisconnected(translate(name))
+
+        override fun onBindingDied(name: ComponentName?) = delegate.onBindingDied(translate(name))
+
+        override fun onNullBinding(name: ComponentName?) = delegate.onNullBinding(translate(name))
+
+        private fun translate(name: ComponentName?): ComponentName? {
+            if (name == null) return null
+            val ready = AppBootstrap.current ?: return name
+            val entry = VirtualServiceRouter.resolve(name.className) ?: return name
+            val real = ComponentName(ready.params.packageName, entry.className)
+            Diagnostics.event(
+                DiagChannel.PROCESS, DiagLevel.DEBUG, "SERVICE_CONNECTION_RENAMED",
+                mapOf("stub" to name.className, "service" to entry.className),
+            )
+            return real
         }
     }
 

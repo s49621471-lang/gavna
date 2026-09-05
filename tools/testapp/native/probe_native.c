@@ -71,3 +71,20 @@ Java_com_unique_probe_ProbeNative_writeThroughLibc(JNIEnv *env, jclass clazz, js
     if (chars) (*env)->ReleaseStringUTFChars(env, path, chars);
     return (*env)->NewStringUTF(env, result);
 }
+
+/* Crashes on purpose, in native code.
+ *
+ * There is no way to produce a *native* crash from Java, and a Java exception exercises an
+ * entirely different path: the JVM's uncaught-exception handler, not a POSIX signal. This
+ * dereferences a null pointer, which arrives as SIGSEGV with si_addr 0 — the most common
+ * shape of native crash there is, and the one worth being sure UNIQUE records.
+ *
+ * `volatile` so the compiler cannot decide the store is undefined behaviour and delete it,
+ * which at -O2 it is entitled to do. */
+JNIEXPORT void JNICALL
+Java_com_unique_probe_ProbeNative_crash(JNIEnv *env, jclass clazz) {
+    (void) env;
+    (void) clazz;
+    volatile int *p = (volatile int *) 0;
+    *p = 42;
+}

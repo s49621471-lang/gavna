@@ -18,6 +18,7 @@ add_library(unique_native SHARED
         io_redirect.cpp
         plt_hook.cpp
         prop_virtual.cpp
+        crash_handler.cpp
 )
 
 target_compile_options(unique_native PRIVATE

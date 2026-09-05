@@ -129,7 +129,7 @@ grant what they require through `UiAutomation`, so no manual `pm grant` is neede
 
 ## What the suite checks
 
-Twenty-eight tests, run in order; each builds on the state the previous one left.
+Thirty-three tests, run in order; each builds on the state the previous one left.
 
 | Test | What a failure would mean |
 |---|---|
@@ -161,6 +161,11 @@ Twenty-eight tests, run in order; each builds on the state the previous one left
 | `t26` UNIQUE itself reads a guest's provider | Cross-process provider routing, `:core` → `:vappN` |
 | `t27` a guest reaches its own provider in another process | The same, `:vappN` → `:vappM`, via the host router |
 | `t28` the guest brings up Vulkan if the device has it | **On a real GPU this is the first real Vulkan run.** Instance, physical device, logical device, graphics queue |
+| `t29` cold start, warm start and memory are measured | Nothing, on its own — it records numbers. It fails only if the *ordering* is wrong (fork, then Application, then Activity) or a warm start forked a new process |
+| `t30` the guest runs a WebView | The class loader or native loader could not cope with WebView's separate APK, or its data directory is not the instance's — which would mean a guest writing cookies into UNIQUE's storage. **Rendering is asserted only if the host can render**, checked in a process of its own |
+| `t31` the guest starts its own activity implicitly | Implicit resolution against the guest's own filters. Also the prerequisite for browser-based OAuth (§9.5) |
+| `t32` a provider process dying leaves UNIQUE working | Process isolation across the cross-process provider path |
+| `t33` a native crash leaves a diagnostic record | The native signal handler. **On ARM64 this is its first real run** — the handler is architecture-independent but has only ever fired on x86_64 |
 
 An OEM build that diverges will usually fail *one* of these, and which one names the
 subsystem. Send the whole run directory regardless — `engine.log` says more than the
@@ -175,10 +180,14 @@ table does.
   about the ABI.
 - **`t20`** renders through a real GPU driver rather than a software rasteriser.
 - **`t28`** creates a Vulkan instance, enumerates physical devices, and creates a logical
-  device with a graphics queue. The headless emulator declares no Vulkan at all, so the
-  test there only confirms the probe ran and reported honestly — it asserts nothing.
-  **On a device that declares `FEATURE_VULKAN_HARDWARE_VERSION` it asserts all of it**,
-  and until such a run exists Vulkan stays `NOT_TESTED` in `docs/COMPATIBILITY.md`.
+  device with a graphics queue. The emulator does declare
+  `FEATURE_VULKAN_HARDWARE_VERSION` and the whole chain passes there — but on `llvmpipe`,
+  a *software* device. A hardware ICD is a different code path and stays `NOT_TESTED`.
+- **`t30`** creates a WebView. Rendering is `NOT_TESTED` on the emulator because Chromium's
+  renderer crashes there outside virtualization too; on a phone the same test asserts the
+  page loaded and its JavaScript ran.
+- **`t33`** crashes a guest deliberately in native code and checks UNIQUE wrote a record.
+  The signal handler is architecture-independent, but it has only ever fired on x86_64.
 
 ## Also worth doing by hand
 

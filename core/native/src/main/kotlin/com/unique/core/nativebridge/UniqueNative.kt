@@ -13,7 +13,10 @@ enum class InstallStatus(val code: Int) {
      */
     NOT_IMPLEMENTED(1),
     UNSUPPORTED_DEVICE(2),
-    FAILED(3);
+    FAILED(3),
+
+    /** Installed earlier in this process. Not an error, and not a second install. */
+    ALREADY_INSTALLED(4);
 
     companion object {
         fun of(code: Int) = entries.firstOrNull { it.code == code } ?: FAILED
@@ -107,6 +110,17 @@ object UniqueNative {
     fun installIoRedirect(): InstallStatus =
         if (loaded) InstallStatus.of(nativeInstallIoRedirect()) else InstallStatus.FAILED
 
+    /**
+     * Records a native crash to [path] before the process dies.
+     *
+     * The platform's own tombstone is still produced — the previous handler is chained to,
+     * not replaced. What this adds is a record UNIQUE can read afterwards and put in a
+     * diagnostics export, which is what rule 10 is about: a trace the *user* can hand to
+     * someone, not one that exists only in `logcat` on a device they no longer have.
+     */
+    fun installCrashHandler(path: String): InstallStatus =
+        if (loaded) InstallStatus.of(nativeInstallCrashHandler(path)) else InstallStatus.FAILED
+
     fun setProperty(key: String, value: String) { if (loaded) nativeSetProperty(key, value) }
     fun clearProperties() { if (loaded) nativeClearProperties() }
     fun lookupProperty(key: String): String? = if (loaded) nativeLookupProperty(key) else null
@@ -127,4 +141,5 @@ object UniqueNative {
     @JvmStatic private external fun nativeClearProperties()
     @JvmStatic private external fun nativeLookupProperty(key: String): String?
     @JvmStatic private external fun nativeInstallPropertyVirtualization(): Int
+    @JvmStatic private external fun nativeInstallCrashHandler(path: String): Int
 }

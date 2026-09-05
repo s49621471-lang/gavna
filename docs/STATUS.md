@@ -63,7 +63,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260904-221502-8465`, Android 14 x86_64, probe **not installed on the device**.
+Run `20260905-001207-14396`, Android 14 x86_64, probe **not installed on the device**.
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -100,6 +100,7 @@ Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 | `t30` the guest runs a WebView, in its own data directory | **PASS** |
 | `t31` the guest starts its own activity by an implicit intent | **PASS** |
 | `t32` killing a guest's provider process leaves UNIQUE alive and still able to read another | **PASS** |
+| `t33` a native crash leaves a diagnostic record UNIQUE wrote | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -216,11 +217,9 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 |---|---|---|
 | A broadcast arriving while UNIQUE itself is not running | 3 | `VirtualBroadcastRouter` holds the registrations in UNIQUE's main process, so it must be alive. Static registrations in the host manifest would close it, and need the actions known at build time |
 | Implicit system broadcasts to a guest receiver | 3 | Android 14's `IMPLICIT_INTENTS_ONLY_MATCH_EXPORTED_COMPONENTS` matches implicit intents only against exported filters, and UNIQUE's own registrations are `RECEIVER_NOT_EXPORTED`. A sender inside UNIQUE must scope its intent |
-| `onServiceConnected` receives the guest's own `ComponentName` | 3 | It receives the stub's — that is the name AMS knows. Recorded in the probe (`probe-connection.properties`), not asserted |
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
 | Every Google bridge body | 6 | Interfaces, routing and host-environment detection exist and are tested; no bridge has an implementation. `docs/GOOGLE_DEVICE_TEST.md` is the procedure that would settle each flow |
-| Native crash handler | 14 | A SIGSEGV inside a guest's `.so` leaves the platform's tombstone and UNIQUE's events up to the crash, but no record written by UNIQUE. The Java handler is implemented and pushes its record out of the dying process |
 | Device profile regenerate | 7 | UI row says it is not available yet |
 | WebView rendering on this environment | 6 | A WebView is created correctly in the guest with the instance's own data directory, but Chromium's renderer crashes on this emulator *outside* virtualization too, so rendering is `NOT_TESTED` rather than attributed to UNIQUE (`t30`) |
 | URI permission grants between virtual processes | 3 | `grantUriPermission` across `:vappN` is not implemented |
@@ -249,13 +248,12 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 
 1. URI permission grants and `FileProvider` sharing across virtual processes — the last
    Phase 3 gap now that implicit starts and cross-process providers are done.
-2. Give `onServiceConnected` the guest's own `ComponentName`.
-3. A native crash handler, so a SIGSEGV in a guest `.so` leaves a UNIQUE record and not
-   only a tombstone.
-4. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
+2. ARM64, a real GPU driver, a hardware Vulkan ICD, and WebView rendering — four things
    only a physical device can answer. `docs/PHYSICAL_DEVICE_TEST.md` is the checklist.
-5. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
+3. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
    procedure, in the order that makes one failure explain the next.
+4. A real engine sample (Unity/Unreal). None is available in this environment, and no
+   claim will be made without one.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.

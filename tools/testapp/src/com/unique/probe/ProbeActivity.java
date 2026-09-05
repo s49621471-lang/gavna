@@ -134,6 +134,12 @@ public class ProbeActivity extends Activity {
             exerciseWebView();
         }
 
+        if (request != null && request.getBooleanExtra("probe.nativeCrash", false)) {
+            // Last, and on purpose: this call does not return.
+            Log.i(TAG, "crashing in native code, deliberately");
+            ProbeNative.crash();
+        }
+
         if (request != null && request.getBooleanExtra("probe.implicitAction", false)) {
             Log.i(TAG, "starting an implicit intent by custom action");
             startImplicitByAction();

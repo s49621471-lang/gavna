@@ -23,6 +23,7 @@ import com.unique.app.engine.UniqueEngine
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
+import com.unique.app.runtime.WebViewProbeService
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vam.VirtualBroadcastRouter
 import com.unique.core.vam.VirtualProviderBridge
@@ -380,6 +381,12 @@ class VirtualLaunchTest {
         assertThat(connection["connected"]).isEqualTo("true")
         assertThat(connection["binderIsLocal"]).isEqualTo("true")
         assertThat(connection["binderClass"]).isEqualTo("$probePackage.ProbeService\$LocalBinder")
+
+        // The name the app is handed is its *own* service, not the stub AMS started. Plenty
+        // of code switches on getClassName() to tell two of its own services apart, and
+        // every such branch would silently take the wrong path.
+        assertThat(connection["connectedComponent"])
+            .isEqualTo("$probePackage/.ProbeService")
     }
 
     // -----------------------------------------------------------------------------
@@ -1243,7 +1250,9 @@ class VirtualLaunchTest {
         // themselves this shape returned nothing at all.
         launchProbeWith(instance) { it.putExtra("probe.queryAltProvider", true) }
 
-        val observed = awaitFile(result)
+        // Longer than the default: this needs a cold graft of a *second* slot, which on
+        // the verification emulator runs to forty seconds on its own (§17.1).
+        val observed = awaitFile(result, timeoutMillis = 300_000)
         assertThat(observed["error"]).isNull()
         assertThat(observed["rowCount"]!!.toInt()).isAtLeast(3)
         assertThat(observed["provider.packageName"]).isEqualTo(probePackage)
@@ -1331,7 +1340,8 @@ class VirtualLaunchTest {
         result.delete()
         clearResult(instance)
         launchProbeWith(instance) { it.putExtra("probe.queryAltProvider", true) }
-        val observed = awaitFile(result)
+        // Longer than the default: this needs a cold graft of a *second* slot.
+        val observed = awaitFile(result, timeoutMillis = 300_000)
         assertThat(observed["error"]).isNull()
 
         val providerPid = observed["provider.pid"]!!.toInt()
@@ -1369,6 +1379,53 @@ class VirtualLaunchTest {
         }
         assertThat(rows["packageName"]).isEqualTo(probePackage)
         assertThat(rows["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
+    }
+
+    // -----------------------------------------------------------------------------
+    // Phase 8: a native crash leaves a record UNIQUE can read afterwards.
+    // -----------------------------------------------------------------------------
+
+    @Test
+    fun t33_aNativeCrashLeavesADiagnosticRecord() = runBlocking {
+        val instance = requireInstance()
+        val diagnostics = File(model.diagnosticsDir(instance.vuid, probePackage))
+        clearResult(instance)
+
+        // Establish the process first. Crashing one that never got as far as installing a
+        // handler would test nothing.
+        launchProbeWith(instance) { }
+        val before = awaitResult(instance)
+        val victimPid = before["pid"]!!.toInt()
+        assertThat(isAlive(victimPid)).isTrue()
+
+        // The record is named for the process, and deliberately *not* deleted first. The
+        // handler holds its fd open from the moment the process was grafted, so unlinking
+        // the path leaves it writing into a nameless inode: the write succeeds and nothing
+        // ever appears. That is what the first version of this test did.
+        val record = File(diagnostics, "native-crash-$victimPid.properties")
+
+        // A *native* crash: a null dereference inside the guest's own .so. A Java
+        // exception takes an entirely different path — the JVM's uncaught-exception
+        // handler, which t06 covers — and would not touch a signal handler at all.
+        launchProbeWith(instance) { it.putExtra("probe.nativeCrash", true) }
+
+        val observed = awaitFileWhere(record, timeoutMillis = 240_000) {
+            it["signal"] != null
+        }
+        assertThat(observed["signal"]).isEqualTo("SIGSEGV")
+        // A null dereference, which is the most common shape of native crash there is.
+        assertThat(observed["faultAddress"]).isEqualTo("0x0")
+        // The record is the crashing process's own, not some earlier one's.
+        assertThat(observed["pid"]!!.toInt()).isEqualTo(victimPid)
+        assertThat(victimPid).isNotEqualTo(Process.myPid())
+
+        // The process really did die: the handler chains to the platform's rather than
+        // swallowing the signal, because a process that survives a SIGSEGV is in an
+        // undefined state and produces worse failures later.
+        awaitProcessGone(victimPid)
+
+        // And UNIQUE is still here, running this test.
+        assertThat(isAlive(Process.myPid())).isTrue()
     }
 
     // -----------------------------------------------------------------------------
@@ -1440,52 +1497,37 @@ class VirtualLaunchTest {
     /**
      * Whether this device can load a page in a WebView at all, outside virtualization.
      *
-     * Run in UNIQUE's own process against the same page. On a headless software-rendered
-     * emulator Chromium's renderer can die on its own —
-     * `Render process's crash wasn't handled by all associated webviews` — and without
-     * this comparison that failure would be recorded against UNIQUE, which is the one
-     * thing a compatibility matrix must never do.
+     * Run in `:webviewprobe`, a process of its own, and **not here**. When a Chromium
+     * renderer dies the embedding process goes with it, and on this emulator that happens
+     * reliably: doing the check in the instrumentation process took the whole run down
+     * twice, each time reporting the failure against whichever test was running.
+     *
+     * Contained, "no result" is itself the answer — the process died, so the device cannot
+     * render — and the suite carries on.
      */
     private fun hostWebViewLoads(timeoutMillis: Long = 120_000): Boolean {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val finished = java.util.concurrent.CountDownLatch(1)
-        val ok = java.util.concurrent.atomic.AtomicBoolean(false)
-        val holder = arrayOfNulls<android.webkit.WebView>(1)
-        val page = "<html><head><title>loading</title></head><body>" +
-            "<script>document.title='ready:'+(1+1);</script></body></html>"
-
-        instrumentation.runOnMainSync {
-            runCatching {
-                val web = android.webkit.WebView(context)
-                holder[0] = web
-                web.settings.javaScriptEnabled = true
-                web.webViewClient = object : android.webkit.WebViewClient() {
-                    override fun onPageFinished(view: android.webkit.WebView, url: String) {
-                        ok.set(view.title == "ready:2")
-                        finished.countDown()
-                    }
-                }
-                web.loadDataWithBaseURL(null, page, "text/html", "utf-8", null)
-            }.onFailure { finished.countDown() }
-        }
-        finished.await(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
-
-        // Destroyed, and this is not tidiness. A live WebView keeps its association with a
-        // renderer process, and when that renderer dies Chromium takes the *embedding*
-        // process down with it:
-        //
-        //   FATAL:crashpad_client_linux.cc(732)] Render process's crash wasn't handled by
-        //       all associated webviews, triggering application crash
-        //
-        // Leaving one behind here killed the instrumentation process two tests later, and
-        // the failure landed on a test about content providers.
-        instrumentation.runOnMainSync {
-            runCatching {
-                holder[0]?.stopLoading()
-                holder[0]?.destroy()
+        val result = File(context.cacheDir, "webview-host-probe.properties")
+        result.delete()
+        context.startService(
+            Intent(context, WebViewProbeService::class.java)
+                .putExtra(WebViewProbeService.EXTRA_RESULT_PATH, result.absolutePath)
+                .putExtra(WebViewProbeService.EXTRA_TIMEOUT_MILLIS, timeoutMillis / 2)
+        )
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (result.isFile && result.length() > 0) {
+                val read = runCatching { readProperties(result) }.getOrDefault(emptyMap())
+                android.util.Log.i("UniqueTest", "host WebView probe: $read")
+                return read["rendered"] == "true"
             }
+            Thread.sleep(500)
         }
-        return ok.get()
+        android.util.Log.w(
+            "UniqueTest",
+            "host WebView probe produced no result in ${timeoutMillis}ms; treating this " +
+                "device as unable to render",
+        )
+        return false
     }
 
     // -----------------------------------------------------------------------------

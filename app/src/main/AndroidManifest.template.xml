@@ -136,6 +136,14 @@
             android:exported="false"
             android:grantUriPermissions="false" />
 
+        <!-- Asks the device whether a WebView can render, in a process of its own so a
+             Chromium renderer crash cannot take anything else down. Used by the
+             acceptance suite to tell a device failure from a UNIQUE failure. -->
+        <service
+            android:name="com.unique.app.runtime.WebViewProbeService"
+            android:process=":webviewprobe"
+            android:exported="false" />
+
         <!-- The VirtualCore server. Single writer for the state database. -->
         <service
             android:name="com.unique.app.server.UniqueServerService"

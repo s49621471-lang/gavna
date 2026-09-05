@@ -20,6 +20,7 @@ enum class InstallStatus : int {
     kNotImplemented = 1,   // built, but the mechanism is not wired up yet
     kUnsupportedDevice = 2,
     kFailed = 3,
+    kAlreadyInstalled = 4, // installed earlier in this process; nothing to do
 };
 
 namespace io_redirect {
@@ -53,5 +54,14 @@ const char* lookup(const char* key);
 InstallStatus install();
 bool installed();
 }  // namespace prop_virtual
+
+namespace crash {
+// Records a native crash to `path` before letting the process die.
+//
+// The file is opened here rather than in the handler, and the previous handler is chained
+// to rather than replaced, so the platform still produces its tombstone. Idempotent per
+// process.
+InstallStatus install(const char* path);
+}  // namespace crash
 
 }  // namespace unique

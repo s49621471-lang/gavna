@@ -6,6 +6,7 @@ import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
+import com.unique.core.vam.AppBootstrap
 import com.unique.core.vam.VirtualDiagnostics
 import java.io.File
 import java.io.OutputStreamWriter
@@ -77,6 +78,9 @@ object DiagnosticsExport {
             for ((slot, lines) in perSlot) {
                 writeLines(zip, "vapp$slot.log", lines)
             }
+            for ((name, lines) in nativeCrashes(instances)) {
+                writeLines(zip, "native-crash-$name.txt", lines)
+            }
             writeLines(zip, "README.txt", readme())
         }
 
@@ -98,6 +102,32 @@ object DiagnosticsExport {
             lines = lines,
         )
     }
+
+    /**
+     * Native crash records left behind by processes that are no longer alive.
+     *
+     * A SIGSEGV in a guest `.so` kills the process before anything can be asked of it, so
+     * this is not pulled from anywhere — it is read off disk, where the signal handler
+     * wrote it with a single `write(2)` on its way out (§14.3). Empty on a healthy
+     * instance, which is why an empty entry is not written for one.
+     */
+    private fun nativeCrashes(instances: List<Map<String, String>>): Map<String, List<String>> =
+        buildMap {
+            for (row in instances) {
+                val vuid = row["vuid"]?.toIntOrNull() ?: continue
+                val packageName = row["package"] ?: continue
+                val dir = File(UniqueEngine.storage.model.diagnosticsDir(vuid, packageName))
+                val records = dir.listFiles { f ->
+                    f.isFile && f.name.startsWith(AppBootstrap.NATIVE_CRASH_PREFIX) &&
+                        f.length() > 0L
+                }?.sortedByDescending { it.lastModified() }.orEmpty()
+                for ((index, file) in records.withIndex()) {
+                    val lines = runCatching { file.readLines() }.getOrNull() ?: continue
+                    val suffix = if (index == 0) "" else "-$index"
+                    put("u$vuid-$packageName$suffix", lines + "recordedFile=${file.absolutePath}")
+                }
+            }
+        }
 
     /** Keeps the newest few. A cache directory is not a place to accumulate. */
     private fun prune(dir: File, keep: Int = 5) {
