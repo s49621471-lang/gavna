@@ -334,7 +334,7 @@ InstallStatus install_locked() {
     // Zero patched slots is not a failure on its own - a guest with no native code has
     // nothing to hook, and one that loads its libraries later has nothing to hook *yet* -
     // but it must not be reported as a working interception either. kNothingToHook says
-    // both, where kNotImplemented used to say neither.
+    // both, where the not-implemented status used to say neither.
     g_installed = report.slots_patched > 0;
     return report.slots_patched > 0 ? InstallStatus::kOk : InstallStatus::kNothingToHook;
 }

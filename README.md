@@ -35,7 +35,7 @@ never written as `SUPPORTED` because something ought to work.
 
 | | |
 |---|---|
-| **Off-device tests** | 131 JVM tests, 34 native checks, 12 Dart tests, 25 log-analyzer tests — all passing |
+| **Off-device tests** | 162 JVM tests, 34 native checks, 15 Dart tests, 26 log-analyzer tests — all passing |
 | **On-device suite** | **38 of 38** instrumented tests pass, on an Android 14 x86_64 emulator, against the exact APK in `dist/` |
 | **On a real phone** | UNIQUE installs and runs, imports apps, starts virtual processes, grafts, publishes providers, launches the activity — **and the guest then crashes.** Three runs, nine causes found and fixed, none yet re-tested on hardware |
 
@@ -178,10 +178,10 @@ Three build types, and the difference matters:
 ## Testing
 
 ```bash
-./gradlew test                    # 131 JVM tests
+./gradlew test                    # 162 JVM tests
 ./tools/native-test/run.sh        # 34 host-side native checks, no device needed
-(cd ui && flutter test)           # 12 Dart tests
-./tools/device-log/self_test.py   # 25 tests for the device-log analyzer, no toolchain
+(cd ui && flutter test)           # 15 Dart tests
+./tools/device-log/self_test.py   # 26 tests for the device-log analyzer, no toolchain
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface
 
 # The on-device suite: builds, installs, runs 38 instrumented tests, saves everything.

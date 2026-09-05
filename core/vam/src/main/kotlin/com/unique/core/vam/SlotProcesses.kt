@@ -35,18 +35,49 @@ internal class SlotProcesses(private val context: Context, private val hostPacka
 
     private fun processName(slot: Int): String = "$hostPackage:vapp$slot"
 
-    /** Pids of the processes serving [slot], newest information first. */
+    @Volatile private var cachedAt = 0L
+    @Volatile private var cached: Map<String, List<Int>> = emptyMap()
+
+    /**
+     * `:vappN` process names to pids, from one call to `getRunningAppProcesses`.
+     *
+     * Cached for [PROCESS_LIST_TTL_MILLIS] because the pool asks about every occupied slot
+     * and then about the one it is allocating, and an uncached lookup makes that N+1
+     * identical Binder calls for one launch.
+     *
+     * The window is deliberately much shorter than anything that could act on the answer.
+     * Its whole job is to make one sweep consistent with itself, not to remember: a
+     * process that dies inside the window is caught by the next sweep, and one that starts
+     * inside it was started by this same allocation.
+     */
+    private fun processes(): Map<String, List<Int>> {
+        val now = System.currentTimeMillis()
+        val snapshot = cached
+        if (snapshot.isNotEmpty() && now - cachedAt < PROCESS_LIST_TTL_MILLIS) return snapshot
+        val self = Process.myPid()
+        val fresh = runCatching {
+            val am = context.getSystemService(ActivityManager::class.java)
+            am?.runningAppProcesses.orEmpty()
+                .filter { it.processName.contains(":vapp") && it.pid != self }
+                .groupBy({ it.processName }, { it.pid })
+        }.getOrDefault(emptyMap())
+        cached = fresh
+        cachedAt = now
+        return fresh
+    }
+
+    /** Pids of the processes serving [slot], the exact record first. */
     private fun pidsOf(slot: Int): List<Int> {
         val self = Process.myPid()
         val fromRouter = VirtualProviderRouter.pidOf(slot)?.takeIf { it != self && isAlive(it) }
-        val name = processName(slot)
-        val fromPlatform = runCatching {
-            val am = context.getSystemService(ActivityManager::class.java)
-            am?.runningAppProcesses.orEmpty()
-                .filter { it.processName == name && it.pid != self }
-                .map { it.pid }
-        }.getOrDefault(emptyList())
+        val fromPlatform = processes()[processName(slot)].orEmpty()
         return (listOfNotNull(fromRouter) + fromPlatform).distinct()
+    }
+
+    /** Forces the next lookup to ask the platform again. */
+    private fun invalidate() {
+        cachedAt = 0L
+        cached = emptyMap()
     }
 
     fun alive(slot: Int): Boolean = pidsOf(slot).isNotEmpty()
@@ -66,6 +97,8 @@ internal class SlotProcesses(private val context: Context, private val hostPacka
     fun stop(slot: Int, reason: String) {
         val pids = pidsOf(slot)
         VirtualProviderRouter.forgetSlot(slot)
+        // Whatever the cached sweep said about this slot is wrong from here on.
+        invalidate()
         if (pids.isEmpty()) return
         for (pid in pids) {
             runCatching { Process.killProcess(pid) }
@@ -78,6 +111,16 @@ internal class SlotProcesses(private val context: Context, private val hostPacka
                 "reason" to reason,
             ),
         )
+    }
+
+    private companion object {
+        /**
+         * How long one sweep of the process list stays good for.
+         *
+         * Short enough that no decision outlives the fact it was based on, long enough to
+         * cover the several questions one allocation asks.
+         */
+        const val PROCESS_LIST_TTL_MILLIS = 250L
     }
 
     private fun isAlive(pid: Int): Boolean = try {

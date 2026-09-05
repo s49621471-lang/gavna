@@ -35,9 +35,13 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Diagnostics redactor | 7 | JWTs, `ya29.`, bearer headers, emails, key names |
 | Google routing table | 10 | Every flow's decision pinned |
 | Stub / job / channel namespacing | 8 | Two instances cannot collide |
-| Flutter UI | 8 | `flutter analyze` clean |
+| Flutter UI | 15 | Includes both shapes the engine's Google status arrives in |
+| Runtime vs install-time permissions | 7 | Every dangerous group enumerated; the three a device run found denied are install-time |
+| Process slot pool | 12 | Release ends the process; a dead slot is reclaimed; a full pool refuses rather than evicts |
+| Per-instance permission store | 12 | Undecided install-time is granted, undecided runtime is not, and neither can exceed the host |
+| Device-log analyzer | 26 | Against a real Android 15 run, plus a synthetic healthy one |
 
-**92 JVM tests, 8 Dart tests, 34 native checks — all passing.**
+**162 JVM tests, 15 Dart tests, 34 native checks, 26 device-log analyzer tests — all passing.**
 
 ## On device (EMU34): verified working
 

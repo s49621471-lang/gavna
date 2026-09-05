@@ -24,8 +24,8 @@ enum class InstallStatus(val code: Int) {
      * Not an error. A guest with no native code never has anything to hook, and one that
      * loads its libraries from its own engine's initialiser - Unity, most obviously - has
      * nothing to hook at bootstrap and is covered by the dlopen watch a moment later.
-     * This used to be reported as [NOT_IMPLEMENTED], which said the subsystem did not
-     * exist when in fact it was working.
+     * This used to be reported as the not-implemented status, which said the subsystem
+     * did not exist when in fact it was working.
      */
     NOTHING_TO_HOOK(5);
 
