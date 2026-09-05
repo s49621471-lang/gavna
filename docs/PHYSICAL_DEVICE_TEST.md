@@ -18,22 +18,26 @@ There is still an automated suite that needs a PC. It is at the end, and it is o
 
 ## 1. Install UNIQUE
 
-One APK. Take the `arm64-v8a` debug build — debug, deliberately, because it is the build
-with diagnostics on and it is the build every result in `docs/STATUS.md` was produced from.
-The release build exists and is signed, but it is **not device-verified** (see *Known
-limits*), so a failure in it cannot be told apart from a bad R8 keep rule.
+One APK, in `dist/`, downloadable straight to the phone:
 
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
+https://github.com/s49621471-lang/gavna/raw/claude/unique-app-virtualization-bn35b2/dist/unique-arm64-v8a.apk
 
-Building it, if you have the SDK:
+`arm64-v8a` only, `minSdk 31`, signed with Android's debug key. `dist/README.md` has the
+checksums and says what the second APK there is.
+
+Take **that** one, not the minified build. It is the build the acceptance suite runs
+against — `BUILD_TYPE=verify ./tools/verify-device.sh` points the whole suite at this exact
+artifact — and it is unminified, so no R8 keep rule can be wrong. The minified build is
+**not device-verified** (see *Known limits*), so a failure in it cannot be told apart from
+a bad keep rule.
+
+Building it yourself, if you have the SDK:
 
 ```bash
 export ANDROID_HOME=/path/to/android-sdk
 (cd ui && flutter pub get)
-UNIQUE_ABIS=arm64-v8a ./gradlew :app:assembleDebug
-./tools/check-abi.sh app/build/outputs/apk/debug/app-debug.apk
+UNIQUE_ABIS=arm64-v8a ./gradlew :app:assembleVerify -Ptree-shake-icons=true
+./tools/check-abi.sh app/build/outputs/apk/verify/app-verify.apk
 ```
 
 `check-abi.sh` is worth the ten seconds. It lists the ABIs, prints each native library's
@@ -235,9 +239,10 @@ what they require through `UiAutomation`, so no manual `pm grant` is necessary.
   suite cannot run against it (`androidx.tracing.Trace` resolves from R8's *classpath*
   rather than program input, so no keep rule reaches it), and a class surviving is not the
   same as a reflective lookup succeeding. A virtualization engine is nearly all reflection;
-  an unverified minified build is exactly the one to be suspicious of. **Test the debug
-  build.** Install the release one only to see whether it starts at all, and if it behaves
-  differently, that difference is the finding.
+  an unverified minified build is exactly the one to be suspicious of. **Test
+  `unique-arm64-v8a.apk`**, which the suite does run against. Install the minified one only
+  to see whether it starts at all, and if it behaves differently, that difference is the
+  finding.
 - **No Google flow is implemented.** Those interfaces have no bodies. `t21` and `s10` assert
   that UNIQUE *reports* that honestly, not that anything works. Play Integrity, Play Games
   and Play Billing are expected not to work.

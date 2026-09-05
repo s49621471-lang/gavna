@@ -10,7 +10,10 @@
 #
 # Env:
 #   UNIQUE_ABIS   ABIs to build (default: the ABI this device actually runs)
-#   BUILD_TYPE    debug (default) or release — release is the minified, signed build
+#   BUILD_TYPE    debug (default), verify or release
+#                 verify  = what a physical-device tester is given: unminified engine,
+#                           Flutter built ahead of time, signed
+#                 release = the minified, signed build
 #   TESTS         restrict to one test, e.g. TESTS=t02_launchesAndTheAppSeesItsOwnIdentity
 #   SKIP_BUILD    reuse the APKs from the last build
 #   RUN_ID        override the generated run id
@@ -54,19 +57,25 @@ else
 fi
 echo "   building for $ABIS"
 # Which build the suite runs against. Debug by default, because that is the build being
-# developed; `BUILD_TYPE=release` points it at the minified, signed one instead, which is
-# how the R8 keep rules are established as correct rather than merely plausible. A
-# virtualization engine is nearly all reflection, and a keep rule that is wrong produces an
-# app that works everywhere except the build people actually install.
+# developed. `BUILD_TYPE=verify` points it at the build a physical-device tester is
+# actually handed — same unminified engine, Flutter built ahead of time — because an
+# artifact nobody ran the suite against is an artifact nobody has checked.
+# `BUILD_TYPE=release` points it at the minified one, which is how the R8 keep rules would
+# be established as correct rather than merely plausible. A virtualization engine is nearly
+# all reflection, and a keep rule that is wrong produces an app that works everywhere except
+# the build people actually install.
 BUILD_TYPE="${BUILD_TYPE:-debug}"
 case "$BUILD_TYPE" in
     debug)   ASSEMBLE=(:app:assembleDebug :app:assembleDebugAndroidTest)
              APP_APK="app/build/outputs/apk/debug/app-debug.apk"
              TEST_APK="app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk" ;;
+    verify)  ASSEMBLE=(:app:assembleVerify :app:assembleVerifyAndroidTest)
+             APP_APK="app/build/outputs/apk/verify/app-verify.apk"
+             TEST_APK="app/build/outputs/apk/androidTest/verify/app-verify-androidTest.apk" ;;
     release) ASSEMBLE=(:app:assembleRelease :app:assembleReleaseAndroidTest)
              APP_APK="app/build/outputs/apk/release/app-release.apk"
              TEST_APK="app/build/outputs/apk/androidTest/release/app-release-androidTest.apk" ;;
-    *) fail "unknown BUILD_TYPE=$BUILD_TYPE (expected debug or release)" ;;
+    *) fail "unknown BUILD_TYPE=$BUILD_TYPE (expected debug, verify or release)" ;;
 esac
 echo "   build type $BUILD_TYPE"
 

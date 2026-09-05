@@ -260,6 +260,31 @@ android {
         debug {
             isMinifyEnabled = false
         }
+        // The build a physical-device tester actually gets.
+        //
+        // Everything about the *engine* is the debug build: no R8, so no keep rule can be
+        // wrong, and the same classes the acceptance suite runs against. What differs is
+        // Flutter, which builds its Dart code ahead of time here instead of shipping a JIT
+        // kernel. That is not a detail: the debug APK is 77 MB, of which 40 MB is
+        // `kernel_blob.bin` and 36 MB the debug engine, and 77 MB is the difference between
+        // an artifact that can be handed to someone and one that cannot.
+        //
+        // Named `verify` rather than `profile` on purpose. Flutter's Gradle plugin picks
+        // its Dart build mode from the build type: the name `profile` selects profile mode,
+        // which ships a VM-service snapshot for DevTools to attach to; any other name with
+        // `isDebuggable = false` selects release mode, which is what a tester wants and is
+        // 1.6 MB smaller for a facility nobody here uses.
+        //
+        // `isDebuggable = false` also means ActivityManager gives this build the ordinary
+        // ten-second process-start timeout rather than a debug build's twenty. That is the
+        // budget a shipped app lives inside, so it is the right one to be measured against.
+        create("verify") {
+            initWith(getByName("debug"))
+            isMinifyEnabled = false
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("testSigned")
+            matchingFallbacks += listOf("release", "debug")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -271,10 +296,11 @@ android {
         }
     }
 
-    // The acceptance suite can be pointed at the release build with
-    // `-PuniqueTestBuildType=release`. That is how the R8 rules above are established as
-    // correct rather than plausible: a keep rule that is wrong shows up as a red test, and
-    // a minified engine that fails only on a phone is the worst way to find out.
+    // Which variant the acceptance suite runs against: `-PuniqueTestBuildType=verify`
+    // points it at the build a tester is actually given, and `=release` at the minified
+    // one. Both matter for the same reason — a build nobody ran the suite against is a
+    // build nobody has checked, and for a virtualization engine, which is nearly all
+    // reflection, that is exactly the build to be suspicious of.
     testBuildType = (providers.gradleProperty("uniqueTestBuildType").orNull ?: "debug")
 
     buildFeatures {

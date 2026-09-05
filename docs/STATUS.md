@@ -63,8 +63,9 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Run `20260905-093631-18438`, Android 14 x86_64, probe **not installed on the device**.
-**37 of 37 pass.**
+Run `20260905-093631-18438` (debug) and `20260905-100430-21731` (the `verify` build a
+tester is handed), Android 14 x86_64, probe **not installed on the device**.
+**37 of 37 pass, in both.**
 Full output in `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -291,14 +292,15 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
    procedure, in the order that makes one failure explain the next.
 4. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-5. **Verifying the minified release build.** It assembles and signs, and its keep rules
-   hold structurally — the stub pool, the router and shared providers, `UniqueNative` and
-   the native entry points all survive R8, checked on the artifact. But the instrumented
-   suite cannot run against it: `androidx.tracing.Trace` reaches
-   `AndroidJUnitRunner.onCreate` from R8's *classpath* rather than from program input, so
-   no `-keep` rule applies. A class surviving is not the same as a reflective lookup
-   succeeding, so until that is solved the release build is not device-verified and the
-   debug build is what to test with.
+5. **Verifying the minified release build.** The artifact a tester is actually given is
+   already covered: `BUILD_TYPE=verify ./tools/verify-device.sh` runs the whole suite
+   against the exact APK in `dist/` — not a near neighbour of it — and passes 37 of 37.
+   What is left is R8. The minified build assembles and signs, and its keep rules hold
+   structurally: the stub pool, the router and shared providers, `UniqueNative` and the
+   native entry points all survive, checked on the artifact. But the suite cannot be
+   pointed at it — `androidx.tracing.Trace` reaches `AndroidJUnitRunner.onCreate` from
+   R8's *classpath* rather than from program input, so no `-keep` rule applies — and a
+   class surviving is not the same as a reflective lookup succeeding.
 
 See `docs/COMPATIBILITY.md` for the per-application matrix and
 `docs/PHYSICAL_DEVICE_TEST.md` for the physical-device checklist.
