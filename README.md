@@ -37,7 +37,8 @@ never written as `SUPPORTED` because something ought to work.
 |---|---|
 | **Off-device tests** | 177 JVM tests, 34 native checks, 15 Dart tests, 52 tool tests — all passing |
 | **On-device suite** | **46 of 46** instrumented tests pass, on an Android 14 x86_64 emulator |
-| **On a real phone** | Four runs. The fourth launched **8 of 8** apps into their own Activity — and every one of them was rendering in software, because the `ActivityInfo` UNIQUE substitutes never carried `flags`. Thirty-seven causes found and fixed across the four; the last twenty-two are not yet back on hardware |
+| **On a real phone** | Four runs. The fourth launched **8 of 8** apps into their own Activity — and every one of them was rendering in software, because the `ActivityInfo` UNIQUE substitutes never carried `flags`. Forty-one causes found and fixed across the four and the emulator work that followed; the last twenty-six are not yet back on hardware |
+| **Real applications** | Three from F-Droid — Termux, Fossify Gallery, NewPipe — imported and launched on the emulator. All three reach their own `MainActivity` on the hardware renderer; four faults were fixed to get there, none of which the probe could have found |
 
 **A virtual app has never yet run to a usable screen on physical hardware.** That is the
 single most important fact about this project's status, and every other claim here is
@@ -71,7 +72,7 @@ per-capability matrix.
 
 | Problem | Where it stands |
 |---|---|
-| **Guests crash on a real Android 15 device** | Twenty-eight faults across four phone logs. The fourth run confirms the launch path itself is sound — 8 of 8 launches reached the guest's Activity, no slot failures, no denied install-time permissions — and reading its log end to end found the four that were true of *every* app UNIQUE has ever run: it was rendering in software (no `FLAG_HARDWARE_ACCELERATED`, which is also the "screen is laggy" report and a hard crash for anything using a `RenderNode`), a landscape app opened portrait, `ApplicationInfo.metaData` was empty so Play services threw, and Play's licence check could not bind because UNIQUE never declared `com.android.vending.CHECK_LICENSE` — which makes every PAIRIP-signed app call `System.exit(0)` on startup. `docs/STATUS.md` has each fault with its log line. Putting that pass on the emulator then found five more that no amount of re-reading would have — the hardware-acceleration bit was on the `ActivityInfo` and the window still came up without it; a `@integer` meta-data reference resolved to its own resource id; `getVolumeList` was refused even after `mount` was proxied; external storage still pointed at the device's; and a second launch of a running app produced nothing at all, because the redelivered intent was UNIQUE's stub intent. **The last twenty-two fixes are not yet back on hardware.** |
+| **Guests crash on a real Android 15 device** | Twenty-eight faults across four phone logs. The fourth run confirms the launch path itself is sound — 8 of 8 launches reached the guest's Activity, no slot failures, no denied install-time permissions — and reading its log end to end found the four that were true of *every* app UNIQUE has ever run: it was rendering in software (no `FLAG_HARDWARE_ACCELERATED`, which is also the "screen is laggy" report and a hard crash for anything using a `RenderNode`), a landscape app opened portrait, `ApplicationInfo.metaData` was empty so Play services threw, and Play's licence check could not bind because UNIQUE never declared `com.android.vending.CHECK_LICENSE` — which makes every PAIRIP-signed app call `System.exit(0)` on startup. `docs/STATUS.md` has each fault with its log line. Putting that pass on the emulator then found five more that no amount of re-reading would have — the hardware-acceleration bit was on the `ActivityInfo` and the window still came up without it; a `@integer` meta-data reference resolved to its own resource id; `getVolumeList` was refused even after `mount` was proxied; external storage still pointed at the device's; and a second launch of a running app produced nothing at all, because the redelivered intent was UNIQUE's stub intent. Then three real applications from F-Droid found four more: a guest held to *UNIQUE's* target SDK by two separate compat mechanisms, `startForeground(id, notification)` asking for every foreground-service type the stub declares, and an unproxied `appwidget` whose caller check reads a `ComponentName` rather than a string. All three of those apps now run. **The last twenty-six fixes are not yet back on hardware.** |
 | **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. |
 | **Play Integrity, Play Games, Play Billing** | Expected not to work. UNIQUE is not an attestation bypass and will not pretend to be one. |
 | **A broadcast arriving while UNIQUE itself is not running is missed** | The registrations live in UNIQUE's main process. Closing this needs static registrations in the host manifest, which needs the actions known at build time. |
@@ -125,6 +126,7 @@ what broke, and why the current shape is the one that survived.
 | [`dist/README.md`](dist/README.md) | The downloadable APKs, which to install and why |
 | [`tools/device-log/README.md`](tools/device-log/README.md) | Reading a run from a phone: eleven checks over a device log, no SDK and no device |
 | [`tools/apk-survey/README.md`](tools/apk-survey/README.md) | Which platform APIs real apps actually call, and which of them UNIQUE still does not proxy |
+| [`tools/real-app-smoke.sh`](tools/real-app-smoke.sh) | Runs applications the project did not write, and reads what happened out of `logcat` |
 
 ---
 
@@ -186,6 +188,11 @@ Three build types, and the difference matters:
 ./tools/device-log/self_test.py   # 35 tests for the device-log analyzer, no toolchain
 ./tools/apk-survey/self_test.py   # 17 tests for the APK survey, no toolchain
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface
+
+# Real applications, not the probe. Not a gate: an APK downloaded at run time can change
+# under a test, so this is a report a person reads.
+adb shell mkdir -p /data/local/tmp/unique-real
+./tools/real-app-smoke.sh some-app.apk another-app.apk
 
 # The on-device suite: builds, installs, runs 46 instrumented tests, saves everything.
 export ANDROID_HOME=/path/to/android-sdk

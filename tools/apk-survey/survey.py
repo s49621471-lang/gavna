@@ -92,6 +92,7 @@ MANAGER_TO_SERVICE: Dict[str, str] = {
     "android.hardware.camera2.CameraManager": "media.camera",
     "android.app.DownloadManager": "download",
     "android.view.WindowManager": "window",
+    "android.appwidget.AppWidgetManager": "appwidget",
     "android.permission.PermissionManager": "permissionmgr",
 }
 

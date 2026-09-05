@@ -218,4 +218,48 @@ class VirtualActivityManagerHookTest {
         assertThat(VirtualActivityManagerHook.dispatchesServiceIntent(method("setServiceForeground")))
             .isFalse()
     }
+
+    // -----------------------------------------------------------------------------------
+    // Where the export flags sit in registerReceiver
+    // -----------------------------------------------------------------------------------
+
+    @Suppress("unused")
+    interface FakeReceiverRegistry {
+        // API 33-35, and API 30-32 before the feature id: `flags` is last in both.
+        fun registerReceiverWithFeature(
+            caller: android.app.IApplicationThread?, callerPackage: String,
+            callingFeatureId: String?, receiverId: String?, receiver: Any?,
+            filter: android.content.IntentFilter, requiredPermission: String?,
+            userId: Int, flags: Int,
+        ): android.content.Intent?
+
+        // The pre-Q spelling, still on the interface and never called.
+        fun registerReceiver(
+            caller: android.app.IApplicationThread?, callerPackage: String,
+            receiver: Any?, filter: android.content.IntentFilter,
+            requiredPermission: String?, userId: Int, flags: Int,
+        ): android.content.Intent?
+
+        // Nothing to find. Answering with an index anyway would rewrite a token.
+        fun unregisterReceiver(receiver: Any?)
+    }
+
+    private fun receiverMethod(name: String) =
+        FakeReceiverRegistry::class.java.methods.first { it.name == name }
+
+    @Test fun `the export flags are the last int, whichever spelling is called`() {
+        for (name in listOf("registerReceiverWithFeature", "registerReceiver")) {
+            val types = receiverMethod(name).parameterTypes
+            val index = VirtualActivityManagerHook.receiverFlagsIndex(types)
+            assertThat(index).isEqualTo(types.size - 1)
+            // And it is `userId` that sits before it, which is the pair the assumption
+            // rests on: an int found anywhere else would be the wrong one to rewrite.
+            assertThat(types[index - 1]).isEqualTo(Int::class.javaPrimitiveType)
+        }
+    }
+
+    @Test fun `a method with no int argument yields no index`() {
+        val types = receiverMethod("unregisterReceiver").parameterTypes
+        assertThat(VirtualActivityManagerHook.receiverFlagsIndex(types)).isEqualTo(-1)
+    }
 }

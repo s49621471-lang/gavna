@@ -15,7 +15,7 @@ storage, in the guest's process. Evidence is checked in under `docs/evidence/`.
 | Environment | Proves | Cannot prove |
 |---|---|---|
 | Build machine (JVM + host C++) | Parsers, path contract, ELF checks, shim engine, Google routing table, redactor | Anything about a running Android system |
-| **Android 14 x86_64 emulator** (`aosp_atd`, software rendering, no KVM) | The engine graft — it is pure Java and architecture-independent | ARM64 native code, real GPU paths, OEM framework forks, Android 15/16 behaviour, 16 KB pages |
+| **Android 14 x86_64 emulator** (`aosp_atd`, software rendering, no KVM) | The engine graft — it is pure Java and architecture-independent — and, through `tools/real-app-smoke.sh`, applications the project did not write | ARM64 native code, real GPU paths, OEM framework forks, Android 15/16 behaviour, 16 KB pages |
 | ARM64 Android 15 phone | Everything above, for real | **Not yet run.** See `docs/PHYSICAL_DEVICE_TEST.md` |
 
 Every device claim below names the environment. Nothing is marked working on reasoning.
@@ -30,6 +30,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Virtual path contract | 12 | Every accessor and every alias pinned |
 | Native redirect table (C++) | 34 checks | Host-side binary, no device needed |
 | Signature-agnostic shim engine | 12 | Includes one shim bound to two different signatures, and conditional `proceed()` |
+| Settings screens a guest opens about itself | 6 | Which half of the intent names the app, and every case that must be left alone |
 | Device profile model | 9 | Shape, stability, regeneration, RFC 4122 |
 | Compatibility resolver | 5 | Local-override merging |
 | Diagnostics redactor | 7 | JWTs, `ya29.`, bearer headers, emails, key names |
@@ -39,8 +40,8 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Runtime vs install-time permissions | 7 | Every dangerous group enumerated; the three a device run found denied are install-time |
 | Process slot pool | 12 | Release ends the process; a dead slot is reclaimed; a full pool refuses rather than evicts |
 | Per-instance permission store | 12 | Undecided install-time is granted, undecided runtime is not, and neither can exceed the host |
-| Device-log analyzer | 26 | Against a real Android 15 run, plus a synthetic healthy one |
-| APK survey (DEX reader, service map) | 15 | The reader is checked against a real checked-in APK |
+| Device-log analyzer | 35 | Against a real Android 15 run, plus a synthetic healthy one |
+| APK survey (DEX reader, service map) | 17 | The reader is checked against a real checked-in APK |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
 **177 JVM tests, 15 Dart tests, 34 native checks, 52 off-device tool tests — all passing.**
@@ -633,6 +634,43 @@ seconds. One run cost 45 process starts and four tests timed out waiting for an 
 was simply not being scheduled. `tools/verify-device.sh` now turns Bluetooth off **on an
 emulator only** — a physical device's is the owner's to decide.
 
+### Three real applications, and the four faults only they could find
+
+Everything above was found with `tools/testapp`, which is deliberately ordinary and
+deliberately *cooperative*: it writes down what it observed, so every assertion about it is
+a fact the app itself reported. That is what makes those tests precise, and it is also
+their limit — the probe was written after the engine, and it only does what the engine
+already supports.
+
+Three apps from F-Droid were then imported and launched with nothing written for them:
+**Termux** (0.119.0-beta.3, 115 MB, native, a foreground service), **Fossify Gallery**
+(1.13.1, twelve native libraries, a home-screen widget) and **NewPipe** (0.29.1). All three
+failed, each in a different way, and none of the four causes was reachable from the probe:
+
+| Found | Fixed by |
+|---|---|
+| **Termux died in `TermuxActivity.onStart`**: `SecurityException: com.unique: One of RECEIVER_EXPORTED or RECEIVER_NOT_EXPORTED should be specified`. That rule is a compat change and `ActivityManagerService` evaluates it against the **calling uid**, which is UNIQUE's — so an app built against Android 9, using the two-argument `registerReceiver` it has always used, is held to UNIQUE's target SDK | `registerReceiver*` supplies `RECEIVER_EXPORTED` when the guest passed neither flag and the guest's own target SDK predates the rule. Exported rather than not-exported, because that is what the platform itself does for a pre-34 app |
+| **Fossify Gallery died in `MainActivity.onCreate`**: `SecurityException: Package org.fossify.gallery does not belong to 10108`, from `AppWidgetManager.getAppWidgetIds`. `appwidget` was not proxied — and proxying it alone changed nothing, because the package it checks is inside a **`ComponentName`**, which the generic caller rewrite does not touch | `appwidget` added to the proxied services, with a guard that rewrites `ComponentName` packages as well as strings. The guest then gets an empty array, which is the truth: its widget provider is not installed, so no home screen can be showing one |
+| **Termux died again, deeper**: `IllegalArgumentException: com.termux: Targeting S+ … requires that one of FLAG_IMMUTABLE or FLAG_MUTABLE be specified`. Same shape, different enforcement: this one is checked **inside the app's own process**, by the compat config `ActivityThread` installs at bind time — which is UNIQUE's, because the process was bound as UNIQUE | `GuestCompatChanges` disables, for that process, the changes the guest's own target SDK predates. The change *ids* are read from the platform classes that declare them rather than transcribed; what UNIQUE states is the SDK each is gated at, which `@EnabledAfter` does not keep at runtime |
+| **Termux died a third time**: `SecurityException: Starting FGS with type microphone`. `startForeground(id, notification)` — every app written before Android 10 — sends `FOREGROUND_SERVICE_TYPE_MANIFEST`, meaning "the type on this service's manifest entry". The entry `ActivityManagerService` reads is the **stub's**, which declares every type UNIQUE can host, so the two-argument call asked for all of them at once: `requested=0xffffffff … granted=0x400008ff` | The manifest type is resolved against the *guest's* own entry for the service that is starting. A guest that declares none — an app older than the attribute — gets `specialUse`, which is the type that exists for work the taxonomy does not name and the one the host manifest already carries a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` for |
+
+After those four, **all three run**: each reaches its own `MainActivity`, on the hardware
+renderer, and stays up. `tools/real-app-smoke.sh` is what does this, and it is deliberately
+*not* part of the acceptance suite — an APK downloaded at run time can change under the
+test, and a failure would then be a fact about F-Droid rather than about UNIQUE. It is a
+report a person reads:
+
+```
+== real-app smoke ==
+  PASS  com.termux  (com.termux_1022.apk)
+          ACTIVITY_HARDWARE_ACCELERATED activity=com.termux.app.TermuxActivity applied=true
+  PASS  org.fossify.gallery  (org.fossify.gallery_28.apk)
+  PASS  org.schabi.newpipe  (org.schabi.newpipe_1015.apk)
+```
+
+What it does *not* say is that the apps are usable: nothing here looks at the screen, and
+"reached its `MainActivity` and stayed up for five minutes" is the whole claim.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -693,6 +731,9 @@ visible to unit tests:
 | A Settings screen an app opens about itself named the guest in a `package:` URI, so the device's Settings had nothing to open and a cleaner app's onboarding dead-ended | fixed (retargeted to UNIQUE, whose uid is the one that would hold the access) |
 | `getInstallerPackageName` threw `IllegalArgumentException: Unknown package` for the guest — unchecked, and called by nearly every analytics and update SDK on launch | fixed (answered as null, which is what a sideloaded app gets and what UNIQUE is; `t42`) |
 | A Chromium renderer crash from the WebView test arrived two seconds into the *next* test and killed the process it had just started, reporting a Chromium fault as `t31` failing to resolve an implicit intent | fixed in the suite (`t30` retires the process that hosted the WebView, so the abort has nothing left to take with it) |
+| A guest was held to **UNIQUE's** target SDK by two different mechanisms: `ActivityManagerService` compat checks against the calling uid, and the compat config `ActivityThread` installs in the process at bind time. An app built against Android 9 threw on `registerReceiver` and on `PendingIntent` | fixed (the export flag is supplied at its call site; `GuestCompatChanges` disables in-process changes the guest's target SDK predates, with the ids read from the platform) |
+| `startForeground(id, notification)` asked for **every** foreground-service type UNIQUE declares, because `FOREGROUND_SERVICE_TYPE_MANIFEST` resolves against the stub's manifest entry | fixed (resolved against the guest's own entry; a guest that declares none gets `specialUse`) |
+| `AppWidgetManager.getAppWidgetIds` was refused: `appwidget` was unproxied, and the package it checks is inside a `ComponentName` rather than a string | fixed (proxied, with a `ComponentName` rewrite in the guard) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step

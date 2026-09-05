@@ -449,6 +449,16 @@ object AppBootstrap {
             )
         }
 
+        // The guest's own target SDK decides which platform behaviour changes apply to
+        // it, and the process was bound as UNIQUE — so without this a guest built against
+        // Android 9 is held to UNIQUE's rules and throws on APIs it has always used.
+        runCatching { GuestCompatChanges.applyFor(ready.manifest.targetSdk) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "COMPAT_CHANGES_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         // Must precede the `mount` hook below: the volume rewrite it installs reads the
         // instance's external root from here, and an unprepared one installs nothing.
         runCatching { VirtualExternalStorage.prepare(hostContext, effective) }.onFailure {

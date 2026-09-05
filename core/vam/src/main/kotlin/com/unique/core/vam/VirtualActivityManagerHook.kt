@@ -4,6 +4,7 @@ import android.content.AttributionSource
 import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import android.content.Intent
 import android.content.ServiceConnection
 import com.unique.core.common.apk.ComponentKind
@@ -284,12 +285,16 @@ object VirtualActivityManagerHook {
             matchMethods { method -> startsForegroundService(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
             rewriteAll<ComponentName>(matching = { it.packageName == virtualPackage }) { name ->
+                // Remembered before it is replaced, because the type rule below needs to
+                // know *which* of the guest's services is starting and by then the
+                // component is the stub's. Rules of one call run in order on one thread.
+                foregroundService.set(name.className)
                 stubComponentFor(hostPackage, name)
             }
             // Three ints, and none of them says what it is: `(id, flags, type)`. The
             // matcher pins that shape so first and last mean what they are read to mean.
             rewriteFirst<Int> { id -> foregroundNotificationId(id) }
-            rewriteLast<Int> { type -> resolveForegroundType(type) }
+            rewriteLast<Int> { type -> resolveForegroundType(type, foregroundService.get()) }
             rewriteAll<Notification> { n -> VirtualNotificationHook.adaptForeground(n) }
         },
 
@@ -331,11 +336,114 @@ object VirtualActivityManagerHook {
             rewriteResult { result -> rewriteProcessList(result, virtualPackage, hostPackage) }
         },
 
+        // A dynamic receiver, registered under the rules of the app that registered it.
+        //
+        // Registered before `callerIdentity` for the same reason as `runningProcesses`:
+        // that shim would otherwise claim the method for the package rewrite alone.
+        shim("registerReceiver") {
+            matchMethods { method -> method.name.startsWith("registerReceiver") }
+            rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+            replaceWith { call ->
+                applyReceiverExportDefault(call)
+                call.proceed()
+            }
+        },
+
         shim("callerIdentity") {
             matchMethods { method -> carriesCallerIdentity(method) }
             rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
         },
     )
+
+    /** `ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST`, which the two-argument call sends. */
+    private const val TYPE_FROM_MANIFEST = -1
+
+    /**
+     * The guest service whose `startForeground` is being rewritten, for the length of one
+     * call. A thread-local because the rules of one call run in order on one thread, and
+     * two virtual services can start on two threads at once.
+     */
+    private val foregroundService = ThreadLocal<String?>()
+
+    /**
+     * The two export flags, read from `Context` rather than written down.
+     *
+     * Public since API 33 and compile-time constants, so referring to them costs nothing
+     * and cannot drift. `minSdk` is 31; on 31 and 32 the flags exist and are ignored,
+     * which is the behaviour a guest targeting those releases should get anyway.
+     */
+    private const val RECEIVER_EXPORTED = Context.RECEIVER_EXPORTED
+    private const val RECEIVER_NOT_EXPORTED = Context.RECEIVER_NOT_EXPORTED
+
+    /** Android 14, where declaring one of the two became mandatory. */
+    private const val EXPORT_REQUIRED_FROM_SDK = Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+
+    /**
+     * Where the export flags sit in `registerReceiver*`.
+     *
+     * The *last* `int` on every release that has one:
+     *
+     * ```
+     * Intent registerReceiverWithFeature(IApplicationThread caller, String callerPackage,
+     *         String callingFeatureId, String receiverId, IIntentReceiver receiver,
+     *         IntentFilter filter, String requiredPermission, int userId, int flags);
+     * ```
+     *
+     * Resolved from the method rather than assumed at a fixed index, and internal so the
+     * assumption that `flags` follows `userId` is checked against the shapes this has had
+     * rather than only against the one on the machine the tests run on.
+     */
+    internal fun receiverFlagsIndex(types: Array<Class<*>>): Int =
+        types.indexOfLast { it == Int::class.javaPrimitiveType }
+
+    /**
+     * Supplies the export flag the *guest's* own target SDK would have implied.
+     *
+     * From Android 14 a dynamic receiver must say whether it is exported:
+     *
+     * ```
+     * SecurityException: com.unique: One of RECEIVER_EXPORTED or RECEIVER_NOT_EXPORTED
+     *   should be specified when a receiver isn't being registered exclusively for
+     *   system broadcasts
+     *     at IActivityManager$Stub$Proxy.registerReceiverWithFeature
+     *     at com.termux.app.TermuxActivity.onStart          <- died here, on its first screen
+     * ```
+     *
+     * The rule is a compat change, and `ActivityManagerService` evaluates it against the
+     * **calling uid** — which under virtualization is UNIQUE's. So an app built against
+     * Android 9, entitled to the two-argument `registerReceiver` it has always used, is
+     * held to UNIQUE's target SDK and refused. Nothing the app can do about it, and
+     * nothing about it is the app's fault.
+     *
+     * `RECEIVER_EXPORTED` rather than the safer-sounding `RECEIVER_NOT_EXPORTED`, because
+     * that is what the platform itself does for a pre-34 app: a dynamic receiver was
+     * exported by default, and quietly making it private would break a guest that really
+     * is talked to by something else on the device — a failure far harder to find than
+     * this one.
+     *
+     * Only when the guest passed neither flag, and only when the guest's own target SDK
+     * predates the rule. A guest that targets 34 and passes nothing is making the mistake
+     * the rule exists to catch, and gets the platform's own answer.
+     */
+    private fun applyReceiverExportDefault(call: ShimCall) {
+        val ready = AppBootstrap.current ?: return
+        if (ready.manifest.targetSdk >= EXPORT_REQUIRED_FROM_SDK) return
+
+        val index = receiverFlagsIndex(call.method.parameterTypes)
+        if (index < 0 || index >= call.args.size) return
+        val flags = call.args[index] as? Int ?: return
+        if (flags and (RECEIVER_EXPORTED or RECEIVER_NOT_EXPORTED) != 0) return
+
+        call.args[index] = flags or RECEIVER_EXPORTED
+        Diagnostics.event(
+            DiagChannel.PROCESS, DiagLevel.DEBUG, "RECEIVER_EXPORT_DEFAULTED",
+            mapOf(
+                "package" to ready.params.packageName,
+                "targetSdk" to ready.manifest.targetSdk.toString(),
+                "flag" to "RECEIVER_EXPORTED",
+            ),
+        )
+    }
 
     /**
      * Rewrites the process table so a guest sees itself, and not UNIQUE.
@@ -554,12 +662,35 @@ object VirtualActivityManagerHook {
      * `ForegroundServiceDidNotStartInTimeException` that a user cannot interpret and a
      * developer cannot reproduce.
      */
-    private fun resolveForegroundType(requested: Int): Int {
+    private fun resolveForegroundType(requested: Int, guestClass: String?): Int {
         val ready = AppBootstrap.current ?: return requested
         val declared = ready.manifest.components
-            .firstOrNull { it.kind == ComponentKind.SERVICE && it.foregroundServiceType != 0 }
+            .firstOrNull {
+                it.kind == ComponentKind.SERVICE &&
+                    if (guestClass != null) it.className == guestClass
+                    else it.foregroundServiceType != 0
+            }
             ?.foregroundServiceType ?: 0
-        val asked = if (requested != 0) requested else declared
+
+        // `FOREGROUND_SERVICE_TYPE_MANIFEST` is what the two-argument `startForeground`
+        // sends, which is what every app written before Android 10 uses. It means "the
+        // type on this service's manifest entry" — and the entry `ActivityManagerService`
+        // reads is the *stub's*, which declares every type UNIQUE can host. Passed
+        // through, it asks for all of them at once:
+        //
+        //   FGS_TYPE_RESOLVED requested=0xffffffff declared=0x0 granted=0x400008ff
+        //   SecurityException: Starting FGS with type microphone … requires
+        //     android.permission.RECORD_AUDIO                    <- Termux died here
+        //
+        // Resolved against the guest's own entry instead. Zero — an app old enough not to
+        // declare one — becomes `specialUse` in `ForegroundServiceTypes.decide`, which is
+        // the type that exists for work the taxonomy does not name and the one the host
+        // manifest carries a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` for.
+        val asked = when {
+            requested == TYPE_FROM_MANIFEST -> declared
+            requested != 0 -> requested
+            else -> declared
+        }
         return when (val decision = ForegroundServiceTypes.decide(asked)) {
             is ForegroundServiceTypes.Decision.Allow -> {
                 Diagnostics.info(

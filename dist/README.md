@@ -84,8 +84,22 @@ Conscrypt closing a TLS socket, and pinning and cleartext rules were the host's 
 way), and a `<provider>` with no `android:name` no longer produces six
 `ClassNotFoundException`s per launch.
 
+Three real applications from F-Droid were then imported and launched with nothing written
+for them — **Termux**, **Fossify Gallery** and **NewPipe**. All three failed, in three
+different ways, and all three now reach their own main screen:
+
+- a guest was held to **UNIQUE's** target SDK rather than its own, by two separate compat
+  mechanisms, so an app built against Android 9 threw on `registerReceiver` and again on
+  `PendingIntent`;
+- `startForeground(id, notification)` — every app written before Android 10 — asked for
+  *every* foreground-service type UNIQUE declares at once, and was refused for the first
+  one whose permission the phone had not granted;
+- an app asking about its own home-screen widget died in `onCreate`, because the service
+  that answers that names the caller in a `ComponentName` and nothing was rewriting it.
+
 The on-device suite is **46 of 46** on an Android 14 x86_64 emulator. None of it has been
-back on a phone; `docs/COMPATIBILITY.md` says so per row.
+back on a phone; `docs/COMPATIBILITY.md` says so per row. And nothing here looks at the
+screen: "the app reached its own main activity and stayed up" is the whole claim.
 
 ## What changed since the first phone run
 

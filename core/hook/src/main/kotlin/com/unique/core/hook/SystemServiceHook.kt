@@ -138,6 +138,17 @@ object SystemServiceHook {
         ServiceTarget("media.camera", "android.hardware.ICameraService\$Stub"),
         ServiceTarget("telecom", "com.android.internal.telecom.ITelecomService\$Stub"),
         ServiceTarget("media_router", "android.media.IMediaRouterService\$Stub"),
+
+        // Found by running a real app rather than by surveying one. Fossify Gallery calls
+        // `AppWidgetManager.getAppWidgetIds` from its `MainActivity.onCreate` — a home-screen
+        // widget is ordinary in a gallery, a music player or a weather app — and
+        // `AppWidgetServiceImpl.SecurityPolicy.enforceCallFromPackage` checks the package
+        // it is handed against the calling uid:
+        //
+        //   SecurityException: Package org.fossify.gallery does not belong to 10108
+        //     at IAppWidgetService$Stub$Proxy.getAppWidgetIds
+        //     at org.fossify.gallery.activities.MainActivity.onCreate     <- died here
+        ServiceTarget("appwidget", "com.android.internal.appwidget.IAppWidgetService\$Stub"),
     )
 
     data class InstallReport(

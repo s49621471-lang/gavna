@@ -105,6 +105,11 @@ object VirtualIdentityHooks {
         "media_router" to "registerClientAsUser carries the caller's package",
         "media_session" to "createSession carries the caller's package, so a guest that " +
             "publishes playback controls is refused without it",
+
+        // Found by running a real app, not by surveying one: Fossify Gallery asks for its
+        // own widget ids from `MainActivity.onCreate` and died on the answer.
+        "appwidget" to "getAppWidgetIds carries the caller's package and is checked " +
+            "against the uid; an app with a home-screen widget dies in onCreate without it",
     )
 
     /**
@@ -277,6 +282,32 @@ object VirtualIdentityHooks {
         // installing a service twice replaces the whole proxy: the second install wraps
         // the real interface again and whatever the first bound is gone.
         "mount" -> VirtualExternalStorage.shims(virtualPackage, hostPackage)
+
+        // `appwidget` names the caller in a *ComponentName*, not in a String:
+        //
+        //   int[] getAppWidgetIds(in ComponentName providerComponent);
+        //
+        // and `AppWidgetServiceImpl.SecurityPolicy.enforceCallFromPackage` checks that
+        // component's package against the calling uid. The generic rewrite only touches
+        // Strings, so proxying the service alone changed nothing:
+        //
+        //   SecurityException: Package org.fossify.gallery does not belong to 10108
+        //     at org.fossify.gallery.activities.MainActivity.onCreate
+        //
+        // The answer the guest then gets is an empty array, which is the truth: its widget
+        // provider is not a component the device has installed, so no home screen can be
+        // showing one. Crashing in `onCreate` was not.
+        "appwidget" -> listOf(
+            shim("appWidgetIdentity") {
+                matchMethods { method ->
+                    method.parameterTypes.any { it == android.content.ComponentName::class.java }
+                }
+                rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+                rewriteAll<android.content.ComponentName>(
+                    matching = { it.packageName == virtualPackage },
+                ) { name -> android.content.ComponentName(hostPackage, name.className) }
+            },
+        )
         "locale" -> listOf(
             shim("setApplicationLocales") {
                 replaceWith {
