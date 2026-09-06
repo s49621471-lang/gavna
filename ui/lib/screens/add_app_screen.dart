@@ -67,7 +67,7 @@ class _AddAppScreenState extends State<AddAppScreen> with SingleTickerProviderSt
           ? null
           : result.ok
               ? s.t('add.added', {'app': s.t('add.tab.apk')})
-              : result.message ?? s.t('add.failed', {'app': s.t('add.tab.apk')});
+              : result.describe(s, s.t('add.failed', {'app': s.t('add.tab.apk')}));
     });
     if (result.ok && !result.cancelled && mounted) Navigator.of(context).pop();
   }
@@ -274,7 +274,7 @@ class _InstalledRowState extends State<_InstalledRow> {
     messenger.showSnackBar(SnackBar(
       content: Text(result.ok
           ? s.t('add.added', {'app': app.label})
-          : (result.message ?? s.t('add.failed', {'app': app.label}))),
+          : result.describe(s, s.t('add.failed', {'app': app.label}))),
     ));
     if (result.ok) navigator.pop();
   }
@@ -282,7 +282,7 @@ class _InstalledRowState extends State<_InstalledRow> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final blocked = app.blockedReason;
+    final blocked = app.blockedKey;
     return Opacity(
       opacity: blocked == null ? 1 : 0.5,
       child: ListTile(
@@ -295,7 +295,7 @@ class _InstalledRowState extends State<_InstalledRow> {
         title: Text(app.label,
             maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleMedium),
         subtitle: Text(
-          blocked ?? app.packageName,
+          blocked == null ? app.packageName : Strings.of(context).t(blocked),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall?.copyWith(

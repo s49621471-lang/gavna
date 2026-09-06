@@ -35,9 +35,9 @@ never written as `SUPPORTED` because something ought to work.
 
 | | |
 |---|---|
-| **Off-device tests** | 177 JVM tests, 34 native checks, 15 Dart tests, 52 tool tests — all passing |
-| **On-device suite** | **47 of 47** instrumented tests pass, on an Android 14 x86_64 emulator |
-| **On a real phone** | Four runs. The fourth launched **8 of 8** apps into their own Activity — and every one of them was rendering in software, because the `ActivityInfo` UNIQUE substitutes never carried `flags`. Forty-four causes found and fixed across the four and the emulator work that followed; the last twenty-nine are not yet back on hardware |
+| **Off-device tests** | 185 JVM tests, 34 native checks, 15 Dart tests, 59 tool tests — all passing |
+| **On-device suite** | **46 of 46** instrumented tests pass, on an Android 14 x86_64 emulator |
+| **On a real phone** | Five runs. The fifth launched 6 of 8 apps into their own Activity and Play services killed three of them seconds later, with one fatal `SecurityException` UNIQUE was causing and no app could catch. Fifty causes found and fixed across the five runs and the emulator work between them; the last thirty-five are not yet back on hardware |
 | **Real applications** | Seven from F-Droid — Termux, Fossify Gallery, NewPipe, Shattered Pixel Dungeon, AntennaPod, KeePassDX, Aegis — imported and launched on the emulator. All seven reach their own main activity on the hardware renderer; seven faults were fixed to get there, none of which the probe could have found |
 
 **A virtual app has never yet run to a usable screen on physical hardware.** That is the
@@ -72,7 +72,7 @@ per-capability matrix.
 
 | Problem | Where it stands |
 |---|---|
-| **Guests crash on a real Android 15 device** | Twenty-eight faults across four phone logs. The fourth run confirms the launch path itself is sound — 8 of 8 launches reached the guest's Activity, no slot failures, no denied install-time permissions — and reading its log end to end found the four that were true of *every* app UNIQUE has ever run: it was rendering in software (no `FLAG_HARDWARE_ACCELERATED`, which is also the "screen is laggy" report and a hard crash for anything using a `RenderNode`), a landscape app opened portrait, `ApplicationInfo.metaData` was empty so Play services threw, and Play's licence check could not bind because UNIQUE never declared `com.android.vending.CHECK_LICENSE` — which makes every PAIRIP-signed app call `System.exit(0)` on startup. `docs/STATUS.md` has each fault with its log line. Putting that pass on the emulator then found five more that no amount of re-reading would have — the hardware-acceleration bit was on the `ActivityInfo` and the window still came up without it; a `@integer` meta-data reference resolved to its own resource id; `getVolumeList` was refused even after `mount` was proxied; external storage still pointed at the device's; and a second launch of a running app produced nothing at all, because the redelivered intent was UNIQUE's stub intent. Then seven real applications from F-Droid found seven more: a guest held to *UNIQUE's* target SDK by two separate compat mechanisms, `startForeground(id, notification)` asking for every foreground-service type the stub declares, an unproxied `appwidget` whose caller check reads a `ComponentName` rather than a string, an app refused permission to enable *its own* component, a failed graft that reported only `InvocationTargetException`, and a shortcut publish that killed an app's `Application.onCreate`. All seven of those apps now run. **The last twenty-nine fixes are not yet back on hardware.** |
+| **Guests crash on a real Android 15 device** | Thirty-four faults across five phone logs. Each run moved the failure further down: the third launched nothing, the fourth launched everything and every guest was rendering in software, and the fifth — the newest — launched 6 of 8 and then **Play services killed three of them**. That one is a single fault with three victims: `GmsClient.getRemoteService` sends the guest's own package name to `com.google.android.gms`, which resolves the calling uid to UNIQUE's and answers `SecurityException: Unknown calling package name` on a `Handler`, where no app can catch it. The Google stack is hidden from a guest now, so an SDK that asks finds none and takes the path it already has for a phone without it. The same log said there had never been a **keyboard** — `EditorInfo.packageName` is checked against the calling uid before an IME is bound, and a mismatch binds nothing, silently — and that a guest's own `FileProvider` never published, because providers were installed before the identity hooks and `attachInfo` runs the app's own code. "The screen does not respond" turned out not to be a touch fault at all: those were the dead windows the three crashes left behind. `docs/STATUS.md` has each fault with its log line. **The last thirty-five fixes are not yet back on hardware**, and two of them — the hiding and the keyboard — cannot be checked on the emulator at all, because it has neither Play services nor an IME. |
 | **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. |
 | **Play Integrity, Play Games, Play Billing** | Expected not to work. UNIQUE is not an attestation bypass and will not pretend to be one. |
 | **A broadcast arriving while UNIQUE itself is not running is missed** | The registrations live in UNIQUE's main process. Closing this needs static registrations in the host manifest, which needs the actions known at build time. |
@@ -182,11 +182,12 @@ Three build types, and the difference matters:
 ## Testing
 
 ```bash
-./gradlew test                    # 177 JVM tests
+./gradlew test                    # 185 JVM tests
 ./tools/native-test/run.sh        # 34 host-side native checks, no device needed
 (cd ui && flutter test)           # 15 Dart tests
-./tools/device-log/self_test.py   # 35 tests for the device-log analyzer, no toolchain
+./tools/device-log/self_test.py   # 42 tests for the device-log analyzer, no toolchain
 ./tools/apk-survey/self_test.py   # 17 tests for the APK survey, no toolchain
+./tools/check-translations.py     # every engine failure has a sentence in both languages
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface
 
 # Real applications, not the probe. Not a gate: an APK downloaded at run time can change
@@ -194,7 +195,7 @@ Three build types, and the difference matters:
 adb shell mkdir -p /data/local/tmp/unique-real
 ./tools/real-app-smoke.sh some-app.apk another-app.apk
 
-# The on-device suite: builds, installs, runs 47 instrumented tests, saves everything.
+# The on-device suite: builds, installs, runs 46 instrumented tests, saves everything.
 export ANDROID_HOME=/path/to/android-sdk
 BUILD_TYPE=verify ./tools/verify-device.sh
 ```
@@ -236,8 +237,8 @@ tools/device-log/analyze.py recorded.log --device device.txt
 
 Ten checks, exit status 0 or 1, no SDK and no device: did every launch reach the guest's
 own Activity, was every process slot handed over clean, did any call go out under the
-guest's name and get refused — and *which service to hook* when one did. It reads UNIQUE's
-own diagnostics export, a recorder app's log, or `adb logcat`, and it is regression-tested
+guest's name and get refused — and *which service to hook* when one did. It reads a
+recorder app's log or `adb logcat` alike, and it is regression-tested
 against a real Android 15 run in which three apps in a row failed to launch. See
 [`tools/device-log/README.md`](tools/device-log/README.md).
 
@@ -264,18 +265,18 @@ Enforced by review, and where possible by tests:
 6. Identity values come only from `core/vprofile`.
 7. Google-specific calls go only through `core/google`.
 8. Every shim declares its API range and verifies its binding at install time.
-9. **Every crash leaves a diagnostic trace**, readable on the device without `adb`.
+9. **Every crash leaves a diagnostic trace**, captured by any log recorder on the phone.
 
 ---
 
 ## Privacy and scope
 
-The diagnostics package a user can export contains UNIQUE's own structured logs, the system
-log filtered to framework tags, and a description of the device. It contains **nothing from
-inside a virtualized app** — no databases, no shared preferences, no cookies, no tokens —
-and that is a structural property: the exporter never opens those directories. Every line
-still passes a redactor on the way out, on both the export path and the logcat path, and
-`t38` plants a marker inside a guest's storage and searches every byte of the package for it.
+Everything UNIQUE records goes to `logcat` under one tag, so a user's own log capture is
+the whole diagnostics surface. It contains **nothing from inside a virtualized app** — no
+databases, no shared preferences, no cookies, no tokens — and that is a structural
+property: no code in UNIQUE opens those directories for any diagnostic purpose. Every line
+passes a redactor on the way out, which drops OAuth tokens, cookies, `Authorization`
+headers, account names and file contents, and has its own unit tests.
 
 UNIQUE isolates virtual apps from other installed apps and from each other. It does **not**
 isolate a virtual app from UNIQUE: an app running native code inside a UNIQUE process can

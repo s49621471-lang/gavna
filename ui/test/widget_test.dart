@@ -70,14 +70,21 @@ void main() {
         'label': 'Example',
         'hasArm64': false,
       });
-      expect(blocked.blockedReason, contains('arm64-v8a'));
+      // A key, not a sentence — and one both languages actually carry, which is the
+      // half a `contains('arm64-v8a')` on English prose never checked.
+      expect(blocked.blockedKey, 'add.blocked.noArm64');
+      expect(Strings.missingKeys(), isEmpty);
+      expect(
+        const Strings(Locale('ru')).t(blocked.blockedKey!),
+        isNot(blocked.blockedKey),
+      );
 
       final ok = InstalledApp.fromMap({
         'package': 'com.example.app',
         'label': 'Example',
         'hasArm64': true,
       });
-      expect(ok.blockedReason, isNull);
+      expect(ok.blockedKey, isNull);
     });
   });
 
@@ -187,7 +194,7 @@ void _localisationTests() {
 
     test('placeholders are filled, and an unknown key is returned as itself', () {
       const ru = Strings(Locale('ru'));
-      expect(ru.t('settings.savedTo', {'path': '/x/y.zip'}), contains('/x/y.zip'));
+      expect(ru.t('add.added', {'app': 'Nagram'}), contains('Nagram'));
       expect(ru.t('no.such.key'), 'no.such.key');
     });
 

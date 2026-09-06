@@ -208,7 +208,7 @@ class _EngineNotice extends StatelessWidget {
     }
     // Something else the engine reports as not ready. This used to say launching was
     // unimplemented, which stopped being true two phases ago and would now send someone
-    // looking for a milestone instead of for the reason in Diagnostics.
+    // looking for a milestone instead of for what Settings actually reports.
     return NoticeBanner(
       tone: NoticeTone.warning,
       title: s.t('engine.degraded.title'),
@@ -260,6 +260,7 @@ class _AppCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final s = Strings.of(context);
     return Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(UniqueSpace.radiusMd),
@@ -300,7 +301,7 @@ class _AppCard extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                app.profileName,
+                app.profileLabel(s),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall,
@@ -318,10 +319,11 @@ class _AppCard extends StatelessWidget {
     String successMessage,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
-    final fallback = Strings.of(context).t('common.failed');
+    final s = Strings.of(context);
+    final fallback = s.t('common.failed');
     final result = await action();
     messenger.showSnackBar(SnackBar(
-      content: Text(result.ok ? successMessage : (result.message ?? fallback)),
+      content: Text(result.ok ? successMessage : result.describe(s, fallback)),
     ));
   }
 

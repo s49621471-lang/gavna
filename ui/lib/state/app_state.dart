@@ -30,9 +30,6 @@ class AppState extends ChangeNotifier {
   List<VirtualApp> _apps = const [];
   List<VirtualApp> get apps => _apps;
 
-  final List<DiagRecord> _diagnostics = [];
-  List<DiagRecord> get diagnostics => List.unmodifiable(_diagnostics);
-
   final Map<String, Uint8List?> _iconCache = {};
 
   bool _dynamicColor = true;
@@ -88,7 +85,6 @@ class AppState extends ChangeNotifier {
       _error = e.toString();
     }
     notifyListeners();
-    _listenToDiagnostics();
   }
 
   /// Re-reads the instance list from the engine and attaches icons.
@@ -160,25 +156,7 @@ class AppState extends ChangeNotifier {
     return result;
   }
 
-  Future<DiagnosticsExportResult> exportDiagnostics() =>
-      _bridge.exportDiagnostics();
-
   Future<GoogleStatus> googleStatus() => _bridge.googleStatus();
-
-  Future<List<ReportSection>> deviceReport() => _bridge.deviceReport();
-
-  Future<List<ChecklistStep>> checklist() => _bridge.checklist();
-
-  Future<List<ChecklistStep>> setChecklistStep(
-    String id,
-    StepVerdict verdict,
-    String note,
-  ) =>
-      _bridge.setChecklistStep(id, verdict, note);
-
-  Future<List<ChecklistStep>> resetChecklist() => _bridge.resetChecklist();
-
-  Future<DiagnosticsExportResult> shareDiagnostics() => _bridge.shareDiagnostics();
 
   Future<List<GoogleRoute>> googleRouting(int vuid) => _bridge.googleRouting(vuid);
 
@@ -190,13 +168,9 @@ class AppState extends ChangeNotifier {
 
   Future<EngineOutcome> openHostSettings() => _bridge.openHostSettings();
 
-  void _listenToDiagnostics() {
-    _bridge.diagnostics().listen((record) {
-      _diagnostics.insert(0, record);
-      if (_diagnostics.length > 500) _diagnostics.removeLast();
-      notifyListeners();
-    }, onError: (_) {});
-  }
+  Future<List<SpecialAccess>> specialAccess() => _bridge.specialAccess();
+
+  Future<EngineOutcome> openSpecialAccess(String id) => _bridge.openSpecialAccess(id);
 
   Future<List<InstalledApp>> installedApps({bool includeSystem = false}) =>
       _bridge.listInstalledApps(includeSystem: includeSystem);

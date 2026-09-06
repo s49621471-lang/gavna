@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.ProviderInfo
+import android.content.pm.ResolveInfo
 import android.os.Build
 import android.os.Process
 import com.unique.core.common.apk.ApkManifest
@@ -87,15 +89,34 @@ object VirtualPackageManagerHook {
         // conclude the package is not installed and refuse to build a class loader.
         shim("getPackageInfo") {
             replaceWith { call ->
-                if (call.firstArgOf<String>() == packageName) {
-                    buildPackageInfo(packageName, manifest, applicationInfo, components, flagsOf(call))
-                } else call.proceed()
+                val asked = call.firstArgOf<String>()
+                when {
+                    asked == packageName ->
+                        buildPackageInfo(packageName, manifest, applicationInfo, components, flagsOf(call))
+                    isHiddenFromGuest(asked) -> null
+                    else -> call.proceed()
+                }
             }
         },
 
         shim("getApplicationInfo") {
             replaceWith { call ->
-                if (call.firstArgOf<String>() == packageName) applicationInfo else call.proceed()
+                val asked = call.firstArgOf<String>()
+                when {
+                    asked == packageName -> applicationInfo
+                    isHiddenFromGuest(asked) -> null
+                    else -> call.proceed()
+                }
+            }
+        },
+
+        /** The uid route to the same question. `null` is "no such package". */
+        shim("getPackageUid") {
+            matchMethods { it.name == "getPackageUid" || it.name == "getPackageGids" }
+            replaceWith { call ->
+                if (isHiddenFromGuest(call.firstArgOf<String>())) {
+                    if (call.method.returnType == Int::class.javaPrimitiveType) -1 else null
+                } else call.proceed()
             }
         },
 
@@ -145,14 +166,15 @@ object VirtualPackageManagerHook {
             matchMethods { it.name == "resolveIntent" || it.name == "resolveService" }
             replaceWith { call ->
                 val intent = call.firstArgOf<Intent>()
-                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) call.proceed()
-                else {
+                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) {
+                    withoutHiddenPackages(call.proceed())
+                } else {
                     val matches = if (call.method.name == "resolveService") {
                         GuestIntentResolution.services(manifest, components, intent!!, packageName)
                     } else {
                         GuestIntentResolution.activities(manifest, components, intent!!, packageName)
                     }
-                    matches.firstOrNull() ?: call.proceed()
+                    matches.firstOrNull() ?: withoutHiddenPackages(call.proceed())
                 }
             }
         },
@@ -164,8 +186,9 @@ object VirtualPackageManagerHook {
             }
             replaceWith { call ->
                 val intent = call.firstArgOf<Intent>()
-                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) call.proceed()
-                else {
+                if (!GuestIntentResolution.isScopedToGuest(intent, packageName)) {
+                    withoutHiddenPackages(call.proceed())
+                } else {
                     val matches = when (call.method.name) {
                         "queryIntentServices" ->
                             GuestIntentResolution.services(manifest, components, intent!!, packageName)
@@ -177,7 +200,7 @@ object VirtualPackageManagerHook {
                     // An empty answer is handed back to the platform rather than returned:
                     // a guest may legitimately scope an intent to itself for a component
                     // it does not have, and "no match" from here would hide a real one.
-                    if (matches.isEmpty()) call.proceed()
+                    if (matches.isEmpty()) withoutHiddenPackages(call.proceed())
                     else GuestIntentResolution.asReturnValue(call.method.returnType, matches)
                         ?: call.proceed()
                 }
@@ -192,8 +215,12 @@ object VirtualPackageManagerHook {
                 val entry = authority?.let { name ->
                     manifest.providers.firstOrNull { name in it.authorities }
                 }
-                if (entry == null) call.proceed()
-                else components.provider(entry.className) ?: call.proceed()
+                if (entry != null) return@replaceWith components.provider(entry.className)
+                    ?: call.proceed()
+                val resolved = call.proceed()
+                // `DynamiteModule` reaches Play services through a provider, not a
+                // service, so hiding the package alone would leave that door open.
+                if (isHiddenFromGuest(providerPackageOf(resolved))) null else resolved
             }
         },
 
@@ -232,7 +259,7 @@ object VirtualPackageManagerHook {
                 var sawGuest = false
                 for (element in list) {
                     val name = packageNameOf(element)
-                    if (name == host) { changed = true; continue }
+                    if (name == host || isHiddenFromGuest(name)) { changed = true; continue }
                     if (name == packageName) sawGuest = true
                     kept += element
                 }
@@ -354,6 +381,92 @@ object VirtualPackageManagerHook {
             }
         },
     )
+
+    /**
+     * Packages a guest is told are not installed, and why that is the truthful answer.
+     *
+     * Play services will not talk to a virtual app. Every Play-services SDK opens with
+     * `GmsClient.getRemoteService`, which sends `context.getPackageName()` across to
+     * `com.google.android.gms`; GMS resolves the calling uid to *UNIQUE's* packages,
+     * does not find the guest among them, and throws — on the app's main thread, from a
+     * `Handler`, where nothing can catch it:
+     *
+     * ```
+     * FATAL EXCEPTION: main
+     * java.lang.SecurityException: Unknown calling package name 'com.gordey.standarling'.
+     *   at com.google.android.gms.common.internal.c.getRemoteService
+     * ```
+     *
+     * Three of seven apps on a Redmi running Android 15 died exactly there, two of them
+     * games, and neither the app nor UNIQUE can do anything about it: what GMS sees for
+     * UNIQUE's uid is decided in GMS's own process by the real `PackageManager`.
+     *
+     * So the guest is told Play services is not installed, which is what every one of
+     * those SDKs is built to handle — `GoogleApiAvailability` answers `SERVICE_MISSING`,
+     * Firebase Analytics falls back to its bundled measurement module, and the app runs.
+     * It is also *true* in the only sense that matters to the app: from inside UNIQUE
+     * there is no Play services it can use.
+     *
+     * `com.android.vending` is deliberately **not** hidden. Play's licence check is an
+     * ordinary bind that works, and a PAIRIP-protected app calls `System.exit(0)` when it
+     * cannot reach it.
+     *
+     * Hidden from the four questions an SDK asks: `getPackageInfo`/`getApplicationInfo`,
+     * the uid lookup, the installed list, and intent resolution — plus
+     * `resolveContentProvider`, because `DynamiteModule` loads GMS code through a provider
+     * rather than a service and would otherwise still get in.
+     */
+    private val HIDDEN_FROM_GUEST = setOf(
+        "com.google.android.gms",
+        "com.google.android.gsf",
+    )
+
+    internal fun isHiddenFromGuest(name: String?): Boolean {
+        if (name == null || name !in HIDDEN_FROM_GUEST) return false
+        if (reportedHidden.add(name)) {
+            Diagnostics.info(
+                DiagChannel.LAUNCH, "GOOGLE_STACK_HIDDEN",
+                mapOf(
+                    "package" to name,
+                    "detail" to "Play services refuses a virtual app's identity and kills " +
+                        "it from a Handler; reported absent so the SDK takes its own " +
+                        "unavailable path",
+                ),
+            )
+        }
+        return true
+    }
+
+    /** Reported once per package per process, not once per query. */
+    private val reportedHidden = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** The package a `ProviderInfo`-shaped answer belongs to, or null. */
+    internal fun providerPackageOf(value: Any?): String? =
+        (value as? ProviderInfo)?.packageName ?: (value as? ProviderInfo)?.applicationInfo?.packageName
+
+    /**
+     * The same answer with anything in [HIDDEN_FROM_GUEST] removed.
+     *
+     * Handles both shapes intent resolution comes in: a bare `ResolveInfo` and a list of
+     * them, wrapped in a `ParceledListSlice` or not.
+     */
+    internal fun withoutHiddenPackages(value: Any?): Any? {
+        if (value is ResolveInfo) {
+            return if (isHiddenFromGuest(resolvePackageOf(value))) null else value
+        }
+        val list = ParceledLists.unwrap(value) ?: return value
+        val kept = list.filterNot { isHiddenFromGuest(resolvePackageOf(it as? ResolveInfo)) }
+        if (kept.size == list.size) return value
+        return ParceledLists.wrap(value?.javaClass ?: return kept, kept) ?: kept
+    }
+
+    internal fun resolvePackageOf(info: ResolveInfo?): String? = when {
+        info == null -> null
+        info.activityInfo != null -> info.activityInfo.packageName
+        info.serviceInfo != null -> info.serviceInfo.packageName
+        info.providerInfo != null -> info.providerInfo.packageName
+        else -> info.resolvePackageName
+    }
 
     /** Set once by the graft so permission queries can be redirected to the host. */
     @Volatile

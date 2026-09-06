@@ -3,7 +3,7 @@
 Regenerate the "not implemented" section with `tools/report-unimplemented.sh`. This file
 exists because ARCHITECTURE.md §18 rule 1 forbids describing unfinished work as done.
 
-**Phases 0-5 complete. Phases 6, 7 and 8 begun: signatures, per-instance device identity, splits and updates, cross-process components, and diagnostics export.**
+**Phases 0-5 complete. Phases 6 and 7 begun: signatures, per-instance device identity, splits and updates, cross-process components, and a compatibility pass driven by five runs on a real phone.**
 
 A real APK — not installed on the device — is imported, registered, given an instance, and
 launched into a `:vappN` process where it believes it is itself. Its Activity, Service,
@@ -15,8 +15,8 @@ storage, in the guest's process. Evidence is checked in under `docs/evidence/`.
 | Environment | Proves | Cannot prove |
 |---|---|---|
 | Build machine (JVM + host C++) | Parsers, path contract, ELF checks, shim engine, Google routing table, redactor | Anything about a running Android system |
-| **Android 14 x86_64 emulator** (`aosp_atd`, software rendering, no KVM) | The engine graft — it is pure Java and architecture-independent — and, through `tools/real-app-smoke.sh`, applications the project did not write | ARM64 native code, real GPU paths, OEM framework forks, Android 15/16 behaviour, 16 KB pages |
-| ARM64 Android 15 phone | Everything above, for real | **Not yet run.** See `docs/PHYSICAL_DEVICE_TEST.md` |
+| **Android 14 x86_64 emulator** (`aosp_atd`, software rendering, no KVM) | The engine graft — it is pure Java and architecture-independent — and, through `tools/real-app-smoke.sh`, applications the project did not write | ARM64 native code, real GPU paths, OEM framework forks, Android 15/16 behaviour, 16 KB pages, **anything involving Play services or an IME** — the image has neither |
+| ARM64 Android 15 phone | Everything above, for real | **Five runs so far**, each a capture read by `tools/device-log/analyze.py`; three are checked in as fixtures. See `docs/PHYSICAL_DEVICE_TEST.md` |
 
 Every device claim below names the environment. Nothing is marked working on reasoning.
 
@@ -36,15 +36,16 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Diagnostics redactor | 7 | JWTs, `ya29.`, bearer headers, emails, key names |
 | Google routing table | 10 | Every flow's decision pinned |
 | Stub / job / channel namespacing | 8 | Two instances cannot collide |
-| Flutter UI | 15 | Includes both shapes the engine's Google status arrives in |
+| Flutter UI | 15 | Includes both shapes the engine's Google status arrives in, and that the reason an app cannot be added is a key both languages carry |
 | Runtime vs install-time permissions | 7 | Every dangerous group enumerated; the three a device run found denied are install-time |
 | Process slot pool | 12 | Release ends the process; a dead slot is reclaimed; a full pool refuses rather than evicts |
 | Per-instance permission store | 12 | Undecided install-time is granted, undecided runtime is not, and neither can exceed the host |
 | Device-log analyzer | 35 | Against a real Android 15 run, plus a synthetic healthy one |
 | APK survey (DEX reader, service map) | 17 | The reader is checked against a real checked-in APK |
+| Which packages a guest may see | 6 | The Google stack hidden, `com.android.vending` not, a prefix match not enough, and both shapes intent resolution answers in — the emulator has no Play services, so this is where the decision is pinned |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**177 JVM tests, 15 Dart tests, 34 native checks, 52 off-device tool tests — all passing.**
+**185 JVM tests, 15 Dart tests, 34 native checks, 59 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -70,12 +71,15 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Android 14 x86_64, probe **not installed on the device**. The suite is **47 tests**, and
-the newest run — `RUN_ID=final4`, the `debug` build — passes all of them.
+Android 14 x86_64, probe **not installed on the device**. The suite is **46 tests**, and
+the newest run — `RUN_ID=ru-pass-1`, the `debug` build — passes all of them.
+
+It was 47 until this pass: `t37` covered the diagnostics export, the device report and the
+checklist, and all three were removed with the UI that reached them.
 
 The last run of the `verify` build a tester is actually handed, `20260905-125829-4200`,
-was **38 of 38** against the suite as it stood then; `t39`–`t47` were added after it and
-have only been run on `debug`. Full output of that run in
+was **38 of 38** against the suite as it stood then; everything after `t38` was added later
+and has only been run on `debug`. Full output of that run in
 `docs/evidence/phase3-4-instrumentation.txt`.
 
 | Test | Result |
@@ -116,7 +120,6 @@ have only been run on `debug`. Full output of that run in
 | `t34` a guest shares one of its own files with something outside it | **PASS** |
 | `t35` the Google routing decision is real, and follows this device | **PASS** |
 | `t36` a guest reaching another app's provider gets a well-formed answer | **PASS** |
-| `t37` the device report, the checklist and an export that carries no app data | **PASS** |
 | `t38` a guest reads a setting, and is called by its own name | **PASS** |
 | `t39` the guest's window is hardware-accelerated, read after it was attached | **PASS** |
 | `t40` the guest's declared `screenOrientation` reaches the platform | **PASS** |
@@ -134,15 +137,14 @@ Recorded by `t29` on every run. **Software-emulated x86_64 with no hardware acce
 so these are not device numbers and no budget is asserted against them (§17.1) — they are
 a baseline a physical-device run is compared against.
 
-| Measurement | Run `20260904-221502-8465` | Run `20260905-093631-18438` |
-|---|---|---|
-| Cold start, fork → the app's first screen ready | 37.5 s | 12.1 s |
-| ... of which fork → guest `Application.onCreate` (the graft) | 27.6 s | 8.2 s |
-| ... of which `Application.onCreate` → `Activity.onCreate` | 7.5 s | 3.3 s |
-| Warm start, request → ready, into a live process | 5.4 s | 2.3 s |
-| Virtual process memory, total PSS | 30.2 MB | 33.1 MB |
+| Measurement | Run `20260904-221502-8465` | Run `20260905-093631-18438` | Run `ru-pass-1` |
+|---|---|---|---|
+| Cold start, fork → the app's first screen ready | 37.5 s | 12.1 s | 23.6 s |
+| ... of which fork → guest `Application.onCreate` (the graft) | 27.6 s | 8.2 s | 21.7 s |
+| Warm start, request → ready, into a live process | 5.4 s | 2.3 s | 3.6 s |
+| Virtual process memory, total PSS | 30.2 MB | 33.1 MB | 37.9 MB |
 
-The two columns are the same engine on the same emulator, three times apart in every
+The three columns are the same engine on the same emulator, three times apart in every
 timing, and the difference is not UNIQUE: the first was measured with Gradle's and Kotlin's
 daemons resident, holding about five gigabytes between them on a machine sized for one
 emulator. That is what a wall-clock number on this environment is worth, and why none is
@@ -681,6 +683,65 @@ report a person reads:
 What it does *not* say is that the apps are usable: nothing here looks at the screen, and
 "reached its own main activity and stayed up for five minutes" is the whole claim.
 
+### The fifth run: everything launched, and Play services killed three of them
+
+The log that came back from the phone after the pass above is the first one in which the
+engine is not the story. Eight launches, six of which reached the guest's own Activity, and
+the report was: *"some apps seem to launch, some don't, in some the screen does not
+respond, games crash and there is no keyboard."*
+
+`tools/device-log/analyze.py` on that capture, which is checked in as
+`tools/device-log/fixtures/redmi-android15-run5.log`:
+
+```
+[FAIL] launch       6/8 launches reached the guest's Activity
+[FAIL] crash        com.gordey.standarling crashed on main: SecurityException: Unknown calling package name
+                    com.a0soft.gphone.acc.free crashed on main: SecurityException: Unknown calling package name
+                    com.Chillow.CustomRise crashed on main: SecurityException: Unknown calling package name
+[FAIL] providers    androidx.core.content.FileProvider did not publish
+[FAIL] permissions  android.permission.SYSTEM_ALERT_WINDOW denied 3x, but it is an install-time permission
+[ok  ] render       (the fourth run's fault, and it stayed fixed)
+```
+
+| Found | Fixed by |
+|---|---|
+| **Three guests died of one thing.** `GmsClient.getRemoteService` sends `context.getPackageName()` to `com.google.android.gms`, which resolves the *calling* uid — UNIQUE's — and answers `SecurityException: Unknown calling package name '<the guest>'`. It arrives on a `Handler`, so it is fatal and uncatchable, and it fired seconds after each app reached its own screen. Every one of the three stacks is Firebase's `dynamite_measurementdynamite` module | `com.google.android.gms` and `com.google.android.gsf` are hidden from a guest: absent from `getPackageInfo`, `getApplicationInfo`, `getPackageUid`, `resolveContentProvider`, the installed list and both intent resolvers. An SDK that asks finds nothing and takes the path it already has for a phone without Play services. `com.android.vending` stays visible — Play's licence check is an ordinary bind that works, and hiding it would break the PAIRIP case fixed one run earlier |
+| **No guest has ever had a keyboard.** `EditorInfo.packageName` is the app's own, and `InputMethodManagerService.startInputOrWindowGainedFocus` checks it against the calling uid: a mismatch is `InputBindResult.INVALID_PACKAGE_NAME`, and *no IME is bound*. Nothing is logged in the app's process — the field takes focus, shows a caret, and accepts nothing | `input_method` proxied, with a guard that rewrites the `EditorInfo`'s own field rather than an argument. Two `$Stub` spellings, because the interface moved from `com.android.internal.view` to `com.android.internal.inputmethod` in Android 14, and two singleton caches for the same reason |
+| **A guest came up with no `FileProvider`.** `ContentProvider.attachInfo` runs the app's own code, and `FileProvider`'s reads external storage while parsing its `<paths>`. The registry installed providers *before* the identity hooks, so that call went out under the guest's name: `PROVIDER_PUBLISH_FAILED … SecurityException: callingPackage does not match UID`. `FileProvider` is how an app shares a file with anything outside itself | Providers are published after `VirtualIdentityHooks`. They still precede every *guest* component and its `Application.onCreate`, which is the ordering apps rely on; what changed is that they no longer precede UNIQUE's own plumbing |
+| **"In some apps the screen does not respond."** Touch was never broken. `ACTION_DOWN` and `ACTION_UP` reach every guest that is alive, in the log, for every app. The unresponsive screens are the windows left behind by the three crashes above — still drawn, with no process behind them | Nothing, directly. Fixing the crashes is the fix |
+| **`SYSTEM_ALERT_WINDOW` denied three times**, and it is an install-time permission: no dialog exists for it, so no user could have refused it. UNIQUE did not declare it, and Android's overlay screen does not list an app that does not | Declared — which grants nothing by itself; `SYSTEM_ALERT_WINDOW` is granted on the Settings screen, and the declaration is what makes UNIQUE appear on it. App Details now lists it, with exact alarms and unrestricted background work, each with its real state and the screen that grants it |
+| **`bin.mt.plus` never reached its `Application`**: `UnsatisfiedLinkError: No implementation found for void l.ۢ.<clinit>()`, thrown by its own packer's static initialiser before UNIQUE's graft could finish. Unexplained | Nothing. It is reported as `NO_APPLICATION` and the analyzer's fifth-run tests assert that it keeps being reported. A commercial packer that decrypts its own classes in a `<clinit>` is a class of app UNIQUE does not claim |
+
+And what the same message asked for that was not a fault:
+
+- **The *Advanced* section is gone** — the device test, the checklist, the diagnostics
+  screen, the export, and the engine code behind all four. §14.2 of ARCHITECTURE.md says
+  what went and what survives it.
+- **Everything the interface shows is translated.** Engine failures carry a code the
+  interface translates, with the engine's English prose as the fallback for a code it does
+  not know; an automatic profile name is written in the reader's own language rather than
+  stored in English. `tools/check-translations.py` fails when a code has no sentence in
+  both languages, or a sentence has no code.
+
+Two of the three engine fixes cannot be *observed* on the verification emulator: it is an
+AOSP image with no Play services, so the crash they prevent cannot be reproduced there, and
+it has no IME of its own to bind. What the emulator does say about the keyboard is that the
+proxy installs and the guard binds to exactly the method that matters:
+
+```
+HOOK SERVICE_HOOKED service=input_method cache=true singletons=1
+     bound=callerPackage,editorIdentity
+     matched=… editorIdentity=startInputOrWindowGainedFocus
+HOOK IDENTITY_HOOKS_INSTALLED package=com.unique.probe
+     installed=…,appwidget,input_method skipped=
+```
+
+The `com.android.internal.inputmethod.IInputMethodManagerGlobalInvoker` singleton is
+reported skipped on this image and the `android.view.inputmethod` one patched, which is
+what the two spellings are there for. The hiding decision is unit-tested instead
+(`VirtualPackageManagerHookTest`, six tests), and both rows say `NOT_TESTED` on ARM64 in
+`docs/COMPATIBILITY.md` until a phone says otherwise.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -748,6 +809,10 @@ visible to unit tests:
 | A failed graft reported `message=java.lang.reflect.InvocationTargetException` and nothing else, which names UNIQUE's calling convention and nothing about the app | fixed (the chain is unwrapped to its root with the first frames, and the stack goes to `logcat` under the tag a device capture is filtered on) |
 | A guest publishing a shortcut killed its own `Application.onCreate`: a `ShortcutInfo` carries its own package name and the platform checks each against the caller | refused honestly, not fixed (`SHORTCUT_PUBLISH_UNSUPPORTED`, returning the `false` the API already defines for a rate-limited caller). Routing a published shortcut back into the guest is a feature and is listed as not implemented |
 | Three of the four client-side framework caches UNIQUE thought it was disabling did not exist under those names, and the one that mattered was not on the list at all — `ApplicationPackageManager` answers `getComponentEnabledSetting`, `getPackageInfo` and `getApplicationInfo` from the process, where no Binder shim can see them | fixed (the *classes* are named and every static no-argument `disable…Cache()` on each is discovered and called; three more were found this way, and the list can no longer go stale when a release renames one) |
+| **Play services killed three guests seconds after they launched.** `GmsClient.getRemoteService` sends the guest's own package name to `com.google.android.gms`, which resolves the calling uid to UNIQUE's packages and answers `SecurityException: Unknown calling package name`, on a `Handler`, fatally | fixed (`com.google.android.gms` and `com.google.android.gsf` are hidden from everything a guest can ask the package manager, so an SDK takes its own "no Play services" path; `com.android.vending` stays visible. `VirtualPackageManagerHookTest`) |
+| **No guest could type.** `EditorInfo.packageName` is checked against the calling uid before an IME is bound, and a mismatch is `INVALID_PACKAGE_NAME` — silently, with nothing logged in the app's process | fixed (`input_method` proxied under either of the two `$Stub` package names the interface has had, with a guard that rewrites the `EditorInfo` field rather than an argument) |
+| **A guest's own `FileProvider` never published.** Providers were installed before the identity hooks, and `FileProvider.attachInfo` reads external storage while parsing its `<paths>` — under the guest's name, which the platform refuses | fixed (the registry installs after `VirtualIdentityHooks`, still before every guest component) |
+| `SYSTEM_ALERT_WINDOW` was denied to every guest that asked, and it is install-time: no dialog exists, so no user refused it. UNIQUE did not declare it, and Android's overlay screen does not offer an app that does not | fixed (declared, which is what puts UNIQUE on that screen; App Details lists overlay, exact alarms and unrestricted background work with their real state and opens each one's screen) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step
@@ -767,6 +832,8 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | WebView rendering on this environment | 6 | A WebView is created correctly in the guest with the instance's own data directory, but Chromium's renderer crashes on this emulator *outside* virtualization too, so rendering is `NOT_TESTED` rather than attributed to UNIQUE (`t30`) |
 | URI permission grants between virtual processes | 3 | `grantUriPermission` across `:vappN` is not implemented |
 | VirtualCore server interface | 3 | `onBind` returns null; the UI process owns the database for now |
+| Play services, to a guest | 6 | Hidden entirely rather than half-served. Every SDK path that reaches `com.google.android.gms` ends in a uid check UNIQUE cannot satisfy, and the failure is a fatal `SecurityException` on a `Handler` — so an app that asks now finds no Play services and takes the path it already has for a phone without them. Making this work means implementing the bridges (row above), not hiding less |
+| A diagnostics UI inside the app | 8 | Removed at the request of the person it was written for. Everything UNIQUE records goes to `logcat` under one tag, and `tools/device-log/analyze.py` reads a capture from any recorder app |
 
 ## Known limits that are not bugs
 
@@ -846,25 +913,29 @@ caught `restrictions`, `locale` and `connectivity` before one did.
 
 ## Next steps, in order
 
-1. **The physical-device run.** ARM64 native code, a real GPU driver, a hardware Vulkan
-   ICD, WebView rendering and a real application — five things only a phone can answer,
-   and every one of them is `NOT_TESTED` until it does.
-   `docs/PHYSICAL_DEVICE_TEST.md` is the sequence, and it needs no `adb`, no root and no
-   computer: *Settings → Advanced → Device test* holds the device report and the twelve
-   steps, and the last step shares one diagnostics package out through the share sheet.
-2. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
+1. **The sixth phone run**, which is the only place three of this pass's fixes can be
+   observed at all: the verification emulator has no Play services to refuse a guest's
+   identity and no IME to bind, so neither the hiding nor the keyboard can be reproduced
+   there. What to watch for: a guest with a text field brings up the phone's own keyboard;
+   no `Unknown calling package name` anywhere in the capture; `PROVIDER_PUBLISH_FAILED` gone.
+   `docs/PHYSICAL_DEVICE_TEST.md` is the sequence — start a log recorder, work the twelve
+   steps, send the capture.
+2. ARM64 native code, a real GPU driver, a hardware Vulkan ICD, WebView rendering and a
+   real engine app — five things only a phone can answer, and every one of them is
+   `NOT_TESTED` until it does.
+3. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
    Sharing outward works (`t34`) and the inbound request is at least well-formed (`t36`),
    but arranging a real grant needs a third APK: instrumentation runs under the target
    app's uid and can neither write another app's files nor grant for its authority.
-3. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
+4. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
    procedure, in the order that makes one failure explain the next.
-4. A real engine sample (Unity/Unreal). None is available in this environment, and no
+5. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-5. **Re-running the `verify` build.** Nine tests (`t39`–`t47`) have only been run on
+6. **Re-running the `verify` build.** Everything after `t38` has only been run on
    `debug`, and the `verify` build is what a tester installs — the difference is not
    cosmetic: it is unminified but non-debuggable, so ActivityManager holds it to the
    ordinary ten-second process-start budget.
-6. **Verifying the minified release build.** The artifact a tester is actually given is
+7. **Verifying the minified release build.** The artifact a tester is actually given is
    already covered: `BUILD_TYPE=verify ./tools/verify-device.sh` runs the whole suite
    against the exact APK in `dist/` — not a near neighbour of it — and passed 38 of 38
    against the suite as it stood then.

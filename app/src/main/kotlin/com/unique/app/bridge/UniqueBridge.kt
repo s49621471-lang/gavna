@@ -11,7 +11,6 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import com.unique.core.common.diag.DiagChannel
-import com.unique.core.common.diag.DiagEvent
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
@@ -19,18 +18,16 @@ import com.unique.core.compat.CompatDatabase
 import com.unique.core.google.GoogleCompatRouter
 import com.unique.core.google.GoogleEnvironment
 import com.unique.core.vam.ForegroundServiceTypes
-import com.unique.app.engine.DeviceReport
-import com.unique.app.engine.DiagnosticsExport
+import com.unique.app.engine.SpecialAccess
 import com.unique.app.engine.GuestAppInfo
 import com.unique.app.engine.InstancePermissions
-import com.unique.app.engine.TestChecklist
 import com.unique.app.engine.UniqueEngine
 import com.unique.core.vam.LaunchResult
 import com.unique.core.vpermission.PermissionGroup
 import com.unique.core.vpermission.PermissionState
 import com.unique.core.vpm.CreateResult
+import com.unique.core.vpm.InstanceManager
 import io.flutter.plugin.common.BinaryMessenger
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,8 +40,8 @@ import java.io.File
 /**
  * The Flutter/native bridge.
  *
- * A `MethodChannel` for request/response and an `EventChannel` for the diagnostics
- * stream. ARCHITECTURE.md section 15 reserves Pigeon and FFI for high-frequency traffic;
+ * One `MethodChannel`, request and response. ARCHITECTURE.md section 15 reserves Pigeon
+ * and FFI for high-frequency traffic;
  * nothing on the UI path qualifies today - the busiest call is "list installed apps",
  * which happens once per screen - so introducing either now would be complexity without
  * a reason. The decision is recorded so it can be revisited when a real hot path appears.
@@ -55,7 +52,6 @@ import java.io.File
 object UniqueBridge {
 
     private const val METHOD_CHANNEL = "com.unique/bridge"
-    private const val EVENT_CHANNEL = "com.unique/diagnostics"
 
     /**
      * Engine calls touch the database and the filesystem, so they run off the main
@@ -65,8 +61,6 @@ object UniqueBridge {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var methodChannel: MethodChannel? = null
-    private var eventChannel: EventChannel? = null
-    private var diagListener: ((DiagEvent) -> Unit)? = null
 
     fun attach(context: Context, messenger: BinaryMessenger) {
         methodChannel = MethodChannel(messenger, METHOD_CHANNEL).apply {
@@ -87,29 +81,11 @@ object UniqueBridge {
                 }
             }
         }
-        eventChannel = EventChannel(messenger, EVENT_CHANNEL).apply {
-            setStreamHandler(object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    val listener: (DiagEvent) -> Unit = { events?.success(it.toMap()) }
-                    diagListener = listener
-                    Diagnostics.addListener(listener)
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    diagListener?.let(Diagnostics::removeListener)
-                    diagListener = null
-                }
-            })
-        }
     }
 
     fun detach() {
-        diagListener?.let(Diagnostics::removeListener)
-        diagListener = null
         methodChannel?.setMethodCallHandler(null)
-        eventChannel?.setStreamHandler(null)
         methodChannel = null
-        eventChannel = null
     }
 
     /**
@@ -147,17 +123,10 @@ object UniqueBridge {
             "engineStatus" -> engineStatus(context)
             "listInstalledApps" -> listInstalledApps(context, a)
             "appIcon" -> appIcon(context, a["package"] as String)
-            "diagnosticsSnapshot" -> Diagnostics.snapshot().map { it.toMap() }
             "googleStatus" -> googleStatus(context)
             "googleRouting" -> googleRouting(context, (a["vuid"] as Number).toInt())
-            "exportDiagnostics" -> exportDiagnostics(context)
             "uiSettings" -> uiSettings(context)
             "setUiSetting" -> setUiSetting(context, a["key"] as String, a["value"])
-            "shareDiagnostics" -> shareDiagnostics(context)
-            "deviceReport" -> deviceReport(context)
-            "checklist" -> TestChecklist.steps(context).map { it.toMap() }
-            "setChecklistStep" -> setChecklistStep(context, a)
-            "resetChecklist" -> TestChecklist.reset(context).map { it.toMap() }
 
             "listInstances" -> listInstances(context)
             "importInstalled" -> importInstalled(context, a["package"] as String)
@@ -168,12 +137,14 @@ object UniqueBridge {
             "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
             "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)
             "clearData" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = true)
-            "instanceStorage" -> instanceStorage((a["vuid"] as Number).toInt())
             "instancePermissions" ->
                 InstancePermissions.rows(context, (a["vuid"] as Number).toInt())
                     .map { it.toMap() }
             "setInstancePermission" -> setInstancePermission(context, a)
             "openHostSettings" -> openHostSettings()
+            "specialAccess" -> SpecialAccess.list(context)
+                .map { mapOf("id" to it.id, "granted" to it.granted) }
+            "openSpecialAccess" -> SpecialAccess.open(context, a["id"] as String)
 
             else -> throw UnsupportedOperationException("Unknown bridge method: $method")
         }
@@ -256,7 +227,10 @@ object UniqueBridge {
         when (value) {
             is String -> editor.putString(key, value)
             is Boolean -> editor.putBoolean(key, value)
-            else -> return mapOf("ok" to false, "message" to "unsupported value for $key")
+            else -> return mapOf(
+                "ok" to false, "code" to "BAD_SETTING_VALUE",
+                "message" to "unsupported value for $key",
+            )
         }
         editor.apply()
         Diagnostics.info(
@@ -264,97 +238,6 @@ object UniqueBridge {
             mapOf("key" to key, "value" to value.toString()),
         )
         return mapOf("ok" to true)
-    }
-
-    /**
-     * Everything UNIQUE can establish about this device, for a tester with no computer.
-     *
-     * Collected fresh each time. A Vulkan probe that creates a real device and queue costs
-     * a few hundred milliseconds once; caching it would mean showing a stale answer after
-     * the very thing a tester just changed.
-     */
-    private suspend fun deviceReport(context: Context): List<Map<String, Any?>> {
-        val packages = UniqueEngine.instances.instances().map { it.packageName }.toSet()
-        return DeviceReport.collect(context, packages).map { section ->
-            mapOf("title" to section.title, "values" to section.values)
-        }
-    }
-
-    private fun setChecklistStep(context: Context, a: Map<String, Any?>): List<Map<String, Any?>> {
-        val id = a["id"] as? String ?: return TestChecklist.steps(context).map { it.toMap() }
-        val verdict = runCatching {
-            TestChecklist.Verdict.valueOf(a["verdict"] as String)
-        }.getOrDefault(TestChecklist.Verdict.NOT_RUN)
-        val note = a["note"] as? String ?: ""
-        return TestChecklist.set(context, id, verdict, note).map { it.toMap() }
-    }
-
-    /**
-     * Writes a diagnostics package and hands it to the share sheet.
-     *
-     * The whole point of this path is that a tester needs no `adb` and no computer: a file
-     * whose location the UI merely *reports* is a file on a phone, and getting it off one
-     * is exactly the step this is supposed to remove.
-     */
-    private suspend fun shareDiagnostics(context: Context): Map<String, Any?> {
-        val written = exportDiagnostics(context)
-        if (written["ok"] != true) return written
-        val path = written["path"] as? String
-            ?: return mapOf("ok" to false, "message" to "The package was written but has no path.")
-        val sharer = sharer
-            ?: return written + mapOf(
-                "shared" to false,
-                "message" to "No window is open to share from; the file is saved at $path.",
-            )
-        val started = sharer.shareFile(java.io.File(path), "application/zip")
-        return written + mapOf("shared" to started)
-    }
-
-    /**
-     * How the bridge puts a file into the share sheet, when it has no window of its own.
-     *
-     * Implemented by [com.unique.app.MainActivity], for the same reason [ApkPicker] is.
-     */
-    interface FileSharer {
-        fun shareFile(file: java.io.File, mimeType: String): Boolean
-    }
-
-    @Volatile
-    var sharer: FileSharer? = null
-
-    /**
-     * Writes a diagnostics package and reports where it is.
-     *
-     * The live slots are read from the launcher rather than guessed: an export that asks a
-     * slot with no process wastes a Binder round trip and, worse, would make an empty
-     * `vappN.log` look like a process that recorded nothing.
-     */
-    private suspend fun exportDiagnostics(context: Context): Map<String, Any?> {
-        val liveSlots = UniqueEngine.launcher.snapshot()
-            .filter { it.occupant != null }
-            .map { it.index }
-        val instances = UniqueEngine.instances.instances().map { instance ->
-            mapOf(
-                "vuid" to instance.vuid.toString(),
-                "package" to instance.packageName,
-                "versionCode" to instance.versionCode.toString(),
-                "profile" to instance.displayName,
-                "androidId" to instance.profile.androidId,
-            )
-        }
-        return runCatching { DiagnosticsExport.write(context, liveSlots, instances) }.fold(
-            onSuccess = { result ->
-                mapOf(
-                    "ok" to true,
-                    "path" to result.file.absolutePath,
-                    "name" to result.file.name,
-                    "bytes" to result.bytes,
-                    "processes" to result.processes,
-                    "lines" to result.lines,
-                )
-            },
-            onFailure = { mapOf("ok" to false, "message" to it.toString()) },
-        )
     }
 
     // ---------------------------------------------------------------------------------
@@ -370,6 +253,10 @@ object UniqueBridge {
                 "versionCode" to instance.versionCode,
                 "label" to labelOf(context, instance.packageName, instance.versionCode),
                 "profileName" to instance.displayName,
+                // The ordinal of an automatic name, so the interface can say "Профиль 2"
+                // rather than showing the English the engine stored. Null for a name a
+                // person chose, which is shown exactly as they typed it.
+                "profileOrdinal" to InstanceManager.defaultNameOrdinal(instance.displayName),
                 "androidId" to instance.profile.androidId,
                 "instanceId" to instance.profile.instanceId.toString(),
                 "generation" to instance.profile.generation,
@@ -415,7 +302,10 @@ object UniqueBridge {
      */
     private suspend fun importApkFromPicker(context: Context): Map<String, Any?> {
         val picker = picker
-            ?: return mapOf("ok" to false, "message" to "No window is open to pick a file in.")
+            ?: return mapOf(
+                "ok" to false, "code" to "NO_PICKER",
+                "message" to "No window is open to pick a file in.",
+            )
         val uris = picker.pickApks()
         if (uris.isEmpty()) return mapOf("ok" to true, "cancelled" to true)
 
@@ -442,7 +332,10 @@ object UniqueBridge {
             }
         }
         if (staged.isEmpty()) {
-            return mapOf("ok" to false, "message" to "None of the selected files could be read.")
+            return mapOf(
+                "ok" to false, "code" to "NO_FILE_READ",
+                "message" to "None of the selected files could be read.",
+            )
         }
         Diagnostics.info(
             DiagChannel.STORAGE, "IMPORT_PICKED",
@@ -491,23 +384,13 @@ object UniqueBridge {
 
     private suspend fun clearStorage(vuid: Int, dataToo: Boolean): Map<String, Any?> {
         val instance = UniqueEngine.instances.instance(vuid)
-            ?: return mapOf("ok" to false, "message" to "Instance $vuid does not exist.")
+            ?: return mapOf(
+                "ok" to false, "code" to "NO_SUCH_INSTANCE",
+                "message" to "Instance $vuid does not exist.",
+            )
         if (dataToo) UniqueEngine.storage.clearData(vuid, instance.packageName)
         else UniqueEngine.storage.clearCache(vuid, instance.packageName)
         return mapOf("ok" to true)
-    }
-
-    private suspend fun instanceStorage(vuid: Int): Map<String, Any?> {
-        val instance = UniqueEngine.instances.instance(vuid)
-            ?: return mapOf("ok" to false)
-        val usage = UniqueEngine.storage.usage(vuid, instance.packageName)
-        return mapOf(
-            "ok" to true,
-            "dataBytes" to usage.dataBytes,
-            "cacheBytes" to usage.cacheBytes,
-            "externalBytes" to usage.externalBytes,
-            "dataDir" to UniqueEngine.storage.model.dataDir(vuid, instance.packageName),
-        )
     }
 
     /**
@@ -551,7 +434,10 @@ object UniqueBridge {
     ): Map<String, Any?> {
         val vuid = (a["vuid"] as Number).toInt()
         val group = runCatching { PermissionGroup.valueOf(a["group"] as String) }.getOrNull()
-            ?: return mapOf("ok" to false, "message" to "Unknown permission group.")
+            ?: return mapOf(
+                "ok" to false, "code" to "UNKNOWN_PERMISSION_GROUP",
+                "message" to "Unknown permission group.",
+            )
         val granted = a["granted"] as? Boolean ?: false
 
         if (granted) {
@@ -562,6 +448,7 @@ object UniqueBridge {
                 val requester = hostPermissions
                     ?: return mapOf(
                         "ok" to false,
+                        "code" to "NEEDS_MAIN_SCREEN",
                         "message" to "Open UNIQUE's main screen to grant ${group.label}.",
                     )
                 val results = requester.request(missing)
@@ -578,6 +465,8 @@ object UniqueBridge {
                     return mapOf(
                         "ok" to false,
                         "needsHostSettings" to permanent,
+                        "code" to if (permanent) "HOST_PERMISSION_DENIED_FOREVER"
+                        else "HOST_PERMISSION_REFUSED",
                         "message" to if (permanent) {
                             "Android will not ask again for ${group.label}. " +
                                 "Grant it to UNIQUE in system settings, then try again."
@@ -600,7 +489,10 @@ object UniqueBridge {
         val state = if (granted) PermissionState.GRANTED else PermissionState.DENIED
         val ok = InstancePermissions.set(context, vuid, group, state)
         return if (ok) mapOf("ok" to true)
-        else mapOf("ok" to false, "message" to "This app does not ask for ${group.label}.")
+        else mapOf(
+            "ok" to false, "code" to "PERMISSION_NOT_REQUESTED",
+            "message" to "This app does not ask for ${group.label}.",
+        )
     }
 
     private fun openHostSettings(): Map<String, Any?> =
@@ -613,7 +505,7 @@ object UniqueBridge {
             "package" to instance.packageName,
             "profileName" to instance.displayName,
         )
-        is CreateResult.Rejected -> mapOf("ok" to false, "message" to reason)
+        is CreateResult.Rejected -> mapOf("ok" to false, "code" to code, "message" to reason)
     }
 
     /**
@@ -725,15 +617,4 @@ object UniqueBridge {
             .firstOrNull { it.packageName == packageName }?.versionCode ?: return null
         return GuestAppInfo.of(context, packageName, version).icon
     }
-
-    private fun DiagEvent.toMap(): Map<String, Any?> = mapOf(
-        "timestamp" to timestampMillis,
-        "channel" to channel.name,
-        "level" to level.name,
-        "code" to code,
-        "vuid" to vuid,
-        "package" to packageName,
-        "fields" to fields,
-        "throwable" to throwable,
-    )
 }

@@ -54,12 +54,18 @@ sealed interface UpdateResult {
     /** The same version, already imported. Not an error and not work. */
     data class Unchanged(val packageName: String, val versionCode: Long) : UpdateResult
 
-    data class Rejected(val reason: String) : UpdateResult
+    /**
+     * [code] is stable and translatable; [reason] is English prose carrying the specifics.
+     * See [ImportRejection], which draws the same distinction for the same reason.
+     */
+    data class Rejected(val code: String, val reason: String) : UpdateResult
 }
 
 sealed interface CreateResult {
     data class Created(val instance: Instance, val manifest: ApkManifest) : CreateResult
-    data class Rejected(val reason: String) : CreateResult
+
+    /** [code] is stable and translatable; [reason] is English prose. See [UpdateResult.Rejected]. */
+    data class Rejected(val code: String, val reason: String) : CreateResult
 }
 
 /**
@@ -87,7 +93,8 @@ class InstanceManager(
     suspend fun importAndCreate(files: List<File>, displayName: String? = null): CreateResult {
         val installer = PackageInstaller(model, UniqueNative.pageSize(), deviceSpec())
         return when (val result = installer.import(files)) {
-            is ImportResult.Rejected -> CreateResult.Rejected(result.reason.message)
+            is ImportResult.Rejected ->
+                CreateResult.Rejected(result.reason.code, result.reason.message)
             is ImportResult.Installed -> {
                 registerPackage(result.manifest, result.apkDir, result.nativeLibraryDir)
                 createInstance(result.manifest.packageName, displayName)
@@ -174,18 +181,22 @@ class InstanceManager(
     suspend fun update(files: List<File>): UpdateResult {
         val installer = PackageInstaller(model, UniqueNative.pageSize(), deviceSpec())
         val bundle = runCatching { ApkBundleReader.read(files) }
-            .getOrElse { return UpdateResult.Rejected("Could not read the APK: ${it.message}") }
+            .getOrElse {
+                return UpdateResult.Rejected("APK_UNREADABLE", "Could not read the APK: ${it.message}")
+            }
         val incoming = bundle.manifest
         val existing = dao.packageOf(incoming.packageName)
             ?: return UpdateResult.Rejected(
-                "${incoming.packageName} has not been imported, so there is nothing to update."
+                "NOT_IMPORTED",
+                "${incoming.packageName} has not been imported, so there is nothing to update.",
             )
 
         if (incoming.versionCode < existing.versionCode) {
             return UpdateResult.Rejected(
+                "DOWNGRADE",
                 "That is version ${incoming.versionCode}, older than the installed " +
                     "${existing.versionCode}. Downgrading would let an older build read a " +
-                    "newer build's data."
+                    "newer build's data.",
             )
         }
         if (incoming.versionCode == existing.versionCode) {
@@ -195,15 +206,19 @@ class InstanceManager(
         val oldBase = File(model.baseApk(incoming.packageName, existing.versionCode))
         val newBase = bundle.base.file
         val verdict = signerMatch(oldBase, newBase)
-        if (verdict is SignerVerdict.Mismatch) return UpdateResult.Rejected(verdict.reason)
+        if (verdict is SignerVerdict.Mismatch) {
+            return UpdateResult.Rejected("SIGNER_MISMATCH", verdict.reason)
+        }
         if (verdict is SignerVerdict.Unknown) {
             return UpdateResult.Rejected(
-                "Could not verify that the update is signed by the same key: ${verdict.reason}"
+                "SIGNER_UNKNOWN",
+                "Could not verify that the update is signed by the same key: ${verdict.reason}",
             )
         }
 
         return when (val result = installer.import(bundle)) {
-            is ImportResult.Rejected -> UpdateResult.Rejected(result.reason.message)
+            is ImportResult.Rejected ->
+                UpdateResult.Rejected(result.reason.code, result.reason.message)
             is ImportResult.Installed -> {
                 registerPackage(result.manifest, result.apkDir, result.nativeLibraryDir)
                 val count = dao.instancesOf(incoming.packageName).size
@@ -327,16 +342,18 @@ class InstanceManager(
      */
     suspend fun createInstance(packageName: String, displayName: String? = null): CreateResult {
         val pkg = dao.packageOf(packageName)
-            ?: return CreateResult.Rejected("$packageName has not been imported.")
+            ?: return CreateResult.Rejected("NOT_IMPORTED", "$packageName has not been imported.")
 
         val baseApk = File(model.baseApk(packageName, pkg.versionCode))
         val manifest = runCatching { ManifestReader.fromApk(baseApk) }.getOrElse {
-            return CreateResult.Rejected("Could not read the imported manifest: $it")
+            return CreateResult.Rejected(
+                "MANIFEST_UNREADABLE", "Could not read the imported manifest: $it",
+            )
         }
 
         val vuid = dao.nextVuid()
         val existing = dao.instancesOf(packageName).size
-        val name = displayName ?: if (existing == 0) "Profile 1" else "Profile ${existing + 1}"
+        val name = displayName ?: defaultName(existing + 1)
         val profile = profileFactory.create(name)
         // A copy where the virtual process can read it. The profile lives in the state
         // database, which a :vappN deliberately has no IPC to on the launch path.
@@ -360,7 +377,7 @@ class InstanceManager(
             // The directories exist but the row does not, so nothing references them.
             // Removing them keeps "not there" as the only failed state.
             storage.removeInstance(vuid, packageName)
-            return CreateResult.Rejected("Could not record the instance: $it")
+            return CreateResult.Rejected("RECORD_FAILED", "Could not record the instance: $it")
         }
 
         Diagnostics.info(
@@ -407,6 +424,22 @@ class InstanceManager(
 
     companion object {
         const val DEFAULT_SPACE = "default"
+
+        /**
+         * What a profile is called when nobody has named it.
+         *
+         * Generated here and recognised again by [defaultNameOrdinal], so the interface can
+         * tell an automatic name from one a person chose and translate only the former. A
+         * name typed by a user is shown in the language they typed it in, which is the only
+         * correct thing to do with it.
+         */
+        fun defaultName(ordinal: Int): String = "Profile $ordinal"
+
+        /** The number in an automatic name, or null when the name is not one. */
+        fun defaultNameOrdinal(name: String): Int? =
+            DEFAULT_NAME.matchEntire(name)?.groupValues?.get(1)?.toIntOrNull()
+
+        private val DEFAULT_NAME = Regex("""Profile (\d+)""")
     }
 }
 

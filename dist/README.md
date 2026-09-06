@@ -40,7 +40,45 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
-This build answers the four things that log was actually reporting, and eighteen more
+Six apps launched in that run and three of them died seconds later, all of the same thing.
+This build answers everything that log reported.
+
+- **Play services was killing guests.** `GmsClient.getRemoteService` sends the app's own
+  package name to `com.google.android.gms`, which resolves the *calling* uid — UNIQUE's —
+  and answers `SecurityException: Unknown calling package name`. It arrives on a `Handler`,
+  so it is fatal and no app can catch it: three of the six guests in that log died this way
+  within seconds of reaching their own screen. The Google stack is now hidden from a guest
+  entirely — `getPackageInfo`, the uid lookup, provider resolution, the installed list and
+  both intent resolvers — so an SDK that asks finds nothing and takes the path it already
+  has for a phone without Play services. `com.android.vending` stays visible, because Play's
+  licence check is an ordinary bind that works and a protected app exits without it.
+- **There was no keyboard.** `EditorInfo.packageName` carries the app's own name into
+  `startInputOrWindowGainedFocus`, and the input-method service checks it against the
+  calling uid: a mismatch is `INVALID_PACKAGE_NAME` and *no keyboard is ever bound*. The
+  field takes focus, shows a caret, and accepts nothing. `input_method` is hooked now and
+  the phone's own keyboard comes up, exactly as it does outside UNIQUE.
+- **A guest came up with no `FileProvider`.** Publishing a provider runs the app's own
+  `attachInfo`, and `FileProvider`'s reads external storage — which was still the host's at
+  that moment. Providers are published after the identity hooks now.
+- **"The screen does not respond."** Touch was never broken: `ACTION_DOWN` and `ACTION_UP`
+  reached every guest that was alive. The unresponsive screens were the dead windows left
+  by the crashes above, still on screen with nothing behind them. Fixing the crashes is the
+  fix for this.
+- **The interface was half in English.** Every failure the engine can report now carries a
+  code the interface translates, an automatic profile name is written in the reader's own
+  language, and `tools/check-translations.py` fails the build if a code has no sentence in
+  both. 25 codes, both languages.
+- **Some permissions could not be granted at all.** Draw-over-other-apps, exact alarms and
+  unrestricted background work have no Android dialog — each is a Settings screen, and each
+  is held by UNIQUE rather than by a copy. App Details lists all three with their real
+  state, opens the right screen, and re-reads the answer on return.
+- **The *Advanced* section is gone**, as asked: the device test, the checklist, the
+  diagnostics screen and the export with it. Everything UNIQUE records still goes to
+  `logcat` under one tag, so any log-recorder app on the phone captures a whole run.
+
+## What changed in the run before that
+
+That build answered the four things its log was actually reporting, and eighteen more
 found on the way. The four:
 
 - **Everything was drawing in software.** The `ActivityInfo` UNIQUE substitutes carried no
@@ -122,8 +160,8 @@ That run imported two apps and launched neither. Both causes are fixed here.
   read from the stored APK through the platform's own parser, in the phone's language.
 - **The log was nearly empty of UNIQUE's own events.** This build writes the full
   structured trace to logcat, so a capture from a logcat app on the phone now contains
-  everything the in-app export does. That is a much better starting point than the last
-  one, which held only warnings and errors.
+  everything about a run. That is a much better starting point than the log before it,
+  which held only warnings and errors.
 - **The interface speaks English and Russian**, following the phone by default and
   switchable in *Settings → Appearance → Language*.
 
@@ -133,9 +171,9 @@ cannot confirm them either. `docs/COMPATIBILITY.md` still says `BROKEN` for both
 ## What to do next
 
 `docs/PHYSICAL_DEVICE_TEST.md` is the twelve-step sequence. It needs no `adb`, no root and
-no computer — *Settings → Advanced → Device test* inside the app holds the sequence and
-the device report, and the last step shares one diagnostics package out through the
-ordinary share sheet.
+no computer to run: start any log-recorder app on the phone, work down the twelve steps,
+and send what it captured. UNIQUE writes everything it records to `logcat` under one tag,
+so an ordinary capture carries the whole run — `tools/device-log/analyze.py` reads it.
 
 ## What is not claimed
 

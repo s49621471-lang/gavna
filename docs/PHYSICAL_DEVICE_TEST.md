@@ -6,11 +6,16 @@ acceleration**. That exercises the engine's Java-level graft faithfully, because
 about ARM64 native code, real GPU paths, OEM framework forks (HyperOS, One UI), or
 Android 15/16 behaviour changes.
 
-This is what closes that gap, and it needs **no `adb`, no root and no computer**. UNIQUE
-collects the evidence itself: *Settings → Advanced → Device test* holds both halves — what
-this phone is, measured on the spot, and the twelve-step sequence with somewhere to record
-what each step actually did. The last step shares one zip out through the ordinary share
-sheet.
+This is what closes that gap. It needs **no `adb`, no root and no computer** to *run* —
+eleven of the twelve steps are things a person does with the phone in their hand — and one
+log capture to be read afterwards. UNIQUE writes every event it records to `logcat` under a
+single tag, so any recorder app on the phone captures the whole run; `tools/device-log/`
+reads what comes back. §3 says how.
+
+UNIQUE used to carry the checklist and an export inside the app, under *Settings →
+Advanced*. That section was removed at the request of the person it was built for, who did
+not use it: every fault found in this project so far arrived as an ordinary logcat capture,
+which is what §3 now describes.
 
 There is still an automated suite that needs a PC. It is at the end, and it is optional.
 
@@ -61,15 +66,15 @@ source; that is expected for a sideloaded build.
 
 ## 2. The twelve steps
 
-Open **Settings → Advanced → Device test**. The same twelve steps are listed there, each
-with a verdict — Pass / Fail / Blocked / Skipped — and a note field. What you type is kept
-on the device and goes into the export at the end, so the person reading the run sees your
-observation next to the machine's own record rather than instead of it.
+Start the log capture first (§3), then work down the table. Write your own verdict for
+each step — Pass / Fail / Blocked / Skipped — and a sentence about what you saw; that
+observation is read *next to* the machine's record, never instead of it, and it is the only
+half of the run a log cannot contain.
 
-Read the **Device report** at the top of that screen first. Half the steps below cannot be
-judged without it: a Vulkan failure means nothing on a phone whose host Vulkan device type
-is `cpu`, and a `dlopen` failure means something quite specific on a phone whose page size
-is 16384.
+Two of the device's own facts change how half the steps below should be read, and
+**Settings → Engine** in UNIQUE reports both: whether the native library loaded, and the
+memory page size. A `dlopen` failure means something quite specific on a phone with 16 KB
+pages, and a Vulkan failure means nothing at all on a phone with no hardware driver.
 
 | # | Step | What it establishes |
 |---|---|---|
@@ -84,7 +89,7 @@ is 16384.
 | **s09** | Notifications and background | Make the app post a notification; check the icon is **visible and correct**, not a blank square. Then close the app and make something arrive — a message, an alarm — to see whether a dead guest wakes. |
 | **s10** | Google Play services, and Sign-In | *App Details → Google* shows what this device has and how each flow *would* be routed. **No sign-in flow is implemented**, so the expected result is a clean refusal, not a login. Record exactly what happens; that is the measurement. |
 | **s11** | A real Unity / IL2CPP app | The hardest case: a large native engine, its own asset loading, its own threads. Nothing is claimed about this today. Note load time and whether it renders. |
-| **s12** | Export the diagnostics package | *Settings → Advanced → Export diagnostics*, then **Share**. See below. |
+| **s12** | Save and send the log | Stop the recorder, and send what it captured. See §3. |
 
 Do them in that order. It is chosen so that a failure explains the ones after it — nothing
 can be said about WebView in a guest until a guest launches, and nothing about Unity until
@@ -101,41 +106,39 @@ the outcome this design exists to avoid.
 
 ---
 
-## 3. The export
+## 3. The log
 
-**Settings → Advanced → Export diagnostics → Share.** One zip, through the ordinary Android
-share sheet — mail it, put it in Drive, send it over chat. Nothing is pulled with `adb`.
+Everything UNIQUE records — from its own process and from every `:vappN` — goes to
+`logcat`, redacted, one line per event, under a tag a capture can filter on. So the whole
+run is collectable by any log-recorder app on the phone; no `adb`, no root, no computer.
 
-Inside:
+Start the recorder **before** step s01 and leave it running to the end. A `:vappN` that
+crashes takes its own buffers with it, and what it logged before dying is the only record
+of why — a capture started afterwards has none of it.
 
-| Entry | Why it matters |
+Send the file the recorder produced. It carries:
+
+| What | Why it matters |
 |---|---|
-| `environment.txt` | The device and this build: fingerprint, ABIs, **page size**, whether the native library loaded |
-| `device-report.txt` | The full Device report — runtime, engine, host Vulkan probe, WebView provider, Google |
-| `test-checklist.txt` | The twelve steps, your verdicts and your notes |
-| `instances.txt` | Which apps are imported, and the identity UNIQUE gave each |
-| `unique.log` | UNIQUE's own structured event log |
-| `crash.log` | Crash records, including ones pushed here by processes that already died |
-| `vappN.log` | The event log of virtual process slot N, pulled from it while it was alive |
-| `native-crash-*.txt` | What a native signal handler managed to write on its way out |
+| UNIQUE's own structured events | Every import, launch, graft, hook, rewrite and refusal, in order |
+| Every `:vappN`'s events | The half UNIQUE's main process cannot see: what happened inside the guest |
+| Crash records | Including ones pushed to UNIQUE's process by a `:vappN` on its way out |
+| The framework's own logging | ART refusing to verify a class, the linker failing to map a library, ActivityManager's kill reason — none of which UNIQUE can observe about itself |
 
 It contains **nothing from inside a virtualized app** — no databases, no shared
-preferences, no cookies, no tokens. That is not a filter applied at the end: the export
-never opens those directories. Every line still passes through the redactor on the way out,
-because an app is free to log its own secrets and UNIQUE records what apps log.
-
-Export **while the app that misbehaved is still running** if you can. The per-`:vappN` logs
-are pulled live from each process; once a process is gone, only what it pushed out before
-dying remains.
+preferences, no cookies, no tokens. That is not a filter applied at the end: no code in
+UNIQUE opens those directories for any diagnostic purpose. Every line still passes through
+the redactor on the way out, because an app is free to log its own secrets and UNIQUE
+records what apps log.
 
 ---
 
 ## 3b. Reading what came back
 
-Send the zip, or just `unique.log` from inside it. Whoever reads it runs:
+Send the capture. Whoever reads it runs:
 
 ```bash
-tools/device-log/analyze.py unique.log --device environment.txt
+tools/device-log/analyze.py capture.log
 ```
 
 Ten checks, exit status 0 or 1, no SDK and no device needed. It answers the questions a
@@ -149,8 +152,9 @@ package, so it reads as the app misbehaving; it almost never is. It means a call
 package name that does not belong to UNIQUE's uid, and the tool reads the
 `IRestrictionsManager$Stub$Proxy` frame out of the stack to say which service was missing.
 
-It works on a recorder app's export too, so a run can be diagnosed from a phone with no
-computer near it. `tools/device-log/README.md` has the details.
+It reads a recorder app's export, an `adb logcat -v threadtime` dump and a raw
+single-tag capture alike, so a run can be diagnosed from a phone with no computer near it.
+`tools/device-log/README.md` has the details.
 
 **It does not look at pixels**, which is why `s04` below is a step a person performs and
 not a check. A guest that draws a black screen and logs nothing passes all ten.
@@ -175,7 +179,7 @@ Five things, and they are the reason this document exists.
   probed. A shipping app is not.
 
 Until your run says otherwise, all five stay `NOT_TESTED` in `docs/COMPATIBILITY.md`. A
-passing checklist does not move them either — a verdict there is an observation, and it
+a person's own verdict does not move them either — a verdict is an observation, and it
 travels with the run so it can be read, not substituted for evidence.
 
 ---

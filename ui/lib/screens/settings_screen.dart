@@ -5,7 +5,6 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
-import 'device_test_screen.dart';
 
 /// Settings.
 ///
@@ -152,50 +151,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : s.t('settings.signInNotImplemented'),
                 valueColor: UniqueColors.warning,
               ),
-              const Divider(),
-              SectionRow(
-                label: s.t('settings.googleDiagnostics'),
-                onTap: () => _openDiagnostics(context, channel: 'GOOGLE'),
-                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-              ),
-            ],
-          ),
-
-          SectionCard(
-            title: s.t('settings.advanced'),
-            children: [
-              SectionRow(
-                label: s.t('settings.deviceTest'),
-                value: s.t('settings.deviceTestBody'),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => DeviceTestScreen(state: widget.state),
-                  ),
-                ),
-                trailing: const Icon(Icons.phonelink_setup_rounded, size: 20),
-              ),
-              const Divider(),
-              SectionRow(
-                label: s.t('settings.diagnostics'),
-                value: s.t('settings.diagnosticsBody',
-                    {'count': widget.state.diagnostics.length}),
-                onTap: () => _openDiagnostics(context),
-                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-              ),
-              const Divider(),
-              SectionRow(
-                label: s.t('settings.export'),
-                value: _exporting
-                    ? s.t('settings.exporting')
-                    : _exportSummary ?? s.t('settings.exportBody'),
-                onTap: _exporting ? null : _export,
-                trailing: _exporting
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.archive_outlined, size: 20),
-              ),
             ],
           ),
 
@@ -229,8 +184,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  bool _exporting = false;
-  String? _exportSummary;
   GoogleStatus? _google;
 
   /// The language picker.
@@ -291,137 +244,5 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final status = await widget.state.googleStatus();
     if (!mounted) return;
     setState(() => _google = status);
-  }
-
-  /// Writes the package, then says what is in it.
-  ///
-  /// The counts are reported rather than a bare "done": an export taken with nothing
-  /// running holds far less than one taken while the app that misbehaved is still up,
-  /// and the person about to send it is the only one who can tell the difference.
-  Future<void> _export() async {
-    setState(() {
-      _exporting = true;
-      _exportSummary = null;
-    });
-    final result = await widget.state.exportDiagnostics();
-    if (!mounted) return;
-    final s = Strings.of(context);
-    setState(() {
-      _exporting = false;
-      _exportSummary = result.ok
-          ? s.t('settings.exportSummary', {
-              'name': result.name,
-              'size': _formatBytes(result.bytes),
-              'lines': result.lines,
-              'procs': result.processes + 1,
-              'word': s.t(result.processes == 0
-                  ? 'settings.processes.one'
-                  : 'settings.processes.many'),
-            })
-          : result.message ?? s.t('settings.exportFailed');
-    });
-    if (!result.ok) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(s.t('settings.savedTo', {'path': result.path}))),
-    );
-  }
-
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-
-  void _openDiagnostics(BuildContext context, {String? channel}) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => DiagnosticsScreen(state: widget.state, channel: channel),
-      ),
-    );
-  }
-}
-
-/// Structured, filterable diagnostics. Rendered from the event fields, never from a
-/// pre-formatted string, so filtering stays exact.
-class DiagnosticsScreen extends StatelessWidget {
-  const DiagnosticsScreen({super.key, required this.state, this.channel});
-
-  final AppState state;
-  final String? channel;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final s = Strings.of(context);
-    final records = channel == null
-        ? state.diagnostics
-        : state.diagnostics.where((r) => r.channel == channel).toList();
-    final title = s.t('settings.diagnostics');
-
-    return Scaffold(
-      appBar: AppBar(title: Text(channel == null ? title : '$title — $channel')),
-      body: records.isEmpty
-          ? Center(
-              child: Text(s.t('settings.nothingRecorded'),
-                  style: theme.textTheme.bodyMedium))
-          : ListView.separated(
-              padding: const EdgeInsets.all(UniqueSpace.lg),
-              itemCount: records.length,
-              separatorBuilder: (_, __) => const SizedBox(height: UniqueSpace.sm),
-              itemBuilder: (context, i) => _DiagTile(record: records[i]),
-            ),
-    );
-  }
-}
-
-class _DiagTile extends StatelessWidget {
-  const _DiagTile({required this.record});
-
-  final DiagRecord record;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = switch (record.level) {
-      DiagLevel.error => UniqueColors.error,
-      DiagLevel.warn => UniqueColors.warning,
-      _ => theme.colorScheme.onSurface.withValues(alpha: 0.5),
-    };
-    final t = record.timestamp;
-    final stamp = '${t.hour.toString().padLeft(2, '0')}:'
-        '${t.minute.toString().padLeft(2, '0')}:'
-        '${t.second.toString().padLeft(2, '0')}';
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(UniqueSpace.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(width: 6, height: 6,
-                    decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-                const SizedBox(width: UniqueSpace.sm),
-                Expanded(
-                  child: Text(record.code,
-                      style: theme.textTheme.titleMedium?.copyWith(fontSize: 14)),
-                ),
-                Text('${record.channel}  $stamp', style: theme.textTheme.labelSmall),
-              ],
-            ),
-            if (record.fields.isNotEmpty) ...[
-              const SizedBox(height: UniqueSpace.sm),
-              for (final e in record.fields.entries)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text('${e.key}: ${e.value}',
-                      style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
-                ),
-            ],
-          ],
-        ),
-      ),
-    );
   }
 }

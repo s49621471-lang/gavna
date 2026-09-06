@@ -481,15 +481,6 @@ object AppBootstrap {
             )
         }
 
-        // Providers first: the platform creates a process's providers before any other
-        // component and apps rely on that ordering.
-        runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
-            Diagnostics.warn(
-                DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
-                mapOf("package" to params.packageName, "error" to it.toString()),
-            )
-        }
-
         // Which of the guest's own components it has turned off, from an earlier session.
         // Bound before the hooks below because `getComponentEnabledSetting` is answered
         // from it, and an app asks that in `Application.onCreate`.
@@ -533,6 +524,28 @@ object AppBootstrap {
             )
         }
         runCatching { VirtualIdentityHooks.reportAlarmCapability(hostContext) }
+
+        // Providers, once the identity hooks are in and not before.
+        //
+        // They still come before every other *guest* component and before its
+        // `Application.onCreate`, which is the ordering apps rely on. What changed is
+        // that they no longer come before UNIQUE's own plumbing: `ContentProvider.attachInfo`
+        // runs real app code, and `androidx.core.content.FileProvider`'s reads external
+        // storage while parsing its `<paths>`. With the `mount` proxy not yet installed
+        // that call went out under the guest's name and the provider never published:
+        //
+        //   PROVIDER_PUBLISH_FAILED provider=androidx.core.content.FileProvider
+        //     error=java.lang.SecurityException: callingPackage does not match UID
+        //
+        // FileProvider is how an app shares a file with anything outside itself, so this
+        // was every camera intent, every "share" and every attachment in every app that
+        // uses it.
+        runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
 
         runCatching { VirtualJobSchedulerHook.install(ready, hostContext) }.onFailure {
             Diagnostics.warn(

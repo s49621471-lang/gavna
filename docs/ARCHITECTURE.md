@@ -226,7 +226,7 @@ unique/
 │   ├── vprofile/                DeviceProfileProvider — the single source of identity
 │   ├── vpermission/             per-instance runtime permissions + AppOps shim
 │   ├── google/                  Google Compatibility Layer: router + 5 bridges (§9)
-│   ├── diagnostics/             structured logging, ring buffers, export package
+│   ├── diagnostics/             structured logging, ring buffers, redaction
 │   ├── compat/                  CompatibilityProfile database + resolver
 │   └── native/                  C++: IO redirect, property virtualization, ELF/linker
 │                                helpers, 16 KB-safe. Depends on ShadowHook.
@@ -389,6 +389,26 @@ A short allowlist covers identity-bearing methods that carry no `IApplicationThr
 which `getIntentSender` is the one that matters. Enumerating every method by name instead
 would be a list that goes stale each release — which is the same reason `MethodShim`
 exists at all.
+
+**Three services check identity somewhere a String rewrite cannot reach**, and each was
+found by an app dying rather than by reading the interface:
+
+| Service | Where the name is | What it cost |
+|---|---|---|
+| `appwidget` | inside a `ComponentName` | `SecurityException` in a gallery's `MainActivity.onCreate` |
+| `shortcut` | inside each `ShortcutInfo` | an authenticator's `Application.onCreate` |
+| `input_method` | a field of the `EditorInfo` parcelable | **no keyboard, ever, in any guest**, and nothing logged in the app's process — the platform answers `InputBindResult.INVALID_PACKAGE_NAME` and binds no IME |
+
+`VirtualIdentityHooks.guards` holds a per-service shim for each, registered *before* the
+generic rewrite. Because the first shim that binds to a method wins, a guard on a method
+that also carries a calling-package argument must do that rewrite itself — every guard
+does, and the one where it is load-bearing (`mount`) says so at its call site.
+
+The `input_method` entry needs two `$Stub` class names: `IInputMethodManager` moved from
+`com.android.internal.view` to `com.android.internal.inputmethod` in Android 14, and a
+`ServiceTarget` takes a list precisely so an interface that changed *package* rather than
+shape still resolves. Its two singleton caches are listed for the same reason; one is
+reported skipped on any given release, which is expected and not a failure.
 
 ### 6.2 Services
 
@@ -624,6 +644,21 @@ lifetime and not AMS.
 
 Anything that is *not* a guest authority still goes to the real service and gets the
 host's `AttributionSource` substituted (§6.1.2).
+
+**Before every guest component, but after UNIQUE's own hooks.** `attachInfo` runs the
+*app's* code, and `androidx.core.content.FileProvider`'s reads external storage while
+parsing its `<paths>` — so with the registry installed ahead of `VirtualIdentityHooks`
+that call went out under the guest's name and the platform refused it:
+
+```
+PROVIDER_PUBLISH_FAILED provider=androidx.core.content.FileProvider
+  error=java.lang.SecurityException: callingPackage does not match UID
+```
+
+A guest then came up with no provider of its own, which is every share, every camera
+intent and every attachment in every app that uses `FileProvider`. The ordering apps rely
+on is *providers before the rest of the app*, and that is preserved; nothing requires them
+to come before the engine that makes them work.
 
 Only publication is process-scoped: a provider is published in the process its manifest
 puts it in, and nowhere else. `android:process` on a `<provider>` is ordinary, and
@@ -1303,6 +1338,46 @@ Consequences, by flow:
 | FCM | (package, cert) → "app id" | Token is issued for the host's app id |
 | Play Games, Play Billing, Play Integrity | package + cert + **attestation** | Not achievable (§9.7) |
 
+### 9.1.1 What the host's Play services does to a guest that reaches it
+
+The design above assumes a guest can *talk* to GMS and get a wrong answer. On a real
+phone it does not get that far. `GmsClient.getRemoteService` sends
+`context.getPackageName()` — the guest's — to `com.google.android.gms`, which resolves the
+calling uid to UNIQUE's own packages, finds the name in neither, and answers:
+
+```
+FATAL EXCEPTION: main
+java.lang.SecurityException: Unknown calling package name 'com.a0soft.gphone.acc.free'.
+  at android.os.Parcel.createExceptionOrNull(Parcel.java:3255)
+  at m7.el.handleMessage(:com.google.android.gms.dynamite_measurementdynamite@…:280)
+  at android.os.Handler.dispatchMessage(Handler.java:107)
+```
+
+It arrives on a `Handler`, so there is no call for the app to have wrapped in a `try`: the
+process dies. Three of six guests in the fifth phone run died this way, seconds after
+reaching their own screen, and each stack is Firebase Analytics' dynamite module — code the
+app's developer never wrote a fallback for because on a real device it cannot fail.
+
+The rewrite that fixes every other service cannot fix this one. GMS is not checking a
+`callingPackage` argument; it is checking the *uid* against the name, and the name it wants
+is a package UNIQUE cannot own. So the answer is not to correct the identity but to remove
+the question: `com.google.android.gms` and `com.google.android.gsf` are hidden from a
+guest's `IPackageManager` entirely — `getPackageInfo`, `getApplicationInfo`,
+`getPackageUid`, `resolveContentProvider`, the installed list and both intent resolvers.
+Every Play SDK starts by asking whether Play services is available; it now finds that it is
+not, and takes the path it already ships for a phone without it.
+
+`resolveContentProvider` is in that list for a specific reason: `DynamiteModule` loads GMS
+code through a *provider*, not a service, so hiding the package from service resolution
+alone would leave the door that killed those three processes wide open.
+
+`com.android.vending` is deliberately **not** hidden. Play's licence check is an ordinary
+bind that works, and a PAIRIP-protected app calls `System.exit(0)` when it cannot reach it
+— a fault this project fixed one run earlier and would otherwise have reintroduced.
+
+This is a floor, not a ceiling. It converts a fatal crash into a degraded but working app,
+and the bridges below are what would convert it into a working Google flow.
+
 ### 9.2 Router
 
 ```
@@ -1404,11 +1479,17 @@ leaves the deprecated `signatures` array null — but the real `PackageManager` 
 libraries still ask that way. Populating only what the parser returned would leave them
 reading null, which is the same failure by a different route.
 
-**What the guest believes about the Google stack must be true.** A guest asking whether
-`com.google.android.gms` is installed gets the host's real answer, because an app told
-Play services is present when it is not fails later and somewhere less obvious. `t21`
-asserts the guest's answer equals the host's rather than asserting a fixed value, so the
-test stays meaningful on a device that *does* have it.
+**What the guest believes about the Google stack must be actionable.** For everything but
+Play services itself, a guest gets the host's real answer — an app told a component is
+present when it is not fails later and somewhere less obvious, and `t21` asserts the
+guest's answer equals the host's rather than a fixed value, so it stays meaningful on a
+device that has the stack.
+
+`com.google.android.gms` is the one deliberate exception, and §9.1.1 is why: a guest that
+reaches it is killed by it. So the guest is told Play services is absent whether or not the
+device has it, which is simultaneously what every Play SDK is built to handle and the truth
+about what that guest can actually use. `t21` pins that as a fixed `false`. Play *Store* is
+not hidden and still follows the host.
 
 ### 9.7 Not supported yet, and not yet investigated
 
@@ -1659,17 +1740,16 @@ of memory.
 
 The buffers are *per process*, which is right and also the whole difficulty: the events
 that matter most are in `:vappN`, which the user cannot see, and the events from a process
-that crashed are gone with it. An export assembled only from UNIQUE's own buffers shows the
+that crashed are gone with it. A record assembled only from UNIQUE's own buffers shows the
 launch request and never the launch.
 
 Two directions, because the two cases are genuinely different.
 
-**Pull, on export.** UNIQUE asks each live `:vappN` for its buffers through that slot's
+**Pull, on demand.** UNIQUE can ask any live `:vappN` for its buffers through that slot's
 stub provider (§6.4.0 built the channel; this reuses it rather than inventing a second
-one). Nothing is copied while an app is merely running, so the cost is paid once, by the
-person who pressed *Export*. It also means an export taken *while the misbehaving app is
-still up* is worth far more than one taken afterwards, and the UI says so by reporting how
-many processes it reached.
+one). Nothing is copied while an app is merely running, so the cost is paid only when
+somebody asks. No shipped screen asks today — §14.2 says why — and the channel is kept
+because a live process's buffers are the one thing that cannot be recovered afterwards.
 
 **Push, on crash.** A crashing process has seconds to live and nobody will ask it anything
 afterwards, so `CrashGuard` sends its crash records to UNIQUE's main process itself before
@@ -1677,66 +1757,37 @@ letting the process die. This is what makes rule 10 — *every crash leaves a di
 trace* — a statement about what the user can read afterwards rather than about what was
 briefly in memory.
 
-### 14.2 The export package
+### 14.2 Where the events go
 
-`environment.txt`, `device-report.txt`, `test-checklist.txt`, `instances.txt`,
-`unique.log`, `logcat.txt`, `crash.log`, one `vappN.log` per slot reached, any
-`native-crash-*.txt`, and a `README.txt` that says what the archive does and does not
-contain. It is written into UNIQUE's own cache directory — app-private storage, never
-anywhere world-readable — and goes further only if the user sends it, through the ordinary
-share sheet.
+Every event UNIQUE records — from its own process and from every `:vappN` — is written to
+`logcat` under one tag, redacted, in a single-line format the analyzer in
+`tools/device-log/` parses. That is the whole diagnostics surface a user touches: they
+capture a log the way they capture any Android log, and `tools/device-log/analyze.py`
+reads it.
 
-Three of those entries exist because of a constraint worth stating plainly: **a tester has
-a phone and nothing else.** No `adb`, no root, no computer. Everything the engine knows
-has to be collectable by the app itself, or it will not be collected.
+UNIQUE used to carry a diagnostics UI as well — an export package, a device report and a
+tester's checklist, reachable from an *Advanced* section in Settings. It was removed at the
+request of the person it was built for, who did not use it: the logs that have actually
+found every fault in this project arrived as ordinary logcat captures. What went with it:
+`DiagnosticsExport`, `TestChecklist`, `DeviceReport`, `LogcatCapture`, `Diagnostics.exportTo`,
+the `export` `FileProvider` and its `export_paths.xml`, the bridge's `EventChannel`, and
+`t37`. `VirtualDiagnostics.pull` stayed — §14.1 says why.
 
-- `device-report.txt` is what the *device* is, measured on the spot: ABIs, page size, the
-  host's own Vulkan probed by creating a real instance, device and queue, the WebView
-  provider, the Google stack. It is the other half of every result in the package — "the
-  guest could not bring Vulkan up" means one thing on a phone with a working driver and
-  nothing at all on one whose host device type is `cpu`.
-- `test-checklist.txt` is the physical-device sequence with the tester's own verdicts and
-  notes, recorded on the device as they go. Deliberately not a gate: nothing in
-  `docs/COMPATIBILITY.md` moves because a checklist says so. A verdict is an observation,
-  and it travels with the run so it can be read *next to* the machine's record rather than
-  substituted for it.
-- `logcat.txt` is the part UNIQUE's own events cannot see. ART refusing to verify a class,
-  the linker failing to map a library on a 16 KB-page device, ActivityManager's kill
-  reason, the stack trace of an uncaught exception — all of it has needed `adb` until now.
-  `logd` restricts a read to the caller's own uid, so this is UNIQUE and its `:vappN`
-  processes and no other app on the device; that is a platform guarantee rather than a
-  filter. But UNIQUE's uid *includes the guests*, and an app may log its own credentials,
-  so only framework, runtime, linker and UNIQUE tags are kept and app-authored logging is
-  dropped rather than reasoned about. The trade is real and worth naming: a guest's own
-  `Log.d` is often what would explain its behaviour, and it is not here. Dropping it is the
-  only version of this that belongs in a file a user is invited to mail to a stranger.
+Two properties that mattered survive the removal, because they were never properties of
+the export:
 
-What is deliberately absent is a structural property, not a filter: **nothing from inside
-an instance's data directory**. No databases, no `shared_prefs`, no cookies, no tokens. The
-exporter never opens those directories, which is a stronger guarantee than remembering to
-exclude them. The instance summary lists identity UNIQUE itself generated — `vuid`,
-package, version, the virtual `ANDROID_ID` — because that is what a support conversation is
-about, and nothing an app stored.
-
-Every line still passes through `DiagRedactor` on the way out, which drops OAuth tokens,
-cookies, `Authorization` headers, account names and file contents. Redaction happens where
-a line *leaves* `Diagnostics`, not at each consumer: a line that has left that object must
-never need trusting again, and putting the redactor at every consumer is how one consumer
-ends up without it. The redactor has its own unit tests, because a leaky diagnostics export
-is a security bug and not a cosmetic one.
-
-**Including the line that leaves for logcat.** `Diagnostics.event` used to write the raw
-event there and redact only on export, on the reasoning that logcat is a developer's
-concern. It is not: anything written there is readable by `adb logcat`, ends up in a bug
-report, and on many OEM builds is collected by a logging service — so a token printed there
-has left the device by a route the export has no say over. Both paths now go through the
-same `formatted()`.
-
-`t37` is the regression test, and it is written as one: a marker is planted inside a
-guest's own `shared_prefs` and `databases/`, and in a field UNIQUE itself logs, and every
-byte of every entry in the package is searched for it. The structural guarantee — the
-exporter never opens those directories — is the strong one, and it is exactly the kind a
-later refactor removes without noticing.
+- **Redaction happens where a line leaves `Diagnostics`**, not at each consumer — so the
+  line written to `logcat` is redacted too. `Diagnostics.event` used to write the raw event
+  there and redact only on export, on the reasoning that logcat is a developer's concern.
+  It is not: anything written there is readable by `adb logcat`, ends up in a bug report,
+  and on many OEM builds is collected by a logging service, so a token printed there has
+  left the device by a route nothing downstream has a say over. `DiagRedactor` drops OAuth
+  tokens, cookies, `Authorization` headers, account names and file contents, and has its
+  own unit tests: a leaky diagnostics line is a security bug and not a cosmetic one.
+- **Nothing from inside an instance's data directory is ever read.** No databases, no
+  `shared_prefs`, no cookies, no tokens. This was a structural property of the exporter and
+  is now a structural property of the whole diagnostics path — there is no code left that
+  opens those directories for any diagnostic purpose.
 
 ### 14.3 Crashes
 
@@ -1761,7 +1812,7 @@ pid=22811
 tid=22811
 ```
 
-under that instance's diagnostics directory, and the diagnostics export picks it up. The
+under that instance's diagnostics directory. The
 platform's tombstone is still produced — the previous handler is chained to rather than
 replaced — because a process that survives a SIGSEGV is in an undefined state, and because
 UNIQUE's job here is to *add* a record the user can hand to someone, not to take one away.
@@ -1791,7 +1842,7 @@ pruned by age, never by emptiness alone.
 ## 15. UI
 
 Flutter for the entire UI, in `:core` only. Virtual app processes never load Flutter.
-Bridge: **Pigeon** for typed request/response, a native `EventChannel` for the diagnostics
+Bridge: **Pigeon** for typed request/response, an `EventChannel` for any future streaming
 stream, and FFI reserved for anything high-frequency (currently nothing in the UI path
 qualifies, so FFI is not used yet — noted so the decision is deliberate).
 

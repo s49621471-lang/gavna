@@ -5,11 +5,7 @@ import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagEvent
 import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.diag.DiagRedactor
-import java.io.File
-import java.io.OutputStreamWriter
 import java.util.concurrent.ConcurrentHashMap
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /**
  * Process-local structured diagnostics.
@@ -87,14 +83,14 @@ object Diagnostics {
      */
     @Volatile var remoteSink: ((List<String>) -> Unit)? = null
 
-    /** One event as it appears in an export: formatted, and redacted. */
+    /** One event as it is written: formatted, and redacted. */
     fun formatted(e: DiagEvent): String = format(DiagRedactor.redact(e))
 
     /**
      * This process's events, ready to be written or shipped somewhere else.
      *
      * Redacted here rather than at the far end. A line that has left this object must
-     * never need trusting again — the redactor is what stands between an export and an
+     * never need trusting again — the redactor is what stands between a log capture and an
      * OAuth token, and putting it at every consumer is how one consumer ends up missing it.
      */
     fun exportLines(channel: DiagChannel? = null): List<String> =
@@ -108,56 +104,6 @@ object Diagnostics {
     fun removeListener(l: (DiagEvent) -> Unit) { listeners -= l }
 
     fun clear() = buffers.clear()
-
-    /**
-     * Writes the export package described in ARCHITECTURE.md section 14.
-     *
-     * Every event goes through [DiagRedactor] on the way out. The redactor has its own
-     * unit tests because a diagnostics export that leaks an OAuth token is a security
-     * bug, not a cosmetic one.
-     */
-    fun exportTo(zipFile: File, environment: Map<String, String>, appInfo: Map<String, String>) {
-        zipFile.parentFile?.mkdirs()
-        ZipOutputStream(zipFile.outputStream().buffered()).use { zip ->
-            writeJson(zip, "diagnostics/app.json", appInfo.mapValues { DiagRedactor.redact(it.value) })
-            writeJson(zip, "diagnostics/environment.json", environment.mapValues { DiagRedactor.redact(it.value) })
-            writeLog(zip, "diagnostics/runtime.log", snapshot().filter { it.channel != DiagChannel.CRASH && it.channel != DiagChannel.GOOGLE })
-            writeLog(zip, "diagnostics/crash.log", snapshot(DiagChannel.CRASH))
-            writeLog(zip, "diagnostics/gms.log", snapshot(DiagChannel.GOOGLE))
-        }
-    }
-
-    private fun writeLog(zip: ZipOutputStream, name: String, events: List<DiagEvent>) {
-        zip.putNextEntry(ZipEntry(name))
-        val w = OutputStreamWriter(zip, Charsets.UTF_8)
-        events.forEach { w.write(format(DiagRedactor.redact(it)) + "\n") }
-        w.flush()
-        zip.closeEntry()
-    }
-
-    private fun writeJson(zip: ZipOutputStream, name: String, values: Map<String, String>) {
-        zip.putNextEntry(ZipEntry(name))
-        val w = OutputStreamWriter(zip, Charsets.UTF_8)
-        w.write(values.entries.joinToString(",\n  ", "{\n  ", "\n}\n") { (k, v) ->
-            "${quote(k)}: ${quote(v)}"
-        })
-        w.flush()
-        zip.closeEntry()
-    }
-
-    private fun quote(s: String): String =
-        buildString {
-            append('"')
-            for (c in s) when (c) {
-                '"' -> append("\\\"")
-                '\\' -> append("\\\\")
-                '\n' -> append("\\n")
-                '\r' -> append("\\r")
-                '\t' -> append("\\t")
-                else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
-            }
-            append('"')
-        }
 
     private fun format(e: DiagEvent): String = buildString {
         append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)

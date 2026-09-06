@@ -110,6 +110,10 @@ object VirtualIdentityHooks {
         // own widget ids from `MainActivity.onCreate` and died on the answer.
         "appwidget" to "getAppWidgetIds carries the caller's package and is checked " +
             "against the uid; an app with a home-screen widget dies in onCreate without it",
+
+        // The keyboard. Reported as "клавиатуры нету" — no guest has ever had one.
+        "input_method" to "EditorInfo.packageName is checked against the calling uid " +
+            "before an IME is bound to a window, so without it no guest can type at all",
     )
 
     /**
@@ -249,23 +253,6 @@ object VirtualIdentityHooks {
     )
 
     /**
-     * Calls that must not go through even with the caller's name corrected.
-     *
-     * The rewrite turns "the guest is asking about itself" into "UNIQUE is asking about
-     * itself", which is right for a read and wrong for a write: a guest calling
-     * `setApplicationLocales` would then be setting *UNIQUE's* app language, and the user
-     * would find UNIQUE's own interface in a language they never chose. There is no
-     * correct target for that call — a per-instance app locale is a platform record keyed
-     * by an installed package, and the guest is not one — so it is refused and reported
-     * rather than aimed at the nearest package that would accept it.
-     *
-     * Registered before the rewrite so it binds first; the guard replaces the call
-     * entirely, so nothing reaches the platform.
-     *
-     * Reads are untouched: `getApplicationLocales` returns UNIQUE's, which is the device
-     * default, which is what the guest would have seen before it ever set one.
-     */
-    /**
      * Per-service rewrites that go *before* the generic caller-package one.
      *
      * A guard shadows it: the first shim that binds to a method wins, so a guard on a
@@ -283,20 +270,32 @@ object VirtualIdentityHooks {
         // the real interface again and whatever the first bound is gone.
         "mount" -> VirtualExternalStorage.shims(virtualPackage, hostPackage)
 
-        // `appwidget` names the caller in a *ComponentName*, not in a String:
+        // The keyboard's identity check reads a *field of a Parcelable*, not an argument.
         //
-        //   int[] getAppWidgetIds(in ComponentName providerComponent);
+        // `InputMethodManagerService.startInputOrWindowGainedFocus` verifies
+        // `EditorInfo.packageName` against the calling uid and answers
+        // `InputBindResult.INVALID_PACKAGE_NAME` when it does not match — silently, from
+        // the app's side: `showSoftInput` returns, the tracker records the request, and no
+        // keyboard ever appears. The generic rewrite only reaches String *arguments*, so it
+        // never saw this.
         //
-        // and `AppWidgetServiceImpl.SecurityPolicy.enforceCallFromPackage` checks that
-        // component's package against the calling uid. The generic rewrite only touches
-        // Strings, so proxying the service alone changed nothing:
-        //
-        //   SecurityException: Package org.fossify.gallery does not belong to 10108
-        //     at org.fossify.gallery.activities.MainActivity.onCreate
-        //
-        // The answer the guest then gets is an empty array, which is the truth: its widget
-        // provider is not a component the device has installed, so no home screen can be
-        // showing one. Crashing in `onCreate` was not.
+        // Rewritten in place. The `EditorInfo` is built fresh for each focus change, by
+        // `InputMethodManager.startInputInner` calling `View.onCreateInputConnection`, and
+        // is handed straight to the Binder call — the app does not keep it. What an IME
+        // then sees is `com.unique`, which is what the platform believes the window
+        // belongs to, and is the same answer every other identity rewrite gives.
+        "input_method" -> listOf(
+            shim("editorIdentity") {
+                matchMethods { method ->
+                    method.parameterTypes.any { it == android.view.inputmethod.EditorInfo::class.java }
+                }
+                rewriteAll<String>(matching = { it == virtualPackage }) { hostPackage }
+                rewriteAll<android.view.inputmethod.EditorInfo>(
+                    matching = { it.packageName == virtualPackage },
+                ) { info -> info.apply { packageName = hostPackage } }
+            },
+        )
+
         // `shortcut` refuses anything a guest tries to *publish*.
         //
         // The caller-package rewrite is not enough here: a `ShortcutInfo` carries its own
@@ -344,6 +343,20 @@ object VirtualIdentityHooks {
             },
         )
 
+        // `appwidget` names the caller in a *ComponentName*, not in a String:
+        //
+        //   int[] getAppWidgetIds(in ComponentName providerComponent);
+        //
+        // and `AppWidgetServiceImpl.SecurityPolicy.enforceCallFromPackage` checks that
+        // component's package against the calling uid. The generic rewrite only touches
+        // Strings, so proxying the service alone changed nothing:
+        //
+        //   SecurityException: Package org.fossify.gallery does not belong to 10108
+        //     at org.fossify.gallery.activities.MainActivity.onCreate
+        //
+        // The answer the guest then gets is an empty array, which is the truth: its widget
+        // provider is not a component the device has installed, so no home screen can be
+        // showing one. Crashing in `onCreate` was not.
         "appwidget" -> listOf(
             shim("appWidgetIdentity") {
                 matchMethods { method ->
@@ -355,6 +368,18 @@ object VirtualIdentityHooks {
                 ) { name -> android.content.ComponentName(hostPackage, name.className) }
             },
         )
+        // `locale` must not go through even with the caller's name corrected.
+        //
+        // The rewrite turns "the guest is asking about itself" into "UNIQUE is asking
+        // about itself", which is right for a read and wrong for a write: a guest calling
+        // `setApplicationLocales` would then be setting *UNIQUE's* app language, and the
+        // user would find UNIQUE's own interface in a language they never chose. There is
+        // no correct target for that call — a per-instance app locale is a platform record
+        // keyed by an installed package, and the guest is not one — so it is refused and
+        // reported rather than aimed at the nearest package that would accept it.
+        //
+        // Reads are untouched: `getApplicationLocales` returns UNIQUE's, which is the
+        // device default, which is what the guest would have seen before it ever set one.
         "locale" -> listOf(
             shim("setApplicationLocales") {
                 replaceWith {

@@ -6,7 +6,6 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
-import 'settings_screen.dart' show DiagnosticsScreen;
 
 /// App Details.
 ///
@@ -30,6 +29,9 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   /// The permission groups this app actually asks for. Null while they are being read;
   /// an empty list means it asks for none, which is a different thing and shown as such.
   List<InstancePermission>? _permissions;
+
+  /// The Settings-screen accesses UNIQUE holds. Null while they are being read.
+  List<SpecialAccess>? _special;
   GoogleStatus? _google;
   List<GoogleRoute>? _routes;
   String? _busyGroup;
@@ -41,12 +43,14 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   }
 
   Future<void> _load() async {
+    final special = await state.specialAccess();
     final permissions = await state.instancePermissions(app.vuid);
     final google = await state.googleStatus();
     final routes = await state.googleRouting(app.vuid);
     if (!mounted) return;
     setState(() {
       _permissions = permissions;
+      _special = special;
       _google = google;
       _routes = routes;
     });
@@ -66,7 +70,13 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
       final s = Strings.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(result.message ?? s.t('common.failed')),
+          // The group's name is filled in here, in the reader's language: the engine
+          // spells it in English, and its own sentence is the fallback, not the source.
+          content: Text(result.describe(
+            s,
+            s.t('common.failed'),
+            {'group': s.orElse('perm.${permission.group}', permission.label)},
+          )),
           // Only when Android has stopped asking. Offering "Settings" for an ordinary
           // refusal would push the user somewhere they do not need to go.
           action: result.needsHostSettings
@@ -149,7 +159,8 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     const Divider(),
                     SectionRow(label: s.t('details.versionCode'), value: '${app.versionCode}'),
                     const Divider(),
-                    SectionRow(label: s.t('details.instance'), value: app.profileName),
+                    SectionRow(
+                        label: s.t('details.instance'), value: app.profileLabel(s)),
                   ],
                 ),
 
@@ -192,6 +203,34 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                         ),
                         if (p != _permissions!.last) const Divider(),
                       ],
+                  ],
+                ),
+
+                // Held by UNIQUE, not by this copy — and the card says so before it
+                // offers a button, because a switch that is secretly global is exactly
+                // the kind of thing people find out about afterwards.
+                SectionCard(
+                  title: s.t('details.specialAccess'),
+                  children: [
+                    SectionRow(
+                      label: s.t('details.specialAccessBody'),
+                      value: '',
+                    ),
+                    for (final access in _special ?? const <SpecialAccess>[]) ...[
+                      const Divider(),
+                      SectionRow(
+                        label: s.t('access.${access.id}'),
+                        value: access.granted
+                            ? s.t('details.allowed')
+                            : s.t('access.notGranted'),
+                        valueColor:
+                            access.granted ? null : UniqueColors.warning,
+                        onTap: () => _openAccess(access),
+                        trailing: access.granted
+                            ? const Icon(Icons.check_rounded, size: 20)
+                            : const Icon(Icons.open_in_new_rounded, size: 18),
+                      ),
+                    ],
                   ],
                 ),
 
@@ -309,36 +348,6 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                   ],
                 ),
 
-                SectionCard(
-                  title: s.t('settings.diagnostics'),
-                  children: [
-                    SectionRow(
-                      label: s.t('settings.diagnostics'),
-                      value: s.t('settings.diagnosticsBody',
-                          {'count': state.diagnostics.length}),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => DiagnosticsScreen(state: state),
-                        ),
-                      ),
-                      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-                    ),
-                    const Divider(),
-                    SectionRow(
-                      label: s.t(_exporting
-                          ? 'settings.exporting'
-                          : 'settings.export'),
-                      value: _exportSummary ?? s.t('settings.exportBody'),
-                      onTap: _exporting ? null : _export,
-                      trailing: _exporting
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.ios_share_rounded, size: 18),
-                    ),
-                  ],
-                ),
               ],
             ),
           ),
@@ -347,28 +356,23 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
     );
   }
 
-  bool _exporting = false;
-  String? _exportSummary;
-
-  Future<void> _export() async {
-    setState(() {
-      _exporting = true;
-      _exportSummary = null;
-    });
-    final result = await state.exportDiagnostics();
-    if (!mounted) return;
-    setState(() {
-      _exporting = false;
-      _exportSummary = result.ok
-          ? '${result.name}  -  ${result.lines} lines from '
-              '${result.processes + 1} processes'
-          : result.message ?? 'Export failed';
-    });
-    if (result.ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved to ${result.path}')),
-      );
+  /// Opens the Settings screen that grants one access, then re-reads the answer.
+  ///
+  /// Re-read on return rather than assumed: the user may have opened the screen and come
+  /// straight back, and a row that says "granted" because a button was pressed is the
+  /// same lie as a switch that does nothing.
+  Future<void> _openAccess(SpecialAccess access) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final s = Strings.of(context);
+    final failed = s.t('common.failed');
+    final result = await state.openSpecialAccess(access.id);
+    if (!result.ok) {
+      messenger.showSnackBar(SnackBar(content: Text(result.describe(s, failed))));
+      return;
     }
+    final refreshed = await state.specialAccess();
+    if (!mounted) return;
+    setState(() => _special = refreshed);
   }
 
   /// Runs an engine action and reports its real outcome. A failure is shown with the
@@ -378,33 +382,36 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
     Future<EngineOutcome> Function() action,
     String successMessage,
   ) async {
+    // Both are read before the await: the context may be gone by the time the engine
+    // answers, and a snackbar is not worth holding one across that gap.
     final messenger = ScaffoldMessenger.of(context);
+    final s = Strings.of(context);
+    final failed = s.t('common.failed');
     final result = await action();
     messenger.showSnackBar(SnackBar(
-      content: Text(result.ok ? successMessage : (result.message ?? 'That did not work.')),
+      content: Text(result.ok ? successMessage : result.describe(s, failed)),
     ));
   }
 
   void _confirmClearData(BuildContext context) {
+    final s = Strings.of(context);
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('Clear ${app.label} data?'),
-        content: Text(
-          'Everything ${app.profileName} has stored is deleted: files, databases and '
-          'settings. Other instances of this app are not affected.',
-        ),
+        title: Text(s.t('details.clearDataTitle', {'app': app.label})),
+        content:
+            Text(s.t('details.clearDataConfirm', {'profile': app.profileLabel(s)})),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
+            child: Text(s.t('common.cancel')),
           ),
           FilledButton(
             onPressed: () {
               Navigator.pop(dialogContext);
-              _run(context, () => state.clearData(app), 'Data cleared');
+              _run(context, () => state.clearData(app), s.t('details.dataCleared'));
             },
-            child: const Text('Clear'),
+            child: Text(s.t('details.clearDataAction')),
           ),
         ],
       ),

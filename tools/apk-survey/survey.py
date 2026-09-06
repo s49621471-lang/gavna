@@ -93,6 +93,7 @@ MANAGER_TO_SERVICE: Dict[str, str] = {
     "android.app.DownloadManager": "download",
     "android.view.WindowManager": "window",
     "android.appwidget.AppWidgetManager": "appwidget",
+    "android.view.inputmethod.InputMethodManager": "input_method",
     "android.permission.PermissionManager": "permissionmgr",
 }
 

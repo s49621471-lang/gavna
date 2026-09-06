@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../l10n/strings.dart';
+
 /// What the engine can do on this device, as reported by the native side.
 ///
 /// The `*Implemented` flags exist so the interface never offers an action that silently
@@ -77,9 +79,11 @@ class InstalledApp {
   final int splitCount;
   final bool hasArm64;
 
-  /// Why this app cannot be added, or null when it can.
-  String? get blockedReason =>
-      hasArm64 ? null : 'No 64-bit ARM code. UNIQUE runs arm64-v8a only.';
+  /// The translation key for why this app cannot be added, or null when it can.
+  ///
+  /// A key rather than a sentence: this is read straight into a list tile, and a hardcoded
+  /// English string here is one the Russian interface could never replace.
+  String? get blockedKey => hasArm64 ? null : 'add.blocked.noArm64';
 
   static InstalledApp fromMap(Map<Object?, Object?> m) => InstalledApp(
         packageName: m['package'] as String,
@@ -92,10 +96,11 @@ class InstalledApp {
       );
 }
 
-/// The result of an engine action. Failures carry a message meant for the user.
+/// The result of an engine action. Failures carry both a code and a message.
 class EngineOutcome {
   const EngineOutcome({
     required this.ok,
+    this.code,
     this.message,
     this.vuid,
     this.cancelled = false,
@@ -103,7 +108,14 @@ class EngineOutcome {
   });
 
   final bool ok;
+
+  /// Why it failed, as a stable identifier the interface translates — see [describe].
+  final String? code;
+
+  /// The engine's own English prose. Carries the specifics a code cannot: which library,
+  /// which page size, which exception. Shown when there is no translation for [code].
   final String? message;
+
   final int? vuid;
 
   /// The user backed out of a picker. Success with nothing done, and never an error:
@@ -113,8 +125,26 @@ class EngineOutcome {
   /// Android will not show the permission dialog again; only its settings page will do.
   final bool needsHostSettings;
 
+  /// What to show the user: the translation of [code] when there is one, then the
+  /// engine's own sentence, then [fallback].
+  ///
+  /// In that order because each step loses something. A translated code is the only text
+  /// a Russian reader can act on; the English message is at least specific; [fallback] is
+  /// generic but never absent. [args] fills placeholders the translation declares — the
+  /// permission-group name above all, which the caller knows and the engine spells in
+  /// English.
+  String describe(Strings s, String fallback, [Map<String, Object?>? args]) {
+    final key = code;
+    if (key != null) {
+      final translated = s.orElse('engine.$key', '', args);
+      if (translated.isNotEmpty) return translated;
+    }
+    return message ?? fallback;
+  }
+
   static EngineOutcome fromMap(Map<Object?, Object?> m) => EngineOutcome(
         ok: (m['ok'] as bool?) ?? false,
+        code: (m['code'] as String?),
         message: (m['message'] as String?) ?? (m['code'] as String?),
         vuid: (m['vuid'] as int?),
         cancelled: (m['cancelled'] as bool?) ?? false,
@@ -130,6 +160,7 @@ class VirtualApp {
     required this.versionCode,
     required this.label,
     required this.profileName,
+    required this.profileOrdinal,
     required this.androidId,
     required this.instanceId,
     required this.generation,
@@ -144,7 +175,13 @@ class VirtualApp {
   final String packageName;
   final int versionCode;
   final String label;
+  /// What the engine stored. English when the engine named it — see [profileOrdinal].
   final String profileName;
+
+  /// The number in an automatic profile name, or null when a person named it themselves.
+  /// Present so the interface can say "Профиль 2" instead of the stored "Profile 2".
+  final int? profileOrdinal;
+
   final String androidId;
   final String instanceId;
   final int generation;
@@ -156,12 +193,19 @@ class VirtualApp {
 
   int get totalBytes => dataBytes + cacheBytes + externalBytes;
 
+  /// What to call this profile on screen: the automatic name in the reader's own
+  /// language, or exactly what a person typed when they named it themselves.
+  String profileLabel(Strings s) => profileOrdinal == null
+      ? profileName
+      : s.t('profile.name', {'n': profileOrdinal});
+
   VirtualApp copyWith({Uint8List? icon, bool? running}) => VirtualApp(
         vuid: vuid,
         packageName: packageName,
         versionCode: versionCode,
         label: label,
         profileName: profileName,
+        profileOrdinal: profileOrdinal,
         androidId: androidId,
         instanceId: instanceId,
         generation: generation,
@@ -178,6 +222,7 @@ class VirtualApp {
         versionCode: (m['versionCode'] as int?) ?? 0,
         label: (m['label'] as String?) ?? (m['package'] as String? ?? ''),
         profileName: (m['profileName'] as String?) ?? 'Profile 1',
+        profileOrdinal: (m['profileOrdinal'] as int?),
         androidId: (m['androidId'] as String?) ?? '',
         instanceId: (m['instanceId'] as String?) ?? '',
         generation: (m['generation'] as int?) ?? 1,
@@ -187,77 +232,21 @@ class VirtualApp {
       );
 }
 
-enum DiagLevel { debug, info, warn, error }
-
-class DiagRecord {
-  const DiagRecord({
-    required this.timestamp,
-    required this.channel,
-    required this.level,
-    required this.code,
-    required this.fields,
-    this.packageName,
-    this.vuid,
-  });
-
-  final DateTime timestamp;
-  final String channel;
-  final DiagLevel level;
-  final String code;
-  final Map<String, String> fields;
-  final String? packageName;
-  final int? vuid;
-
-  static DiagRecord fromMap(Map<Object?, Object?> m) => DiagRecord(
-        timestamp:
-            DateTime.fromMillisecondsSinceEpoch((m['timestamp'] as int?) ?? 0),
-        channel: (m['channel'] as String?) ?? 'LAUNCH',
-        level: DiagLevel.values.firstWhere(
-          (l) => l.name.toUpperCase() == ((m['level'] as String?) ?? 'INFO'),
-          orElse: () => DiagLevel.info,
-        ),
-        code: (m['code'] as String?) ?? '',
-        fields: ((m['fields'] as Map?) ?? const {})
-            .map((k, v) => MapEntry(k.toString(), v.toString())),
-        packageName: m['package'] as String?,
-        vuid: m['vuid'] as int?,
-      );
-}
-
-/// Where a diagnostics package landed, and what went into it.
+/// One access the user grants on a Settings screen rather than in a dialog.
 ///
-/// Carries the counts as well as the path because "exported" on its own does not tell
-/// the user whether the export is worth sending: a package assembled while no virtual
-/// process was alive contains far less than one taken with the app still running, and
-/// that distinction is the difference between a useful report and a wasted round trip.
-class DiagnosticsExportResult {
-  const DiagnosticsExportResult({
-    required this.ok,
-    this.path,
-    this.name,
-    this.bytes = 0,
-    this.processes = 0,
-    this.lines = 0,
-    this.message,
-  });
+/// Held by UNIQUE, not by a copy: the uid that Android checks is UNIQUE's, so turning one
+/// on turns it on for every app inside. The screen said so before it offered the button,
+/// because a per-app switch that is secretly global is the kind of thing people only find
+/// out about afterwards.
+class SpecialAccess {
+  const SpecialAccess({required this.id, required this.granted});
 
-  final bool ok;
-  final String? path;
-  final String? name;
-  final int bytes;
-  final int processes;
-  final int lines;
-  final String? message;
+  final String id;
+  final bool granted;
 
-  static DiagnosticsExportResult fromMap(Map<Object?, Object?> m) =>
-      DiagnosticsExportResult(
-        ok: (m['ok'] as bool?) ?? false,
-        path: m['path'] as String?,
-        name: m['name'] as String?,
-        bytes: (m['bytes'] as num?)?.toInt() ?? 0,
-        processes: (m['processes'] as num?)?.toInt() ?? 0,
-        lines: (m['lines'] as num?)?.toInt() ?? 0,
-        message: m['message'] as String?,
+  static SpecialAccess fromMap(Map<Object?, Object?> m) => SpecialAccess(
+        id: (m['id'] as String?) ?? '',
+        granted: (m['granted'] as bool?) ?? false,
       );
 }
 
@@ -302,8 +291,8 @@ class GoogleStatus {
   /// Reads a flag that arrives as either a `bool` or the string `"true"`.
   ///
   /// Both shapes are real and neither is a mistake: the engine's `Report.toMap()` is a
-  /// `Map<String, String>` because the same map is written into Diagnostics and the device
-  /// report, while `bridgesImplemented` is added by the bridge as a genuine `bool`.
+  /// `Map<String, String>` because the same map goes into the structured log, while
+  /// `bridgesImplemented` is added by the bridge as a genuine `bool`.
   ///
   /// The obvious spelling of "tolerate both" does not work in Dart, and this screen was
   /// dead on a real device because of it:
@@ -424,68 +413,5 @@ class GoogleRoute {
         flow: (m['flow'] as String?) ?? '',
         mode: (m['mode'] as String?) ?? 'UNSUPPORTED',
         why: (m['why'] as String?) ?? '',
-      );
-}
-
-/// One section of the on-device report: what this phone actually is.
-class ReportSection {
-  const ReportSection({required this.title, required this.values});
-
-  final String title;
-  final Map<String, String> values;
-
-  static ReportSection fromMap(Map<Object?, Object?> m) => ReportSection(
-        title: (m['title'] as String?) ?? '',
-        values: ((m['values'] as Map?) ?? const {})
-            .map((k, v) => MapEntry(k.toString(), v?.toString() ?? '-')),
-      );
-}
-
-/// One step of the physical-device sequence, and what the tester saw.
-///
-/// A verdict is an observation, not a gate: nothing in the compatibility matrix moves
-/// because this says so. It travels with the diagnostics package so it can be read
-/// alongside the machine's own record rather than instead of it.
-enum StepVerdict { notRun, pass, fail, blocked, skipped }
-
-class ChecklistStep {
-  const ChecklistStep({
-    required this.id,
-    required this.title,
-    required this.what,
-    required this.verdict,
-    required this.note,
-  });
-
-  final String id;
-  final String title;
-  final String what;
-  final StepVerdict verdict;
-  final String note;
-
-  bool get done => verdict != StepVerdict.notRun;
-
-  static StepVerdict _verdict(String? raw) => switch (raw) {
-        'PASS' => StepVerdict.pass,
-        'FAIL' => StepVerdict.fail,
-        'BLOCKED' => StepVerdict.blocked,
-        'SKIPPED' => StepVerdict.skipped,
-        _ => StepVerdict.notRun,
-      };
-
-  static String encode(StepVerdict v) => switch (v) {
-        StepVerdict.pass => 'PASS',
-        StepVerdict.fail => 'FAIL',
-        StepVerdict.blocked => 'BLOCKED',
-        StepVerdict.skipped => 'SKIPPED',
-        StepVerdict.notRun => 'NOT_RUN',
-      };
-
-  static ChecklistStep fromMap(Map<Object?, Object?> m) => ChecklistStep(
-        id: (m['id'] as String?) ?? '',
-        title: (m['title'] as String?) ?? '',
-        what: (m['what'] as String?) ?? '',
-        verdict: _verdict(m['verdict'] as String?),
-        note: (m['note'] as String?) ?? '',
       );
 }

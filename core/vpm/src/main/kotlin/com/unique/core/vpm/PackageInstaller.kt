@@ -15,14 +15,40 @@ import com.unique.core.diagnostics.Diagnostics
 import java.io.File
 import java.util.zip.ZipFile
 
-/** Why an import was refused, in terms the UI can show verbatim. */
+/**
+ * Why an import was refused.
+ *
+ * Two forms of the same refusal, and both are needed. [code] is a stable identifier the
+ * interface translates into the reader's own language; [message] is English prose that
+ * carries the specifics — which libraries, which page size, which exception — and is what
+ * the interface shows when it has no translation for the code yet. A code without prose
+ * would lose the detail; prose without a code can only ever be English.
+ */
 sealed interface ImportRejection {
+    val code: String
     val message: String
 
-    data class NoArm64(override val message: String = "This app has no arm64-v8a native code. UNIQUE runs ARM64 only.") : ImportRejection
-    data class NotAligned16K(val libraries: List<String>, override val message: String) : ImportRejection
-    data class Unreadable(override val message: String) : ImportRejection
-    data class Unsupported(override val message: String) : ImportRejection
+    data class NoArm64(
+        override val message: String =
+            "This app has no arm64-v8a native code. UNIQUE runs ARM64 only.",
+    ) : ImportRejection {
+        override val code: String get() = "NO_ARM64"
+    }
+
+    data class NotAligned16K(
+        val libraries: List<String>,
+        override val message: String,
+    ) : ImportRejection {
+        override val code: String get() = "NOT_ALIGNED_16K"
+    }
+
+    data class Unreadable(override val message: String) : ImportRejection {
+        override val code: String get() = "APK_UNREADABLE"
+    }
+
+    data class Unsupported(override val message: String) : ImportRejection {
+        override val code: String get() = "IMPORT_UNSUPPORTED"
+    }
 }
 
 sealed interface ImportResult {

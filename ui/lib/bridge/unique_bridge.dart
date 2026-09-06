@@ -4,8 +4,8 @@ import '../models/models.dart';
 
 /// Client for the Kotlin side.
 ///
-/// A `MethodChannel` for request/response and an `EventChannel` for the diagnostics
-/// stream, matching `UniqueBridge` on the Android side. Every call returns real data or
+/// A `MethodChannel` for request/response, matching `UniqueBridge` on the Android side.
+/// Every call returns real data or
 /// throws; nothing here invents a value when the platform does not answer, because a
 /// fabricated engine status is worse than an error - it would make a broken build look
 /// healthy.
@@ -15,7 +15,6 @@ class UniqueBridgeClient {
   static final instance = UniqueBridgeClient._();
 
   static const _method = MethodChannel('com.unique/bridge');
-  static const _events = EventChannel('com.unique/diagnostics');
 
   Future<EngineStatus> engineStatus() async {
     final result = await _method.invokeMapMethod<Object?, Object?>('engineStatus');
@@ -76,58 +75,18 @@ class UniqueBridgeClient {
     return EngineOutcome.fromMap(result ?? const {});
   }
 
-  /// Writes a diagnostics package and returns where it landed.
-  ///
-  /// The file is UNIQUE's to keep: it lands in app-private storage and carries nothing
-  /// from inside a virtualized app. See `DiagnosticsExport` on the Kotlin side.
-  Future<DiagnosticsExportResult> exportDiagnostics() async {
-    final result =
-        await _method.invokeMapMethod<Object?, Object?>('exportDiagnostics');
-    return DiagnosticsExportResult.fromMap(result ?? const {});
-  }
-
-  /// Everything UNIQUE can establish about this device without a computer.
-  Future<List<ReportSection>> deviceReport() async {
-    final result = await _method.invokeListMethod<Object?>('deviceReport');
+  /// The Settings-screen accesses UNIQUE holds, and whether each is on.
+  Future<List<SpecialAccess>> specialAccess() async {
+    final result = await _method.invokeListMethod<Object?>('specialAccess');
     return (result ?? const [])
-        .map((e) => ReportSection.fromMap(e as Map<Object?, Object?>))
+        .map((e) => SpecialAccess.fromMap(e as Map<Object?, Object?>))
         .toList();
   }
 
-  Future<List<ChecklistStep>> checklist() async {
-    final result = await _method.invokeListMethod<Object?>('checklist');
-    return (result ?? const [])
-        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
-        .toList();
-  }
-
-  Future<List<ChecklistStep>> setChecklistStep(
-    String id,
-    StepVerdict verdict,
-    String note,
-  ) async {
-    final result = await _method.invokeListMethod<Object?>('setChecklistStep', {
-      'id': id,
-      'verdict': ChecklistStep.encode(verdict),
-      'note': note,
-    });
-    return (result ?? const [])
-        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
-        .toList();
-  }
-
-  Future<List<ChecklistStep>> resetChecklist() async {
-    final result = await _method.invokeListMethod<Object?>('resetChecklist');
-    return (result ?? const [])
-        .map((e) => ChecklistStep.fromMap(e as Map<Object?, Object?>))
-        .toList();
-  }
-
-  /// Writes a diagnostics package and hands it to the system share sheet.
-  Future<DiagnosticsExportResult> shareDiagnostics() async {
-    final result =
-        await _method.invokeMapMethod<Object?, Object?>('shareDiagnostics');
-    return DiagnosticsExportResult.fromMap(result ?? const {});
+  Future<EngineOutcome> openSpecialAccess(String id) async {
+    final result = await _method
+        .invokeMapMethod<Object?, Object?>('openSpecialAccess', {'id': id});
+    return EngineOutcome.fromMap(result ?? const {});
   }
 
   /// How each Google flow would be served for one instance, and why.
@@ -170,17 +129,6 @@ class UniqueBridgeClient {
     final result = await _method.invokeMapMethod<Object?, Object?>('googleStatus');
     return GoogleStatus.fromMap(result ?? const {});
   }
-
-  Future<List<DiagRecord>> diagnosticsSnapshot() async {
-    final result = await _method.invokeListMethod<Object?>('diagnosticsSnapshot');
-    return (result ?? const [])
-        .map((e) => DiagRecord.fromMap(e as Map<Object?, Object?>))
-        .toList();
-  }
-
-  Stream<DiagRecord> diagnostics() => _events
-      .receiveBroadcastStream()
-      .map((e) => DiagRecord.fromMap(e as Map<Object?, Object?>));
 
   /// Interface preferences, which persist on the engine side rather than in memory.
   Future<Map<String, Object?>> uiSettings() async =>

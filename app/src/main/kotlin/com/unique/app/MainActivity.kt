@@ -17,8 +17,7 @@ import kotlinx.coroutines.CompletableDeferred
  * It also owns the one thing the bridge cannot do from an application context: putting a
  * system file picker on screen and waiting for what comes back.
  */
-class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.FileSharer,
-    UniqueBridge.HostPermissions {
+class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.HostPermissions {
 
     /**
      * The pick currently on screen, if any.
@@ -50,13 +49,11 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
         super.configureFlutterEngine(flutterEngine)
         UniqueBridge.attach(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         UniqueBridge.picker = this
-        UniqueBridge.sharer = this
         UniqueBridge.hostPermissions = this
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         if (UniqueBridge.picker === this) UniqueBridge.picker = null
-        if (UniqueBridge.sharer === this) UniqueBridge.sharer = null
         if (UniqueBridge.hostPermissions === this) UniqueBridge.hostPermissions = null
         UniqueBridge.detach()
         super.cleanUpFlutterEngine(flutterEngine)
@@ -205,33 +202,6 @@ class MainActivity : FlutterActivity(), UniqueBridge.ApkPicker, UniqueBridge.Fil
         }
         return listOfNotNull(intent.data)
     }
-
-    /**
-     * Puts a file into the system share sheet.
-     *
-     * Through a `FileProvider`, because a `file://` URI has been refused since Android 7
-     * and would fail with `FileUriExposedException` — and because the provider is scoped to
-     * the one directory diagnostics packages are written into, so the share sheet cannot be
-     * pointed at anything else.
-     *
-     * A chooser rather than a direct target: which app a tester wants to send a zip to is
-     * theirs to decide, and on a phone with no mail client the alternative is a crash.
-     */
-    override fun shareFile(file: java.io.File, mimeType: String): Boolean = runCatching {
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            this, "$packageName.export", file,
-        )
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = mimeType
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "UNIQUE diagnostics — ${file.name}")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        startActivity(Intent.createChooser(send, "Send diagnostics").apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        })
-        true
-    }.getOrElse { false }
 
     private companion object {
         const val REQUEST_PICK_APKS = 0x5041

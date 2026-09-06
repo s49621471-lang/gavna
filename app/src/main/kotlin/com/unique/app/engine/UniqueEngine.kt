@@ -82,7 +82,9 @@ object UniqueEngine {
         val info = runCatching {
             context.packageManager.getApplicationInfo(packageName, 0)
         }.getOrElse {
-            return CreateResult.Rejected("$packageName is not installed on this device.")
+            return CreateResult.Rejected(
+                "NOT_INSTALLED", "$packageName is not installed on this device.",
+            )
         }
         val files = buildList {
             add(File(info.publicSourceDir ?: info.sourceDir))
@@ -90,7 +92,9 @@ object UniqueEngine {
         }.filter { it.isFile }
 
         if (files.isEmpty()) {
-            return CreateResult.Rejected("Could not read $packageName's APK files.")
+            return CreateResult.Rejected(
+                "APK_UNREADABLE", "Could not read $packageName's APK files.",
+            )
         }
         Diagnostics.info(
             DiagChannel.STORAGE, "IMPORT_STARTED",
@@ -208,14 +212,18 @@ object UniqueEngine {
         val info = runCatching {
             context.packageManager.getApplicationInfo(packageName, 0)
         }.getOrElse {
-            return UpdateResult.Rejected("$packageName is not installed on this device.")
+            return UpdateResult.Rejected(
+                "NOT_INSTALLED", "$packageName is not installed on this device.",
+            )
         }
         val files = buildList {
             add(File(info.publicSourceDir ?: info.sourceDir))
             info.splitPublicSourceDirs?.forEach { add(File(it)) }
         }.filter { it.isFile }
         if (files.isEmpty()) {
-            return UpdateResult.Rejected("Could not read $packageName's APK files.")
+            return UpdateResult.Rejected(
+                "APK_UNREADABLE", "Could not read $packageName's APK files.",
+            )
         }
         return update(context, files)
     }

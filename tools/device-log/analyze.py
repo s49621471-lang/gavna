@@ -387,12 +387,18 @@ def check_crashes(run: Run) -> Check:
     seen: Set[str] = set()
 
     def add(package: str, reason: str, lineno: int, thread: str = "") -> None:
-        key = f"{package}|{_exception_kind(reason)}"
+        kind = _exception_kind(reason)
+        key = f"{package}|{kind}"
         if key in seen:
             return
         seen.add(key)
         where = f" on {thread}" if thread else ""
-        check.fail(f"{package or 'a guest'} crashed{where}", lineno, reason[:200])
+        # The exception belongs on the line itself, not only under --verbose. Three guests
+        # in the fifth phone run died of the same `SecurityException: Unknown calling
+        # package name`, and a report that says only "crashed on main" three times hides
+        # the one fact that identifies the cause.
+        why = f": {_exception_line(reason)}" if reason.strip() else ""
+        check.fail(f"{package or 'a guest'} crashed{where}{why}", lineno, reason[:200])
 
     for i, line in enumerate(run.lines):
         if line.tag != "AndroidRuntime" or "FATAL EXCEPTION" not in line.message:
@@ -436,6 +442,22 @@ def _exception_kind(reason: str) -> str:
         return reason[:60]
     name, message = matches[-1]
     return f"{name}:{message.strip()[:40]}"
+
+
+def _exception_line(reason: str) -> str:
+    """The same crash, written for a person rather than for the fold.
+
+    [_exception_kind] is deliberately short because it is an identity — two records of one
+    crash must compare equal. What goes on the report line is allowed to be longer: the
+    package name inside `Unknown calling package name 'com.example.app'` is exactly the
+    part a 40-character identity cuts off, and exactly the part that says which guest.
+    """
+    matches = _EXCEPTION.findall(reason)
+    if not matches:
+        return reason.strip()[:110]
+    name, message = matches[-1]
+    message = message.strip()
+    return f"{name}: {message[:100]}" if message else name
 
 
 def check_platform_refusals(run: Run) -> Check:

@@ -72,7 +72,14 @@ class Strings {
   /// all — and translating them here keeps that vocabulary out of the Dart/Kotlin
   /// boundary. A group UNIQUE gains tomorrow shows its English label until this map
   /// catches up, which is the right failure: a name, not a key.
-  String orElse(String key, String fallback) => _table[key] ?? _en[key] ?? fallback;
+  String orElse(String key, String fallback, [Map<String, Object?>? args]) {
+    var value = _table[key] ?? _en[key];
+    if (value == null) return fallback;
+    if (args != null) {
+      args.forEach((k, v) => value = value!.replaceAll('{$k}', '${v ?? ''}'));
+    }
+    return value!;
+  }
 
   /// Keys present in one language and missing from the other. Empty is the only
   /// acceptable answer; the widget tests hold it to that.
@@ -106,6 +113,7 @@ class Strings {
     'common.none': '-',
     'common.tryAgain': 'Try again',
     'common.copy': 'Copy',
+    'common.cancel': 'Cancel',
 
     // Startup
     'startup.failed.title': 'UNIQUE could not start',
@@ -120,11 +128,53 @@ class Strings {
     'engine.restricted.title': 'Restricted platform access',
     'engine.restricted.body':
         'UNIQUE could not obtain the platform access it needs on this device, so virtual '
-            'apps cannot be launched. Details are in Settings, Diagnostics.',
+            'apps cannot be launched. Settings says what is missing.',
     'engine.degraded.title': 'The engine is not fully ready',
     'engine.degraded.body':
-        'Something the engine needs is missing on this device. Settings, Diagnostics says '
-            'which, and launching an app may fail until it is resolved.',
+        'Something the engine needs is missing on this device. Settings says which, and '
+            'launching an app may fail until it is resolved.',
+
+    // Why an engine action failed, keyed by the code the engine sends.
+    //
+    // A code with no entry here falls back to the engine's own English sentence, which is
+    // the right failure: specific text in one language beats an identifier in none. The
+    // sentences are deliberately not translations of the engine's — they say the same
+    // thing to a person rather than to a developer.
+    'engine.NO_ARM64': 'This app has no 64-bit ARM code. UNIQUE runs arm64-v8a only.',
+    'engine.NOT_ALIGNED_16K':
+        "This app's native libraries do not fit this device's memory pages. Only its "
+            'developer can fix that.',
+    'engine.APK_UNREADABLE': "Could not read the app's APK files.",
+    'engine.IMPORT_UNSUPPORTED': 'The app could not be installed into UNIQUE.',
+    'engine.NOT_INSTALLED': 'That app is no longer installed on this device.',
+    'engine.NOT_IMPORTED': 'That app has not been added to UNIQUE.',
+    'engine.MANIFEST_UNREADABLE': "Could not read the app's manifest.",
+    'engine.RECORD_FAILED': 'Could not save the new copy.',
+    'engine.DOWNGRADE':
+        'That file is older than the version already added. An older build must not read '
+            "a newer build's data.",
+    'engine.SIGNER_MISMATCH':
+        'That update is signed by a different developer, so it cannot replace this app.',
+    'engine.SIGNER_UNKNOWN':
+        'Could not verify that the update is signed by the same developer.',
+    'engine.NO_SUCH_INSTANCE': 'That copy no longer exists.',
+    'engine.NO_LAUNCHABLE_ACTIVITY': 'This app has no screen UNIQUE can open.',
+    'engine.PROCESS_POOL_EXHAUSTED':
+        'Every virtual process is in use. Stop an app and try again.',
+    'engine.START_ACTIVITY_FAILED': 'Android refused to open the app.',
+    'engine.NO_PICKER': "Open UNIQUE's main screen and try again.",
+    'engine.NO_FILE_READ': 'None of the selected files could be read.',
+    'engine.BAD_SETTING_VALUE': 'That setting could not be saved.',
+    'engine.UNKNOWN_PERMISSION_GROUP': 'Unknown permission.',
+    'engine.NEEDS_MAIN_SCREEN': "Open UNIQUE's main screen to grant {group}.",
+    'engine.HOST_PERMISSION_REFUSED':
+        '{group} was not granted to UNIQUE, so it cannot be granted to this app.',
+    'engine.HOST_PERMISSION_DENIED_FOREVER':
+        'Android will not ask again for {group}. Grant it to UNIQUE in system settings, '
+            'then try again.',
+    'engine.PERMISSION_NOT_REQUESTED': 'This app does not ask for {group}.',
+    'engine.NO_SUCH_ACCESS': 'There is no such access.',
+    'engine.NO_SETTINGS_SCREEN': 'This device has no settings screen for that.',
 
     // Add app
     'add.title': 'Add App',
@@ -143,6 +193,7 @@ class Strings {
     'add.splitHint':
         'Select a base APK and its splits together — importing a base without its splits '
             'gives an app that starts and then cannot find its own code.',
+    'add.blocked.noArm64': 'No 64-bit ARM code. UNIQUE runs arm64-v8a only.',
     'add.failed': 'Could not add {app}.',
     'add.added': '{app} added',
 
@@ -154,6 +205,8 @@ class Strings {
     'details.general': 'General',
     'details.package': 'Package',
     'details.versionCode': 'Version code',
+    // "Profile 2" as the engine stored it, said in the reader's own language.
+    'profile.name': 'Profile {n}',
     'details.instance': 'Instance',
     'details.permissions': 'Permissions',
     'details.noPermissions': 'None requested',
@@ -163,6 +216,14 @@ class Strings {
     'details.allowed': 'Allowed',
     'details.notAllowed': 'Not allowed',
     'details.openSettings': 'Settings',
+    'details.specialAccess': 'Special access',
+    'details.specialAccessBody':
+        'Granted to UNIQUE, so it applies to every app inside it. Android has no dialog '
+        'for these — each one opens its own Settings screen.',
+    'access.notGranted': 'Not granted — tap to open',
+    'access.overlay': 'Draw over other apps',
+    'access.exactAlarm': 'Alarms and reminders',
+    'access.battery': 'Run in the background unrestricted',
     'details.storage': 'Storage',
     'details.data': 'Data',
     'details.cache': 'Cache',
@@ -171,6 +232,12 @@ class Strings {
     'details.cacheCleared': 'Cache cleared',
     'details.clearData': 'Clear data',
     'details.clearDataBody': 'Removes everything this instance stores',
+    'details.clearDataTitle': 'Erase {app} data?',
+    'details.clearDataConfirm':
+        'Everything {profile} has stored is deleted: files, databases and settings. '
+        'Other copies of this app are not touched.',
+    'details.clearDataAction': 'Erase',
+    'details.dataCleared': 'Data erased',
     'details.deviceProfile': 'Device profile',
     'details.androidId': 'Android ID',
     'details.androidIdCopied': 'Android ID copied',
@@ -219,55 +286,12 @@ class Strings {
     'settings.signInNotImplemented':
         'Not implemented yet — routing is decided and recorded, but no flow has an '
             'implementation',
-    'settings.googleDiagnostics': 'Google diagnostics',
-    'settings.advanced': 'Advanced',
-    'settings.deviceTest': 'Device test',
-    'settings.deviceTestBody':
-        'What this phone is, and the physical-device sequence — run and recorded here, '
-            'with no computer',
-    'settings.diagnostics': 'Diagnostics',
-    'settings.diagnosticsBody': '{count} events recorded',
-    'settings.export': 'Export diagnostics',
-    'settings.exporting': 'Collecting from every running app…',
-    'settings.exportBody':
-        'A zip with UNIQUE’s logs and the device, and nothing from inside a '
-            'virtualized app',
-    'settings.exportFailed': 'Export failed',
-    'settings.savedTo': 'Saved to {path}',
     'settings.about': 'About',
     'settings.version': 'Version',
     'settings.android': 'Android',
     'settings.licences': 'Open-source licences',
-    'settings.nothingRecorded': 'Nothing recorded yet',
-    'settings.processes.one': 'process',
-    'settings.processes.many': 'processes',
-    'settings.exportSummary': '{name} — {size}, {lines} lines from {procs} {word}',
 
     // Device test
-    'devtest.title': 'Device test',
-    'devtest.reread': 'Re-read the device',
-    'devtest.notice.title': 'Everything here happens on this phone',
-    'devtest.notice.body':
-        'No computer, no adb, no root. Work down the sequence in order — a failure early '
-            'on explains the ones after it — then send the diagnostics package from the '
-            'last step.',
-    'devtest.sequence': 'Sequence  ·  {done} of {total} recorded',
-    'devtest.send': 'Send the results',
-    'devtest.share': 'Export and share diagnostics',
-    'devtest.collecting': 'Collecting…',
-    'devtest.shareBody':
-        'The logs, this checklist and the device report. Nothing from inside any '
-            'virtualized app.',
-    'devtest.clear': 'Clear the sequence',
-    'devtest.clearBody': 'Verdicts and notes only. Nothing else is touched.',
-    'devtest.readingDevice': 'Reading the device…',
-    'devtest.copied': '{key} copied',
-    'devtest.pass': 'Pass',
-    'devtest.fail': 'Fail',
-    'devtest.blocked': 'Blocked',
-    'devtest.skip': 'Skip',
-    'devtest.note': 'What happened',
-    'devtest.noteHint': 'Exact error text is worth more than a description of it',
 
     // Permission groups, keyed by the engine's own enum name so the two cannot drift.
     // The engine still sends an English label; it is the fallback, not the source.
@@ -309,6 +333,7 @@ class Strings {
     'common.none': '—',
     'common.tryAgain': 'Повторить',
     'common.copy': 'Копировать',
+    'common.cancel': 'Отмена',
 
     'startup.failed.title': 'UNIQUE не смог запуститься',
     'startup.failed.body': 'Движок не ответил.',
@@ -322,12 +347,52 @@ class Strings {
     'engine.restricted.title': 'Ограниченный доступ к платформе',
     'engine.restricted.body':
         'UNIQUE не смог получить нужный доступ к платформе на этом устройстве, поэтому '
-            'виртуальные приложения не запускаются. Подробности — в «Настройки → '
-            'Диагностика».',
+            'виртуальные приложения не запускаются. В настройках указано, чего не хватает.',
     'engine.degraded.title': 'Движок готов не полностью',
     'engine.degraded.body':
-        'На этом устройстве отсутствует что-то, что нужно движку. В «Настройки → '
-            'Диагностика» указано что именно; до этого запуск приложения может не удаться.',
+        'На этом устройстве отсутствует что-то, что нужно движку. В настройках указано '
+            'что именно; до этого запуск приложения может не удаться.',
+
+    // Почему действие движка не удалось — по коду, который присылает движок.
+    'engine.NO_ARM64':
+        'В приложении нет 64-битного кода ARM. UNIQUE работает только с arm64-v8a.',
+    'engine.NOT_ALIGNED_16K':
+        'Библиотеки приложения не подходят под размер страниц памяти этого устройства. '
+            'Исправить это может только его разработчик.',
+    'engine.APK_UNREADABLE': 'Не удалось прочитать файлы APK приложения.',
+    'engine.IMPORT_UNSUPPORTED': 'Не удалось установить приложение в UNIQUE.',
+    'engine.NOT_INSTALLED': 'Это приложение больше не установлено на устройстве.',
+    'engine.NOT_IMPORTED': 'Это приложение не добавлено в UNIQUE.',
+    'engine.MANIFEST_UNREADABLE': 'Не удалось прочитать манифест приложения.',
+    'engine.RECORD_FAILED': 'Не удалось сохранить новую копию.',
+    'engine.DOWNGRADE':
+        'Этот файл старее уже добавленной версии. Старая сборка не должна читать данные '
+            'новой.',
+    'engine.SIGNER_MISMATCH':
+        'Обновление подписано другим разработчиком, поэтому оно не может заменить это '
+            'приложение.',
+    'engine.SIGNER_UNKNOWN':
+        'Не удалось проверить, что обновление подписано тем же разработчиком.',
+    'engine.NO_SUCH_INSTANCE': 'Этой копии больше нет.',
+    'engine.NO_LAUNCHABLE_ACTIVITY': 'У приложения нет экрана, который UNIQUE может открыть.',
+    'engine.PROCESS_POOL_EXHAUSTED':
+        'Все виртуальные процессы заняты. Остановите какое-нибудь приложение и повторите.',
+    'engine.START_ACTIVITY_FAILED': 'Android отказался открыть приложение.',
+    'engine.NO_PICKER': 'Откройте главный экран UNIQUE и повторите.',
+    'engine.NO_FILE_READ': 'Ни один из выбранных файлов не удалось прочитать.',
+    'engine.BAD_SETTING_VALUE': 'Не удалось сохранить эту настройку.',
+    'engine.UNKNOWN_PERMISSION_GROUP': 'Неизвестное разрешение.',
+    'engine.NEEDS_MAIN_SCREEN':
+        'Откройте главный экран UNIQUE, чтобы выдать разрешение «{group}».',
+    'engine.HOST_PERMISSION_REFUSED':
+        'Разрешение «{group}» не выдано самому UNIQUE, поэтому его нельзя выдать этому '
+            'приложению.',
+    'engine.HOST_PERMISSION_DENIED_FOREVER':
+        'Android больше не спросит про «{group}». Выдайте это разрешение UNIQUE в '
+            'настройках системы и повторите.',
+    'engine.PERMISSION_NOT_REQUESTED': 'Это приложение не запрашивает «{group}».',
+    'engine.NO_SUCH_ACCESS': 'Такого доступа нет.',
+    'engine.NO_SETTINGS_SCREEN': 'На этом устройстве нет экрана настроек для этого.',
 
     'add.title': 'Добавить приложение',
     'add.tab.installed': 'Установленные',
@@ -345,6 +410,7 @@ class Strings {
     'add.splitHint':
         'Выбирайте базовый APK вместе со сплитами — импорт базового APK без сплитов даёт '
             'приложение, которое запускается и не находит собственный код.',
+    'add.blocked.noArm64': 'Нет 64-битного кода ARM. UNIQUE работает только с arm64-v8a.',
     'add.failed': 'Не удалось добавить {app}.',
     'add.added': '{app} добавлено',
 
@@ -355,6 +421,7 @@ class Strings {
     'details.general': 'Общее',
     'details.package': 'Пакет',
     'details.versionCode': 'Код версии',
+    'profile.name': 'Профиль {n}',
     'details.instance': 'Копия',
     'details.permissions': 'Разрешения',
     'details.noPermissions': 'Не запрошены',
@@ -364,6 +431,14 @@ class Strings {
     'details.allowed': 'Разрешено',
     'details.notAllowed': 'Запрещено',
     'details.openSettings': 'Настройки',
+    'details.specialAccess': 'Особый доступ',
+    'details.specialAccessBody':
+        'Выдаётся самому UNIQUE, поэтому действует сразу для всех приложений внутри. '
+        'Диалога для них в Android нет — каждый открывает свой экран настроек.',
+    'access.notGranted': 'Не выдан — нажмите, чтобы открыть',
+    'access.overlay': 'Поверх других приложений',
+    'access.exactAlarm': 'Будильники и напоминания',
+    'access.battery': 'Работа в фоне без ограничений',
     'details.storage': 'Хранилище',
     'details.data': 'Данные',
     'details.cache': 'Кэш',
@@ -372,6 +447,12 @@ class Strings {
     'details.cacheCleared': 'Кэш очищен',
     'details.clearData': 'Стереть данные',
     'details.clearDataBody': 'Удаляет всё, что хранит эта копия',
+    'details.clearDataTitle': 'Стереть данные {app}?',
+    'details.clearDataConfirm':
+        'Будет удалено всё, что хранит копия «{profile}»: файлы, базы данных и '
+        'настройки. Другие копии этого приложения не тронуты.',
+    'details.clearDataAction': 'Стереть',
+    'details.dataCleared': 'Данные стёрты',
     'details.deviceProfile': 'Профиль устройства',
     'details.androidId': 'Android ID',
     'details.androidIdCopied': 'Android ID скопирован',
@@ -419,54 +500,11 @@ class Strings {
     'settings.signInNotImplemented':
         'Пока не реализованы — маршрут выбирается и записывается, но ни один сценарий не '
             'имеет реализации',
-    'settings.googleDiagnostics': 'Диагностика Google',
-    'settings.advanced': 'Дополнительно',
-    'settings.deviceTest': 'Тест устройства',
-    'settings.deviceTestBody':
-        'Что это за телефон и последовательность проверок на устройстве — выполняется и '
-            'записывается здесь, без компьютера',
-    'settings.diagnostics': 'Диагностика',
-    'settings.diagnosticsBody': 'Записано событий: {count}',
-    'settings.export': 'Экспорт диагностики',
-    'settings.exporting': 'Сбор со всех запущенных приложений…',
-    'settings.exportBody':
-        'Архив с журналами UNIQUE и описанием устройства — и ничего из виртуализированного '
-            'приложения',
-    'settings.exportFailed': 'Экспорт не удался',
-    'settings.savedTo': 'Сохранено в {path}',
     'settings.about': 'О программе',
     'settings.version': 'Версия',
     'settings.android': 'Android',
     'settings.licences': 'Лицензии открытого кода',
-    'settings.nothingRecorded': 'Пока ничего не записано',
-    'settings.processes.one': 'процесса',
-    'settings.processes.many': 'процессов',
-    'settings.exportSummary': '{name} — {size}, строк: {lines}, из {procs} {word}',
 
-    'devtest.title': 'Тест устройства',
-    'devtest.reread': 'Перечитать устройство',
-    'devtest.notice.title': 'Всё это происходит на самом телефоне',
-    'devtest.notice.body':
-        'Без компьютера, без adb, без root. Идите по шагам по порядку — сбой в начале '
-            'объясняет всё, что после него, — затем отправьте пакет диагностики с '
-            'последнего шага.',
-    'devtest.sequence': 'Последовательность  ·  записано {done} из {total}',
-    'devtest.send': 'Отправить результаты',
-    'devtest.share': 'Экспортировать и отправить диагностику',
-    'devtest.collecting': 'Сбор…',
-    'devtest.shareBody':
-        'Журналы, этот список и отчёт об устройстве. Ничего из виртуализированных '
-            'приложений.',
-    'devtest.clear': 'Очистить список',
-    'devtest.clearBody': 'Только вердикты и заметки. Больше ничего не затрагивается.',
-    'devtest.readingDevice': 'Чтение устройства…',
-    'devtest.copied': '{key} скопировано',
-    'devtest.pass': 'Прошло',
-    'devtest.fail': 'Сбой',
-    'devtest.blocked': 'Блокировано',
-    'devtest.skip': 'Пропустить',
-    'devtest.note': 'Что произошло',
-    'devtest.noteHint': 'Точный текст ошибки ценнее, чем её описание',
 
     'perm.CAMERA': 'Камера',
     'perm.MICROPHONE': 'Микрофон',

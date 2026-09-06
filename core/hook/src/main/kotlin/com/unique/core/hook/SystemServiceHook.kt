@@ -19,10 +19,25 @@ import java.lang.reflect.Proxy
  */
 data class ServiceTarget(
     val serviceName: String,
-    val stubClassName: String,
+    /**
+     * The `$Stub` classes this interface has been called, newest spelling first.
+     *
+     * A list because a few interfaces have *moved package* rather than changed shape —
+     * `IInputMethodManager` went from `com.android.internal.view` to
+     * `com.android.internal.inputmethod` in Android 14 — and a name that resolves on one
+     * release and not the next is exactly the failure this table exists to avoid. The
+     * first one that resolves is used.
+     */
+    val stubClassNames: List<String>,
     /** Framework singletons that cache the *unwrapped* interface and must be re-pointed. */
     val cachedSingletons: List<SingletonRef> = emptyList(),
 ) {
+    constructor(
+        serviceName: String,
+        stubClassName: String,
+        cachedSingletons: List<SingletonRef> = emptyList(),
+    ) : this(serviceName, listOf(stubClassName), cachedSingletons)
+
     data class SingletonRef(val className: String, val fieldName: String)
 }
 
@@ -139,6 +154,35 @@ object SystemServiceHook {
         ServiceTarget("telecom", "com.android.internal.telecom.ITelecomService\$Stub"),
         ServiceTarget("media_router", "android.media.IMediaRouterService\$Stub"),
 
+        // The keyboard.
+        //
+        // `EditorInfo.packageName` is the app's own, and `InputMethodManagerService`
+        // checks it against the calling uid before it will bind an IME to a window:
+        //
+        //   Rejecting this client as it reported an invalid package name.
+        //     uid=10303 package=org.amnezia.vpn         -> InputBindResult.INVALID_PACKAGE_NAME
+        //
+        // So no guest has ever had a keyboard: `showSoftInput` is called, the request is
+        // refused in `system_server`, and nothing at all is logged in the app's process.
+        // Two spellings because the interface moved package in Android 14, and two
+        // singleton spellings for the same reason.
+        ServiceTarget(
+            "input_method",
+            listOf(
+                "com.android.internal.inputmethod.IInputMethodManager\$Stub",
+                "com.android.internal.view.IInputMethodManager\$Stub",
+            ),
+            listOf(
+                ServiceTarget.SingletonRef(
+                    "android.view.inputmethod.IInputMethodManagerGlobalInvoker", "sServiceCache",
+                ),
+                ServiceTarget.SingletonRef(
+                    "com.android.internal.inputmethod.IInputMethodManagerGlobalInvoker",
+                    "sServiceCache",
+                ),
+            ),
+        ),
+
         // Found by running a real app rather than by surveying one. Fossify Gallery calls
         // `AppWidgetManager.getAppWidgetIds` from its `MainActivity.onCreate` — a home-screen
         // widget is ordinary in a gallery, a music player or a weather app — and
@@ -179,8 +223,11 @@ object SystemServiceHook {
                 ?.invoke(null, target.serviceName) as? IBinder
         }.getOrNull() ?: return InstallReport(target.serviceName, false, "service not available")
 
-        val stub = Reflect.findClass(target.stubClassName)
-            ?: return InstallReport(target.serviceName, false, "${target.stubClassName} not found")
+        val stub = target.stubClassNames.firstNotNullOfOrNull { Reflect.findClass(it) }
+            ?: return InstallReport(
+                target.serviceName, false,
+                "${target.stubClassNames.joinToString(" / ")} not found",
+            )
 
         val ifaceClass = stub.enclosingClass
             ?: return InstallReport(target.serviceName, false, "stub has no enclosing interface")

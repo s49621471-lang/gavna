@@ -3,10 +3,13 @@
 
 Two halves, and both are needed.
 
-The first drives the checks against `fixtures/redmi-android15.log`, which is a real run
-on a real Redmi on Android 15 — the run in which no app launched. Every finding asserted
-here is something that actually happened to somebody's phone, so a check that stops
-reporting one has regressed, whatever it does on synthetic input.
+The first drives the checks against the real runs in `fixtures/` — three captures from one
+Redmi on Android 15, kept together because they fail differently. The third run is the one
+in which no app launched at all; the fourth is the one in which everything launched and was
+wrong anyway; the fifth is the one in which Play services killed three guests that had
+started perfectly. Every finding asserted here is something that actually happened to
+somebody's phone, so a check that stops reporting one has regressed, whatever it does on
+synthetic input.
 
 The second drives them against a synthetic run in which nothing goes wrong. Without it
 the suite proves only that the tool says FAIL, which a tool that always says FAIL would
@@ -32,6 +35,7 @@ FIXTURE = os.path.join(HERE, "fixtures", "redmi-android15.log")
 FIXTURE_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15.device.txt")
 FIXTURE4 = os.path.join(HERE, "fixtures", "redmi-android15-run4.log")
 FIXTURE4_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run4.device.txt")
+FIXTURE5 = os.path.join(HERE, "fixtures", "redmi-android15-run5.log")
 
 
 def findings(check: analyze.Check) -> str:
@@ -246,6 +250,80 @@ class RedmiRun4Test(unittest.TestCase):
 
     def test_the_missing_gms_meta_data_is_found(self):
         self.assertIn("metaData", findings(self.checks["startup"]))
+
+
+class RedmiRun5Test(unittest.TestCase):
+    """The fifth run: everything launched, and Play services killed three of them.
+
+    Loaded with **no device file**, deliberately. The in-app export that used to produce
+    one was removed, so from this run onwards a log arrives as a bare capture from a
+    recorder app and nothing else. A tool that needs the sidecar to work would be a tool
+    that stopped working the day the sidecar did.
+
+    The three crashes are one fault with three victims, and it is the fault this pass
+    fixed: `GmsClient.getRemoteService` sends the *guest's* package name to
+    `com.google.android.gms`, which resolves the calling uid to UNIQUE's packages and
+    answers `SecurityException: Unknown calling package name`. It arrives on a `Handler`,
+    so it is fatal. The fix is to hide the Google stack from a guest entirely; these
+    assertions are about the analyzer naming the fault, which stays true of this log
+    whatever the engine does next.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE5, None)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_run_is_read_without_a_device_file(self):
+        self.assertGreater(len(self.parsed.events), 900)
+        self.assertEqual(self.parsed.device, {})
+
+    def test_every_google_crash_is_named_with_its_exception(self):
+        check = self.checks["crash"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        detail = findings(check)
+        for package in (
+            "com.gordey.standarling",
+            "com.a0soft.gphone.acc.free",
+            "com.Chillow.CustomRise",
+        ):
+            self.assertIn(package, detail)
+        # The reason belongs on the line, not only under --verbose: three identical
+        # "crashed on main" lines hide the one fact that identifies the cause.
+        self.assertEqual(detail.count("Unknown calling package name"), 3)
+
+    def test_the_provider_that_failed_to_publish_is_named(self):
+        # FileProvider's attachInfo reads external storage, which is the guest's own only
+        # after the identity hooks are in. Publishing before them left the guest with no
+        # provider of its own, and this is the line that says so.
+        check = self.checks["providers"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("androidx.core.content.FileProvider", findings(check))
+
+    def test_an_install_time_denial_the_user_could_not_have_caused_fails(self):
+        check = self.checks["permissions"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        # SYSTEM_ALERT_WINDOW has no runtime dialog, so a denial is UNIQUE's own missing
+        # declaration or grant — never the user's choice. App Details now offers it.
+        self.assertIn("SYSTEM_ALERT_WINDOW", findings(check))
+
+    def test_a_packer_that_never_reached_the_application_is_reported(self):
+        # bin.mt.plus decrypts its own classes in a static initialiser and threw
+        # UnsatisfiedLinkError before UNIQUE's graft could finish. Unexplained, and the
+        # analyzer must keep saying so rather than passing it over.
+        check = self.checks["launch"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("bin.mt.plus", findings(check))
+        self.assertIn("NO_APPLICATION", findings(check))
+
+    def test_the_launches_that_did_work_are_counted(self):
+        # Six of eight, so the report cannot be read as "nothing launched" — which is what
+        # the third run was, and the difference between the two is the whole point.
+        self.assertIn("6/8", notes(self.checks["launch"]))
+
+    def test_no_guest_was_rendering_in_software(self):
+        # The fault the fourth run was full of, fixed before this one and still fixed.
+        self.assertEqual(self.checks["render"].verdict, analyze.PASS)
 
 
 HEALTHY = """\
