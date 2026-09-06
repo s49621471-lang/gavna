@@ -44,6 +44,8 @@ FIXTURE8 = os.path.join(HERE, "fixtures", "redmi-android15-run8.log")
 FIXTURE8_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run8.device.txt")
 FIXTURE9 = os.path.join(HERE, "fixtures", "redmi-android15-run9.log")
 FIXTURE9_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run9.device.txt")
+FIXTURE10 = os.path.join(HERE, "fixtures", "redmi-android15-run10.log")
+FIXTURE10_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run10.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -591,6 +593,69 @@ class RedmiRun9Test(unittest.TestCase):
         # runtime and UNIQUE never finds one. Asserted so it stays visible rather than
         # being quietly forgotten between runs.
         self.assertIn("NO_APPLICATION", findings(self.checks["launch"]))
+
+
+class RedmiRun10Test(unittest.TestCase):
+    """The tenth run: the rewrite works, and it exposed three things behind it.
+
+    The calling-package rewrite went in and did its job — seventeen binds wrapped,
+    seventeen requests sent under UNIQUE's own name, and the expansion-file check green
+    for the first time. What the log then showed is what that had been hiding:
+
+    1. **Firebase Analytics was still refused.** It never uses the service broker; it
+       binds `AppMeasurementService` directly, so an allowlist of interfaces missed it:
+
+           GMS_BROKER_WRAPPED descriptor=…IGmsServiceBroker package=com.gordey.standarling
+           E FA: Task exception while flushing queue:
+               SecurityException: Unknown calling package name 'com.gordey.standarling'.
+
+    2. **Google Sign-In got further than anyone had seen and died in UNIQUE's own
+       plumbing.** `SignInHubActivity` launched *inside the guest* and crashed reading the
+       configuration it had written one step earlier, because the `Intent`'s extras had no
+       class loader that could see the guest's APK. That is not a Google bug and not a
+       Google fix: any app passing its own `Parcelable` through an `Intent` hits it.
+
+    3. **Standoff 2 asked for Play services to be installed** — from a build in which
+       Google worked. Its instance still carried the automatic-hide mark written when it
+       crashed under the *previous* build, and a mark is a statement about a mechanism
+       that no longer exists.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE10, FIXTURE10_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_rewrite_reached_play_services(self):
+        notes_text = notes(self.checks["google"])
+        self.assertIn("under UNIQUE's own name", notes_text)
+        self.assertIn("broker was wrapped", notes_text)
+
+    def test_a_refusal_that_got_past_a_wrapped_broker_is_reported_as_its_own_thing(self):
+        # "Refused and never wrapped" and "refused with a wrap in place" are different
+        # bugs — the first is plumbing, the second is a route the rewrite does not cover
+        # — and telling them apart is what sent this fix at the measurement service
+        # rather than back at the connection code.
+        findings_text = findings(self.checks["google"])
+        self.assertIn("with the broker wrapped", findings_text)
+        self.assertNotIn("never wrapped", findings_text)
+
+    def test_the_expansion_file_message_is_gone(self):
+        # The previous run reported it for every app including ones with no expansion
+        # files. Nothing is inferred now, and this is the log that says so.
+        self.assertEqual(self.checks["storage"].verdict, analyze.PASS)
+
+    def test_sign_in_died_reading_the_guest_s_own_class(self):
+        # The crash that says the flow was working: `SignInHubActivity` is the guest's
+        # own activity, running, and the class it could not find is in the guest's APK.
+        detail = findings(self.checks["crash"])
+        self.assertIn("ClassNotFoundException", detail)
+
+    def test_a_stale_hide_is_visible_as_the_reason_an_app_saw_no_google(self):
+        # Standoff 2. The mark was earned under a build with no answer for the refusal
+        # and outlived it, which is why marks carry a generation now.
+        self.assertIn("AUTO_HIDDEN_AFTER_CRASH", notes(self.checks["google"]))
+        self.assertIn("com.axlebolt.standoff2", findings(self.checks["google"]))
 
 
 HEALTHY = """\

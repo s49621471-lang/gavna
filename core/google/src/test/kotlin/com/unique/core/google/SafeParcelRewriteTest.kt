@@ -198,6 +198,32 @@ class SafeParcelRewriteTest {
         assertThat(SafeParcelRewrite.locate(-4, bytes.size, readerOver(bytes))).isNull()
     }
 
+    @Test fun `a string field's size is predicted exactly, so probing can be skipped`() {
+        // The prediction is what lets the rewrite skip fields that cannot hold the
+        // package name — including ones that overlap a binder, where reading makes the
+        // platform log a protected-data warning for every attempt.
+        for (value in listOf("a", "ab", "abc", "com.unique", "com.gordey.standarling", "")) {
+            val bytes = Writer().obj { stringField(4, value) }.bytes()
+            val located = SafeParcelRewrite.locate(0, bytes.size, readerOver(bytes))!!
+            assertThat(located.fields.single().size)
+                .isEqualTo(SafeParcelRewrite.stringFieldSize(value))
+        }
+    }
+
+    @Test fun `a differently sized field is never mistaken for the package name`() {
+        val bytes = request("com.gordey.standarling")
+        val located = SafeParcelRewrite.locate(
+            SafeParcelRewrite.candidateOffsets(bytes.size, readerOver(bytes)).single(),
+            bytes.size,
+            readerOver(bytes),
+        )!!
+        val expected = SafeParcelRewrite.stringFieldSize("com.gordey.standarling")
+        assertThat(located.fields.count { it.size == expected }).isEqualTo(1)
+        // The two int fields are four bytes and can never match a name of any length
+        // that would round to four, since a string field is at least eight.
+        assertThat(SafeParcelRewrite.stringFieldSize("")).isAtLeast(8)
+    }
+
     @Test fun `the header encoders and decoders agree`() {
         for (id in listOf(1, 4, 255, 20293, 0xffff)) {
             assertThat(SafeParcelRewrite.fieldId(SafeParcelRewrite.variableFieldHeader(id)))

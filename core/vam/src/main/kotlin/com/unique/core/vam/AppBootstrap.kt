@@ -867,10 +867,26 @@ object AppBootstrap {
         }
     }
 
-    /** The one word this instance's visibility file holds, or null when it holds none. */
+    /**
+     * The one word this instance's visibility file holds, or null when it holds none.
+     *
+     * A mark left by a build whose mechanism this one has replaced is deleted as well as
+     * ignored: it is not evidence about this build, and leaving it would mean reading and
+     * discarding it on every launch for the life of the instance.
+     */
     private fun readVisibilityOverride(file: File): GoogleStackVisibility.Override? =
         runCatching {
-            GoogleStackVisibility.parseOverride(if (file.isFile) file.readText() else null)
+            val parsed =
+                GoogleStackVisibility.parseOverride(if (file.isFile) file.readText() else null)
+            if (parsed == GoogleStackVisibility.Override.STALE_AUTO_HIDE) {
+                runCatching { file.delete() }
+                Diagnostics.info(
+                    DiagChannel.LAUNCH, "GOOGLE_STACK_MARK_DISCARDED",
+                    mapOf("file" to file.name, "generation" to
+                        GoogleStackVisibility.IDENTITY_GENERATION.toString()),
+                )
+            }
+            parsed
         }.getOrNull()
 
     /**

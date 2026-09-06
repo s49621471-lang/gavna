@@ -976,6 +976,35 @@ the certificate half. Root or a patched ROM. It is a real project and it is not 
 | **Google sign-in.** `DEVELOPER_ERROR` in the ninth run, on the user's own device | Not fixed, and now stated exactly rather than as "requires in-space GMS": the bind succeeds, the identity check does not, and the reason is a signature check made by another process against a record UNIQUE has no part in. The analyzer names it when it sees it, so it stops looking like a bug in the app |
 | **The file manager was inside an app's settings.** It is the virtual device's file manager, not one app's | It is a built-in app on the home screen, first in the grid, with no *Remove* — deleting the only thing that can put a file into the space would lock the user out of it. Opened there it starts at the list of apps; opened from an app it starts inside that app. Same screen, same tree, two heights |
 
+### The tenth run: the rewrite works, and it uncovered three things behind it
+
+The calling-package rewrite went in and did its job: **17 binds wrapped, 17 requests sent
+under UNIQUE's own name**, and the expansion-file check green for the first time in five
+runs. The user's report — *"Google sign-in still does not work in apps and games, and
+Standoff 2 asks me to install Play services; you did not finish"* — is fair, and the log
+says exactly why. Three separate things were behind the one that was fixed.
+
+| Found | Fixed by |
+|---|---|
+| **Firebase Analytics was still refused.** The wrap allowed only `IGmsServiceBroker`, on the reasoning that it is the interface `getRemoteService` uses. Analytics does not use it: it binds `AppMeasurementService` directly and sends the package inside an `AppMetadata`. So the broker was wrapped seventeen times and `E FA: Task exception while flushing queue: SecurityException: Unknown calling package name` appeared anyway | The gate is now the actual condition — *is this a bind to Play services* — rather than a list of interfaces to be extended once per discovery. The rewrite decides for itself whether there is anything to do: it only replaces a field whose value is exactly the guest's package, and leaves the parcel untouched otherwise, so a request carrying no calling package passes through whatever interface it belongs to |
+| **Google Sign-In got further than it ever had, and died in UNIQUE's own plumbing.** Not at Google — `SignInHubActivity` launched *inside the guest* and crashed on its first line: `BadParcelableException: ClassNotFoundException when unmarshalling: com.google.android.gms.auth.api.signin.internal.SignInConfiguration`, from `Bundle.getParcelable` in `onCreate`. The class is in the guest's **own APK**. An `Intent` crosses a process boundary as a parcelled `Bundle` that is not read until something asks, and whatever loader it carries then has to find the class — inside a `:vappN` that was UNIQUE's, which knows nothing about the guest | `LaunchInterceptor.adoptGuestClassLoader`, on every intent UNIQUE hands a guest and on every activity result. Not a Google fix: **any** app passing its own `Parcelable` through an `Intent` hits this, and this is the first flow that happened to prove it |
+| **Standoff 2 asked for Play services to be installed — from a build in which Google worked.** Its instance still carried the automatic-hide mark written when it crashed under the *previous* build. A recorded hide is a statement about what happened under a particular mechanism, and it outlived the mechanism | Marks carry the generation that wrote them (`GoogleStackVisibility.IDENTITY_GENERATION`). A mark from an older one is discarded *and deleted* — ignoring it alone would mean re-reading and re-discarding it on every launch for the life of the instance. A hand-written `hide` or `show` is a person's decision, not evidence about a build, so it never goes stale |
+| **`Attempt to read from protected data in Parcel` ×6 before every rewrite.** UNIQUE's own noise: probing each field for the package name sometimes read at a position holding a binder or a descriptor. Harmless — the read returns nothing and the walk carries on — and six of them per rewrite in a log a person has to read | A size check first. `Parcel.writeString` uses a length that is exactly predictable, so a field of the wrong size cannot hold the name and is never probed |
+
+And one fix to the analyzer that the fixture forced. The `platform` check looked for the
+stack frame naming a refused interface within 30 lines of the exception — but logcat
+interleaves every thread into one file, so that was really a window of *how busy the
+device was*. It now walks only lines from the thread that raised the exception, which is
+what the window was always meant to mean.
+
+**Where Google sign-in stands after this.** The `DEVELOPER_ERROR` in the ninth run is
+real and it is the answer for a request that reaches Google as UNIQUE. But the tenth run
+shows a flow that never reached Google at all — it died in UNIQUE — so the earlier
+conclusion was drawn from one path and stated as though it covered every path. With the
+loader fixed, sign-in gets further than it has, and what it does next is a measurement
+that has not been taken yet. Which is the answer this project keeps having to re-learn:
+the log decides, not the reasoning.
+
 ### What the sixth run settled about Google sign-in
 
 The Google layer used to answer `PASSTHROUGH` for `SIGN_IN` whenever an app declared an

@@ -51,6 +51,33 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
+The rewrite from the last build worked — your log shows 17 requests going out under a
+name Google accepts, and the game-files message is gone. What it uncovered is three more
+things that were hidden behind it.
+
+- **Standoff 2 asked you to install Play services from a build where Google works.** Its
+  copy still carried a note written when it crashed under the *older* build: "hide Play
+  services from this app". That note outlived the build it described. Notes now record
+  which build wrote them, and one from an older build is thrown away and deleted —
+  Standoff 2 will see Play services again on its next launch, and you do not need to
+  re-add it.
+- **Firebase Analytics was still being refused.** It does not go through the connection
+  the last build corrected; it talks to a different Google service directly. Every Play
+  services connection is corrected now, not one kind of them.
+- **Google sign-in got further than it ever has, and crashed in my code, not Google's.**
+  The sign-in screen *launched inside the app* and died on its first line, reading a
+  setting it had written itself one step earlier. The data was there; nothing could find
+  the class that reads it, because the app's own code loader was not attached to the
+  message carrying it. That is fixed, and it is not a Google fix — any app passing its
+  own data through an app-to-app message hit the same thing.
+
+**What I told you last time about sign-in was drawn from one path and stated as if it
+covered all of them.** The `DEVELOPER_ERROR` is real for a request that reaches Google as
+UNIQUE. But this crash never reached Google at all. Try signing in on this build and send
+the log: what happens now is something nobody has measured, me included.
+
+## What changed one run ago
+
 - **Google Play services actually works now.** There was one refusal behind every Google
   failure this project has ever had: Play services checks that the calling app's name
   belongs to the calling process's uid, and inside UNIQUE the uid is UNIQUE's while the
@@ -74,7 +101,7 @@ release, and an app signed with a real key later will not install over them.
   picker reaches, several at once. It is still reachable from an app's own Storage
   section, which opens it directly inside that app.
 
-## What changed one run ago
+## What changed two runs ago
 
 Six things were reported. Two of them were mistakes of mine, one was a request, and the
 log had all of them.
@@ -109,7 +136,7 @@ log had all of them.
   services resolves the caller to UNIQUE, so a token comes back for UNIQUE and not for the
   app. Only Play services running *inside* the space can answer that, and it is not built.
 
-## What changed two runs ago
+## What changed three runs ago
 
 That log was answered with two words — *"nothing changed"* — and a screenshot of a
 notification asking to install Google Play services. That was fair. The build was
@@ -136,7 +163,7 @@ installed and its new code was running; the code was wrong.
   passed on the log that produced that notification; this is the seventeenth, and it is
   asserted against that same log so the rule cannot come back quietly.
 
-## What changed three runs ago
+## What changed four runs ago
 
 Six apps launched in that run and three of them died seconds later, all of the same thing.
 This build answers everything that log reported.

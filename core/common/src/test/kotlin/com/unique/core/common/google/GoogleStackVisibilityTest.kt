@@ -56,6 +56,40 @@ class GoogleStackVisibilityTest {
         }
     }
 
+    @Test fun `a mark from an older build is discarded, not obeyed`() {
+        // Standoff 2, in the tenth run. It had crashed under a build with no answer for
+        // the refusal, the mark was written, and the next build — which rewrites the
+        // calling package so the refusal cannot happen — read the mark and told the app
+        // there was no Play services. The user saw "install Google Play services" from a
+        // build in which Google worked.
+        val stale = GoogleStackVisibility.parseOverride("auto-hide")
+        assertThat(stale).isEqualTo(GoogleStackVisibility.Override.STALE_AUTO_HIDE)
+        val decision = GoogleStackVisibility.decide(stale)
+        assertThat(decision.hidden).isFalse()
+        assertThat(decision.reason)
+            .isEqualTo(GoogleStackVisibility.Reason.STALE_MARK_DISCARDED)
+    }
+
+    @Test fun `a mark from a build one generation older is also discarded`() {
+        assertThat(GoogleStackVisibility.parseOverride("auto-hide@1"))
+            .isEqualTo(GoogleStackVisibility.Override.STALE_AUTO_HIDE)
+    }
+
+    @Test fun `the marker this build writes carries this build's generation`() {
+        // The two are derived from one constant, and this is what says so: a marker and a
+        // reader that disagree switch the recovery off silently in one direction and make
+        // it permanent in the other.
+        assertThat(GoogleStackVisibility.AUTO_HIDE_MARKER)
+            .endsWith("@${GoogleStackVisibility.IDENTITY_GENERATION}")
+    }
+
+    @Test fun `a hand-written hide is obeyed whatever generation wrote it`() {
+        // A person's decision is not evidence about a build, so it does not go stale.
+        assertThat(GoogleStackVisibility.decide(
+            GoogleStackVisibility.parseOverride("hide"),
+        ).hidden).isTrue()
+    }
+
     @Test fun `a typo leaves the default alone rather than deciding anything`() {
         assertThat(GoogleStackVisibility.parseOverride("hied")).isNull()
         assertThat(GoogleStackVisibility.parseOverride("")).isNull()

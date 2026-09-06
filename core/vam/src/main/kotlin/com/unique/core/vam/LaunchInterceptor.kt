@@ -308,8 +308,12 @@ object LaunchInterceptor {
      */
     private fun observePermissionResult(msg: Message) {
         val transaction = msg.obj ?: return
-        if (AppBootstrap.current == null) return
+        val ready = AppBootstrap.current ?: return
         for (intent in resultIntents(transaction)) {
+            // A result carries the guest's own Parcelables as often as a launch does —
+            // an activity that returns its own configuration object, for one — and the
+            // loader has to be set before anything reads it. See adoptGuestClassLoader.
+            adoptGuestClassLoader(intent, ready)
             val names = intent.getStringArrayExtra(EXTRA_PERMISSION_NAMES) ?: continue
             val results = intent.getIntArrayExtra(EXTRA_PERMISSION_RESULTS) ?: continue
             if (names.size != results.size) {
@@ -343,6 +347,46 @@ object LaunchInterceptor {
                     ),
                 )
             }
+        }
+    }
+
+    /**
+     * Gives an `Intent`'s extras the guest's own class loader.
+     *
+     * ## The crash this is for
+     *
+     * An `Intent` crosses a process boundary as a parcelled `Bundle` that is not read
+     * until something asks for a value. Whatever loader the `Bundle` is carrying at that
+     * moment is the one that has to find the class — and inside a `:vappN` the default is
+     * UNIQUE's, which knows nothing about the guest's APK. So a guest that puts one of
+     * *its own* `Parcelable` classes into an `Intent` gets it back as this:
+     *
+     * ```
+     * BadParcelableException: ClassNotFoundException when unmarshalling:
+     *     com.google.android.gms.auth.api.signin.internal.SignInConfiguration
+     *   at android.os.Parcel.readParcelableCreatorInternal
+     *   at android.os.Bundle.getParcelable
+     *   at …signin.internal.SignInHubActivity.onCreate
+     * FATAL EXCEPTION: main
+     * ```
+     *
+     * That is Google Sign-In. The flow had started correctly, the activity had launched
+     * inside the guest, and it died reading the configuration it had written itself one
+     * step earlier. The class is in the guest's own APK — the app bundles
+     * `play-services-auth` — so nothing was missing except the loader that could see it.
+     *
+     * It is not a Google-specific bug and the fix is not Google-specific either: any app
+     * passing its own `Parcelable` through an `Intent` hits exactly this, which is why it
+     * is applied to every intent UNIQUE hands to a guest rather than to a special case.
+     *
+     * Setting the loader does not unparcel anything; it only decides who will be asked
+     * when something finally does.
+     */
+    private fun adoptGuestClassLoader(intent: Intent, ready: AppBootstrap.Result.Ready) {
+        runCatching {
+            intent.setExtrasClassLoader(ready.application.classLoader)
+        }.onFailure {
+            report("INTENT_CLASSLOADER_UNSET", mapOf("error" to it.toString()))
         }
     }
 
@@ -588,6 +632,8 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_SLOT)
             // UNIQUE's stub identity comes off here; the guest gets its own back.
             VirtualLaunchIntent.restoreGuestIdentity(this, stubIntent)
+            // And so does the loader that can read what is inside it. See below.
+            adoptGuestClassLoader(this, ready)
         }
 
         intentField.set(item, realIntent)

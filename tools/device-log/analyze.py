@@ -522,7 +522,16 @@ def check_platform_refusals(run: Run) -> Check:
 
         interface = method = ""
         entry = ""
-        for candidate in run.lines[i : i + 30]:
+        # Only lines from the thread that raised it. A stack trace is printed by one
+        # thread in one burst, but logcat interleaves every other thread's output into
+        # the same file — so a fixed window of *lines* is really a window of "how busy
+        # was the device", and on a busy one the frame that names the interface falls
+        # out of it. Filtering by tid makes the window mean what it was meant to mean.
+        same_thread = [
+            candidate for candidate in run.lines[i : i + 400]
+            if candidate.tid == line.tid or candidate.tid is None
+        ][:40]
+        for candidate in same_thread:
             if not interface:
                 m = _STUB_PROXY.search(candidate.message)
                 if m:

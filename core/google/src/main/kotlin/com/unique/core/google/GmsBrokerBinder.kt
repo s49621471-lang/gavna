@@ -73,10 +73,17 @@ class GmsBrokerBinder(
             }
             for (offset in SafeParcelRewrite.candidateOffsets(size, readInt)) {
                 val located = SafeParcelRewrite.locate(offset, size, readInt) ?: continue
+                val expected = SafeParcelRewrite.stringFieldSize(guestPackage)
                 val targets = located.fields.filter { field ->
-                    data.setDataPosition(field.dataStart)
-                    runCatching { data.readString() }.getOrNull() == guestPackage &&
-                        data.dataPosition() == field.end
+                    // Size first: a field that is not the right length cannot hold this
+                    // string, and skipping it avoids reading at a position that may
+                    // overlap a binder or a descriptor.
+                    field.size == expected &&
+                        run {
+                            data.setDataPosition(field.dataStart)
+                            runCatching { data.readString() }.getOrNull() == guestPackage &&
+                                data.dataPosition() == field.end
+                        }
                 }
                 if (targets.isEmpty()) continue
                 return rebuild(data, located, targets)
@@ -147,25 +154,35 @@ class GmsBrokerBinder(
     }
 
     companion object {
-        /** Interface descriptors whose calls carry a calling package Play services checks. */
-        private val BROKER_DESCRIPTORS = setOf(
-            "com.google.android.gms.common.internal.IGmsServiceBroker",
-        )
-
         /** The packages that answer a Play services bind. */
         private val GOOGLE_PACKAGES = setOf("com.google.android.gms", "com.google.android.gsf")
 
         /**
-         * Wraps [binder] when it is Play services' service broker, otherwise returns it.
+         * Wraps [binder] when the bind is to Play services, otherwise returns it.
          *
-         * Two checks in order, and the order is about cost. `servicePackage` is free and
-         * rules out every bind that is not to Google — which is nearly all of them —
-         * before the descriptor is asked for, because reading a descriptor from a remote
-         * binder is a synchronous transaction and this runs on the app's main thread.
+         * ## Why the service package decides and the interface does not
          *
-         * The descriptor is what actually decides, though: an app reaches the broker
-         * through several different intents and the descriptor is the one thing every
-         * route has in common.
+         * The first version of this allowed only `IGmsServiceBroker`, on the reasoning
+         * that it is the interface `getRemoteService` goes through. A device log showed
+         * what that misses: the broker was wrapped seventeen times and Firebase Analytics
+         * was refused anyway, because it does not use the broker at all —
+         *
+         * ```
+         * SERVICE_INTENT_CROSS_APP action=com.google.android.gms.measurement.START
+         * GMS_BROKER_WRAPPED descriptor=…IGmsServiceBroker package=com.gordey.standarling
+         * E FA: Task exception while flushing queue:
+         *     SecurityException: Unknown calling package name 'com.gordey.standarling'.
+         * ```
+         *
+         * — it binds `AppMeasurementService` directly and sends the package inside an
+         * `AppMetadata`. There is no reason to expect that to be the last such service,
+         * and an allowlist of interfaces has to be extended once per discovery.
+         *
+         * So the gate is "is this a bind to Play services", which is the actual condition,
+         * and the rewrite decides for itself whether there is anything to do: it only
+         * changes a field whose value is exactly the guest's package name, and leaves the
+         * parcel untouched when there is none. A request that carries no calling package
+         * passes through unmodified whatever interface it belongs to.
          */
         fun wrapIfBroker(
             binder: IBinder?,
@@ -176,11 +193,15 @@ class GmsBrokerBinder(
             if (binder == null || guestPackage == hostPackage) return binder
             if (servicePackage !in GOOGLE_PACKAGES) return binder
             if (binder is GmsBrokerBinder) return binder
-            val descriptor = runCatching { binder.interfaceDescriptor }.getOrNull() ?: return binder
-            if (descriptor !in BROKER_DESCRIPTORS) return binder
             Diagnostics.info(
                 DiagChannel.LAUNCH, "GMS_BROKER_WRAPPED",
-                mapOf("descriptor" to descriptor, "package" to guestPackage),
+                mapOf(
+                    "descriptor" to (
+                        runCatching { binder.interfaceDescriptor }.getOrNull() ?: "?"
+                        ),
+                    "package" to guestPackage,
+                    "service" to servicePackage.orEmpty(),
+                ),
             )
             return GmsBrokerBinder(binder, guestPackage, hostPackage)
         }

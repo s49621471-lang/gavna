@@ -38,6 +38,10 @@ class LogLine:
     tag: str
     message: str
     pid: Optional[int] = None
+    # The thread that wrote the line. A stack trace is one thread's burst, and logcat
+    # interleaves every other thread into the same file, so this is what tells a
+    # continuation apart from an unrelated line that merely follows it.
+    tid: Optional[int] = None
     raw: str = ""
 
 
@@ -105,10 +109,11 @@ def parse_log(text: str) -> List[LogLine]:
             continue
         m = _TAGGED.match(raw)
         if m:
-            pid = None
+            pid = tid = None
             pm = _PID.search(raw)
             if pm:
                 pid = int(pm.group(1))
+                tid = int(pm.group(2))
             out.append(
                 LogLine(
                     lineno=i,
@@ -116,6 +121,7 @@ def parse_log(text: str) -> List[LogLine]:
                     tag=m.group("tag").strip(),
                     message=m.group("msg"),
                     pid=pid,
+                    tid=tid,
                     raw=raw,
                 )
             )

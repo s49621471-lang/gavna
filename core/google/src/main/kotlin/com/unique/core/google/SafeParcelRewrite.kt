@@ -150,6 +150,27 @@ internal object SafeParcelRewrite {
     }
 
     /**
+     * The number of bytes `Parcel.writeString` uses for [value].
+     *
+     * An int for the length, then UTF-16 with a terminator, padded to a four-byte
+     * boundary. Used to skip fields that cannot possibly hold the string being looked
+     * for — which matters for more than speed: probing a field that happens to overlap a
+     * binder or a file descriptor makes the platform log
+     *
+     * ```
+     * Attempt to read from protected data in Parcel 0xb400007b7b160940
+     * ```
+     *
+     * once per probe. Harmless, since the read returns nothing and the walk carries on,
+     * but six of those before every rewrite is noise in a log someone has to read, and a
+     * size check removes almost all of them for the cost of an arithmetic expression.
+     */
+    fun stringFieldSize(value: String): Int {
+        val chars = (value.length + 1) * 2
+        return 4 + chars + ((4 - chars % 4) % 4)
+    }
+
+    /**
      * The offsets at which a `SafeParcelWriter` object header appears in [0, limit).
      *
      * A scan rather than a parse of the argument list, because the arguments differ per

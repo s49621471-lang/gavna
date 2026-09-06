@@ -83,6 +83,9 @@ object GoogleStackVisibility {
 
         /** The user, or a support session, wrote the answer into the instance's file. */
         OVERRIDDEN,
+
+        /** A hide recorded by a build whose mechanism this one has replaced. */
+        STALE_MARK_DISCARDED,
     }
 
     data class Decision(
@@ -98,7 +101,39 @@ object GoogleStackVisibility {
     }
 
     /** What the instance's own file says, when it says anything. */
-    enum class Override { HIDE, SHOW, AUTO_HIDE }
+    enum class Override {
+        HIDE,
+        SHOW,
+        AUTO_HIDE,
+
+        /**
+         * An automatic hide recorded by a build whose mechanism is gone.
+         *
+         * Distinguished from "no override" rather than folded into it, because the file
+         * should be deleted as well as ignored — leaving it would mean re-reading and
+         * re-discarding it on every launch for the life of the instance.
+         */
+        STALE_AUTO_HIDE,
+    }
+
+    /**
+     * Which mechanism was in place when an automatic hide was recorded.
+     *
+     * A recorded hide is a statement about what happened *under a particular build*, and
+     * it went stale the moment the build changed. Standoff 2 is the case that made this
+     * necessary: it died of the refusal under a build that had no answer for it, the mark
+     * was written, and the next build — which rewrites the calling package so the refusal
+     * never happens — still read the mark and told the app there was no Play services.
+     * The user saw "install Google Play services" from a build in which Google worked.
+     *
+     * So a mark carries the generation that wrote it, and a mark from an older one is not
+     * evidence about this build. Bump this whenever the way a guest's identity reaches
+     * Play services changes.
+     *
+     * 1. Play services hidden from a guest that had crashed once.
+     * 2. `GmsBrokerBinder` rewrites the calling package, so the crash should not recur.
+     */
+    const val IDENTITY_GENERATION = 2
 
     /**
      * Reads the one word an instance's visibility file may contain.
@@ -106,15 +141,18 @@ object GoogleStackVisibility {
      * Unrecognised text is `null` rather than an error: this file is meant to be edited
      * by hand, and a typo should leave the default in place rather than decide anything.
      */
-    fun parseOverride(text: String?): Override? = when (text?.trim()?.lowercase()) {
+    fun parseOverride(text: String?): Override? = when (val word = text?.trim()?.lowercase()) {
+        null -> null
         "hide", "hidden" -> Override.HIDE
         "show", "visible" -> Override.SHOW
-        "auto-hide", "auto_hide", "autohide" -> Override.AUTO_HIDE
-        else -> null
+        // An automatic hide counts only if this build's mechanism is the one that
+        // recorded it. Anything older is a fact about a build that no longer exists.
+        AUTO_HIDE_MARKER -> Override.AUTO_HIDE
+        else -> if (word.startsWith("auto-hide")) Override.STALE_AUTO_HIDE else null
     }
 
-    /** The word [decide] will read back for an automatic hide. */
-    const val AUTO_HIDE_MARKER = "auto-hide"
+    /** The word [decide] will read back for an automatic hide made by this build. */
+    const val AUTO_HIDE_MARKER = "auto-hide@$IDENTITY_GENERATION"
 
     fun decide(override: Override?): Decision = when (override) {
         Override.HIDE -> Decision(
@@ -129,6 +167,11 @@ object GoogleStackVisibility {
             true, Reason.AUTO_HIDDEN_AFTER_CRASH,
             "this instance died of \"$REFUSED_CALLING_PACKAGE\" once; Play services is " +
                 "hidden from it so its SDK takes the path it has for a phone without one",
+        )
+        Override.STALE_AUTO_HIDE -> Decision(
+            false, Reason.STALE_MARK_DISCARDED,
+            "this instance was hidden from Play services by an older build; the calling " +
+                "package is rewritten now, so the refusal that caused it should not recur",
         )
         null -> Decision(
             false, Reason.VISIBLE_BY_DEFAULT,
