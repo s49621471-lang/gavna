@@ -50,13 +50,68 @@ class GmsBrokerBinder(
 
     override fun transact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         val rewritten = runCatching { rewrite(data) }.getOrNull()
-            ?: return delegate.transact(code, data, reply, flags)
+            ?: return runCatching { reportUnrewritten(code, data) }
+                .let { delegate.transact(code, data, reply, flags) }
         return try {
             delegate.transact(code, rewritten, reply, flags)
         } finally {
             rewritten.recycle()
         }
     }
+
+    /**
+     * Says when a request carries the guest's name in a shape the rewrite cannot reach.
+     *
+     * Three passes have now been made at `Unknown calling package name`, each fixing a
+     * real route and each followed by a log with the same message on a different one. The
+     * pattern is not that the fixes were wrong; it is that "the rewrite did not fire" and
+     * "the rewrite fired and something else refused" have looked identical in the log, so
+     * every round had to start by guessing which had happened.
+     *
+     * This ends that. When [rewrite] declines, the parcel is scanned for the guest's
+     * package as a *bare* string — one written straight into the transaction rather than
+     * as a field of a `SafeParcel` object — and the interface and transaction code are
+     * named. A log that carries this line says the route; one that does not says the
+     * refusal came from somewhere the calling package never travelled, which is a
+     * different investigation.
+     *
+     * Deliberately **not** rewritten here, and that is the point rather than an omission.
+     * Replacing a bare string changes the byte length of everything after it, and a
+     * parcel gives no way to know whether the string sits inside a length-prefixed
+     * container — a `Bundle`, a typed array — whose header would then be wrong. A
+     * corrupted request to Play services is a worse failure than a refused one, and it is
+     * one that would present as something else entirely. The position is reported so the
+     * next fix can be made against a known shape instead of a fourth guess.
+     *
+     * One line per interface and code, because this runs on every transaction.
+     */
+    private fun reportUnrewritten(code: Int, data: Parcel) {
+        val descriptor = runCatching { delegate.interfaceDescriptor }.getOrNull() ?: "?"
+        if (!reported.add("$descriptor#$code")) return
+        val offsets = SafeParcelRewrite.findBareString(
+            data.dataSize(),
+            { at -> data.setDataPosition(at); data.readInt() },
+            { at ->
+                data.setDataPosition(at)
+                runCatching { data.readString() }.getOrNull()
+            },
+            guestPackage,
+        )
+        if (offsets.isEmpty()) return
+        Diagnostics.warn(
+            DiagChannel.LAUNCH, "GMS_PACKAGE_NOT_REWRITTEN",
+            mapOf(
+                "descriptor" to descriptor,
+                "code" to code.toString(),
+                "package" to guestPackage,
+                "bareAt" to offsets.joinToString("+"),
+                "size" to data.dataSize().toString(),
+                "detail" to "the name is in this request but not as a SafeParcel field",
+            ),
+        )
+    }
+
+    private val reported = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /**
      * A copy of [data] with every top-level field equal to the guest's package name

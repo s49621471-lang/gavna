@@ -4,7 +4,9 @@ Two APKs, both **arm64-v8a only**, both signed with the same key — so either c
 installed over the other. Android 12 or newer (`minSdk 31`), no root, no unlocked
 bootloader.
 
-> **This build needs one uninstall, and it is the last one that will.**
+> **The build before this one needed one uninstall. This one installs over it** — same
+> key, instances and data intact. If you skipped that build, the paragraph below still
+> applies to you once.
 >
 > Every build before it was signed with a key the *build machine* generated for itself,
 > so two builds made in two sessions had two different keys — and Android's error for
@@ -53,7 +55,8 @@ differently from the other one, that difference is the finding.
 ## Signing
 
 Both are signed with the repository's **test key** (`CN=UNIQUE Test Key`, SHA-256
-`6086840c82b590eb8b0e1b35578844f973f056fe08fc2577e110e739cb3ba6d3`). It lives in
+`6086840c82b590eb8b0e1b35578844f973f056fe08fc2577e110e739cb3ba6d3`), the same key as the
+build before this one. It lives in
 `app/debug.keystore` so that every build from here on installs over the last one with your
 instances intact — see the warning at the top for why that changed, and for the one
 uninstall it costs you now. It is a test-signing arrangement and is marked as such: these
@@ -62,7 +65,31 @@ install over them.
 
 ## What changed since the last phone run
 
-**Your log has the best news this project has had.** Standoff 2 ran. Not "launched" —
+**I read the game.** Two passes were spent guessing at what Standoff 2 checks; this time
+the check itself was found, in the shipping build, and it is not what either of us assumed.
+[`docs/STANDOFF2.md`](../docs/STANDOFF2.md) is the whole of it. The short version:
+
+- There are **two** "virtual space" messages, not one. One is shown in-game by the game's
+  own anti-cheat; the other is a **refusal from Axlebolt's server** at login.
+- The server one is decided from a report the game builds and **sends as part of the Google
+  sign-in request itself**. It contains the APK's path, its hash, its certificate, a file
+  and library list, a process list, and it is signed with a key the game generates — so it
+  cannot be edited on the way past. Signing in and being told this is a virtual space are
+  the same event, which is why they have both been failing together.
+- What the game reads to fill that report in is **four getters**: `sourceDir` (4 times),
+  `getApplicationInfo` (3), `getPackageCodePath` (2), `nativeLibraryDir` (1). Inside UNIQUE
+  all four answer with a path containing `com.unique`, and no installed copy of the game
+  could produce any of them.
+- It reads **no** `/proc/self/maps`, no process list, no emulator check. Which means the
+  thing I built last time closes a real hole and closes nothing *this* game uses. I would
+  rather say that here than let it look like progress it is not.
+
+Closing it is one specific change — make those four values look like an installed app's,
+and make the paths still work — and it is the biggest change this engine has left, because
+the guest's Java file access has to be redirected too. It is not going into the same build
+as three other fixes; a log that then went wrong would not say which one did it.
+
+**Your previous log also had the best news this project has had.** Standoff 2 ran. Not "launched" —
 *ran*: Unity came up on the real GPU, the game read its own expansion file out of its
 copy's storage, sound loaded, Firebase and the analytics SDKs started, and it drew its
 login screen at 2400×1080 and took your tap on it. Every version of the project's own
@@ -105,6 +132,24 @@ What was new is underneath, and it is worse than the crash:
   If the notice still appears, the log will now say whether this vector was closed —
   UNIQUE checks its own work at startup and records the result — and that narrows the
   next step to one of those four.
+**And three things this build fixes, all from your newest log.**
+
+- **The Google sign-in crash is fixed — properly this time.** The fix I shipped last time
+  could not have worked, and your log proved it by crashing in exactly the same place. An
+  intent's data is unpacked lazily, and the code loader that will be used is decided at the
+  **first read**, not when you name it — and UNIQUE always reads first, on the line above.
+  So naming the right one afterwards changed nothing. It is now a loader that is installed
+  before anything reads, and asks who the app is at the moment it is needed.
+- **The `/proc` cover had a hole and told me so itself.** `leaked=2` — thirteen of fifteen
+  entries hidden and two not, because Android spells one directory two ways and I had only
+  covered one. That whole mechanism exists so the log says this instead of me finding out
+  from a screenshot, and it worked on the first phone that ran it.
+- **Firebase analytics is still refused, and I stopped guessing at it.** Three passes, three
+  real fixes, three logs with the same message on a different route — because the log could
+  not tell "my fix did not fire" from "my fix fired and something else refused". It can now:
+  the next log will name the exact interface, call and byte offset. I am not shipping a
+  fourth guess at it.
+
 - **MT Manager still does not start**, and I know one more thing about why. Its protection
   library `libmtprotect.so` **loads fine**, and 58 milliseconds later the thing it was
   supposed to provide is not there. It did not fail to load; it looked around and refused.
@@ -376,14 +421,13 @@ build with the `/proc` view in it. Everything else — hardware Vulkan, WebView 
 Play Integrity, Play Billing, Play Games — is still `NOT_TESTED` or `UNSUPPORTED` and stays
 that way until a run says otherwise.
 
-What would settle the remaining question fastest: play far enough to reach the notice, or
-far enough to be sure it is gone, and send the log either way. Two lines in it decide the
-next step —
+What would help most from the next log, in order:
 
-```
-PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 … leaked=0
-```
-
-means the file this build rewrites is clean, and the notice (if it appears) is coming from
-one of the four routes listed above rather than from `/proc/self/maps`. Anything other than
-`leaked=0` names the folder a rule is missing for, which is a ten-minute fix.
+1. **`PROC_VIEW_INSTALLED … leaked=0`** — confirms the hole your last log found is closed.
+   Anything else names the folder still missing a rule.
+2. **Whether Google sign-in gets past the crash** and what it does instead. It should now
+   reach Google rather than dying in UNIQUE. What Google then answers is a measurement
+   nobody has taken; and per `docs/STANDOFF2.md`, the game attaches its environment report
+   to that same request, so this is also where the virtual-space refusal would come from.
+3. **`GMS_PACKAGE_NOT_REWRITTEN`**, if it appears — that line names the last Google route
+   that is still refused, precisely enough to fix without guessing.

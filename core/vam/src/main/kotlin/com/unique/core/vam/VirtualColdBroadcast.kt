@@ -25,7 +25,13 @@ object VirtualColdBroadcast {
             )
             return
         }
+        // Extras written by the sender are unparcelled lazily, and against whatever loader
+        // the Bundle carries at the *first read of any key* — which cannot see a Parcelable
+        // the guest declared, and cannot be changed afterwards. Named before the payload is
+        // touched, which is what a live delivery gets for free. See GuestParcelables.
+        GuestParcelables.adopt(stubIntent)
         val payload = extractBroadcast(stubIntent)
+        GuestParcelables.adopt(payload)
         if (payload == null) {
             Diagnostics.error(
                 DiagChannel.PROCESS, "COLD_BROADCAST_NO_PAYLOAD",
@@ -52,13 +58,6 @@ object VirtualColdBroadcast {
                 )
                 return
             }
-        }
-
-        // Extras written by the sender are unparcelled lazily, and by default against the
-        // system class loader - which cannot see a Parcelable the guest declared. Naming
-        // the guest's loader here is what a live delivery gets for free.
-        runCatching {
-            payload.setExtrasClassLoader(ready.application.classLoader)
         }
 
         val delivered = VirtualReceiverRegistry.deliverColdStart(ready, receiverClass, payload)

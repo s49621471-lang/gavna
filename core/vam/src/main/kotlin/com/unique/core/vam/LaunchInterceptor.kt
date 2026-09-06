@@ -232,6 +232,8 @@ object LaunchInterceptor {
         val data = msg.obj ?: return
         val intentField = fieldOfType(data.javaClass, Intent::class.java) ?: return
         val stubIntent = intentField.get(data) as? Intent ?: return
+        // Before the first read of any extra, never after it. See GuestParcelables.
+        GuestParcelables.adopt(stubIntent)
         val params = VirtualLaunchParams.from(stubIntent) ?: return
         // An out-of-band process start must reach the stub with its extras intact: the
         // stub is the thing that runs, and it needs the parameters to know what to be. A
@@ -248,6 +250,7 @@ object LaunchInterceptor {
 
     /** Restores the guest's own component and removes UNIQUE's extras. */
     private fun unwrapServiceIntent(stubIntent: Intent, className: String): Intent {
+        GuestParcelables.adopt(stubIntent)
         val params = VirtualLaunchParams.from(stubIntent)
         return Intent(stubIntent).apply {
             component = ComponentName(params?.packageName ?: className.substringBeforeLast('.'), className)
@@ -310,10 +313,6 @@ object LaunchInterceptor {
         val transaction = msg.obj ?: return
         val ready = AppBootstrap.current ?: return
         for (intent in resultIntents(transaction)) {
-            // A result carries the guest's own Parcelables as often as a launch does —
-            // an activity that returns its own configuration object, for one — and the
-            // loader has to be set before anything reads it. See adoptGuestClassLoader.
-            adoptGuestClassLoader(intent, ready)
             val names = intent.getStringArrayExtra(EXTRA_PERMISSION_NAMES) ?: continue
             val results = intent.getIntArrayExtra(EXTRA_PERMISSION_RESULTS) ?: continue
             if (names.size != results.size) {
@@ -351,46 +350,6 @@ object LaunchInterceptor {
     }
 
     /**
-     * Gives an `Intent`'s extras the guest's own class loader.
-     *
-     * ## The crash this is for
-     *
-     * An `Intent` crosses a process boundary as a parcelled `Bundle` that is not read
-     * until something asks for a value. Whatever loader the `Bundle` is carrying at that
-     * moment is the one that has to find the class — and inside a `:vappN` the default is
-     * UNIQUE's, which knows nothing about the guest's APK. So a guest that puts one of
-     * *its own* `Parcelable` classes into an `Intent` gets it back as this:
-     *
-     * ```
-     * BadParcelableException: ClassNotFoundException when unmarshalling:
-     *     com.google.android.gms.auth.api.signin.internal.SignInConfiguration
-     *   at android.os.Parcel.readParcelableCreatorInternal
-     *   at android.os.Bundle.getParcelable
-     *   at …signin.internal.SignInHubActivity.onCreate
-     * FATAL EXCEPTION: main
-     * ```
-     *
-     * That is Google Sign-In. The flow had started correctly, the activity had launched
-     * inside the guest, and it died reading the configuration it had written itself one
-     * step earlier. The class is in the guest's own APK — the app bundles
-     * `play-services-auth` — so nothing was missing except the loader that could see it.
-     *
-     * It is not a Google-specific bug and the fix is not Google-specific either: any app
-     * passing its own `Parcelable` through an `Intent` hits exactly this, which is why it
-     * is applied to every intent UNIQUE hands to a guest rather than to a special case.
-     *
-     * Setting the loader does not unparcel anything; it only decides who will be asked
-     * when something finally does.
-     */
-    private fun adoptGuestClassLoader(intent: Intent, ready: AppBootstrap.Result.Ready) {
-        runCatching {
-            intent.setExtrasClassLoader(ready.application.classLoader)
-        }.onFailure {
-            report("INTENT_CLASSLOADER_UNSET", mapOf("error" to it.toString()))
-        }
-    }
-
-    /**
      * Every `Intent` carried by a `ResultInfo` in this transaction.
      *
      * Found by type rather than by field name, for the reason `LaunchActivityItem` is:
@@ -403,6 +362,7 @@ object LaunchInterceptor {
             if (element.javaClass.simpleName == "ResultInfo") {
                 fieldOfType(element.javaClass, Intent::class.java)
                     ?.let { it.get(element) as? Intent }
+                    ?.also(GuestParcelables::adopt)
                     ?.let(out::add)
             }
         }
@@ -482,6 +442,7 @@ object LaunchInterceptor {
             val intents = listField.get(item) as? List<*> ?: continue
             for (element in intents) {
                 val stubIntent = element as? Intent ?: continue
+                GuestParcelables.adopt(stubIntent)
                 val params = VirtualLaunchParams.from(stubIntent) ?: continue
                 if (params.packageName != ready.params.packageName) {
                     report(
@@ -568,6 +529,12 @@ object LaunchInterceptor {
             report("LAUNCH_ITEM_NO_INTENT", mapOf("class" to item.javaClass.name))
             return
         }
+        // The first thing done to a launch intent, and it has to be. The line below reads
+        // an extra, and a `Bundle` resolves its class loader once, at the first read of
+        // any key — so a loader named afterwards, however correct, changes nothing. That
+        // is precisely what the previous attempt at this did, and Google Sign-In crashed
+        // identically on the next phone log. See GuestParcelables.
+        GuestParcelables.adopt(stubIntent)
         val params = VirtualLaunchParams.from(stubIntent)
         if (params == null) {
             // A launch of one of UNIQUE's own activities - the UI, say - is not ours to
@@ -632,8 +599,10 @@ object LaunchInterceptor {
             removeExtra(VirtualLaunchParams.KEY_SLOT)
             // UNIQUE's stub identity comes off here; the guest gets its own back.
             VirtualLaunchIntent.restoreGuestIdentity(this, stubIntent)
-            // And so does the loader that can read what is inside it. See below.
-            adoptGuestClassLoader(this, ready)
+            // The copy inherits the loader from the intent it was copied from, so this is
+            // belt and braces — and cheap enough to keep, because the one thing that must
+            // never happen here is a guest bundle without one.
+            GuestParcelables.adopt(this)
         }
 
         intentField.set(item, realIntent)

@@ -95,7 +95,11 @@ class ProcViewRulesTest {
     @Test fun `a specific rule always beats the catch-all for UNIQUE's directory`() {
         assertThat(show("${model.filesDir(0, pkg)}/x")).startsWith("/data/user/0/$pkg/files")
         assertThat(show("${model.nativeLibraryDir(pkg, vc)}/x")).startsWith(installedDir())
-        assertThat(rules()).isInStrictOrder(compareByDescending<RedirectRule> { it.from.length })
+        // Longest first, not *strictly* longest first: the alias spellings of one rule can
+        // be the same length as each other. Ties are unambiguous because a rule only ever
+        // matches a whole path component, so two prefixes of equal length cannot both
+        // match one path.
+        assertThat(rules()).isInOrder(compareByDescending<RedirectRule> { it.from.length })
     }
 
     @Test fun `nothing of UNIQUE's own is left readable`() {
@@ -109,8 +113,48 @@ class ProcViewRulesTest {
             model.runtimeDir() + "/profiles/0.properties",
             hostSourceDir,
             hostDataDir + "/files/anything",
+            "/data/data/com.unique/files/virtual/apk/$pkg/$vc/base.apk",
+            "/data/data/com.unique/files/virtual/apk/$pkg/$vc/lib/arm64-v8a/libfmod.so",
+            "/data/data/com.unique/files/virtual/users/0/data/$pkg/databases/m.db",
+            "/data/user_de/0/com.unique/files/virtual/users/0/sdcard/Android/obb/$pkg/main.obb",
         ).map(::show).filter { it.contains("com.unique") }
         assertThat(leaked).isEmpty()
+    }
+
+    /**
+     * The gap the first phone that ran this found, through the view's own self-check.
+     *
+     * `/data/data/<pkg>` is a symlink to `/data/user/0/<pkg>`, and which spelling ends up
+     * in `/proc/self/maps` depends on the path the file was opened with. Thirteen of
+     * fifteen mappings were renamed and two were not — which for this purpose is the same
+     * as none, because a check only has to find one.
+     */
+    @Test fun `both spellings of UNIQUE's own directory are covered`() {
+        val slashData = "/data/data/com.unique/files/virtual/apk/$pkg/$vc/lib/arm64-v8a/libunity.so"
+        assertThat(show(slashData)).isEqualTo("${installedDir()}/lib/arm64/libunity.so")
+
+        val deviceProtected = "/data/user_de/0/com.unique/files/virtual/apk/$pkg/$vc/base.apk"
+        assertThat(show(deviceProtected)).isEqualTo("${installedDir()}/base.apk")
+
+        assertThat(show("/data/data/com.unique/files/virtual/users/0/data/$pkg/files/x"))
+            .isEqualTo("/data/user/0/$pkg/files/x")
+        assertThat(show("/data/data/com.unique/files/anything")).doesNotContain("com.unique")
+    }
+
+    @Test fun `every spelling of a data directory is derived from any one of them`() {
+        for (spelling in listOf(
+            "/data/user/0/com.unique", "/data/data/com.unique", "/data/user_de/0/com.unique",
+        )) {
+            assertThat(VirtualPathModel.dataDirAliases(spelling)).containsExactly(
+                "/data/user/0/com.unique", "/data/data/com.unique", "/data/user_de/0/com.unique",
+            )
+        }
+        // A second Android user keeps its own number rather than being collapsed to 0.
+        assertThat(VirtualPathModel.dataDirAliases("/data/user/10/com.unique"))
+            .contains("/data/user/10/com.unique")
+        // Anything that is not a data directory is left as the single spelling it is.
+        assertThat(VirtualPathModel.dataDirAliases("/data/app/~~a/com.unique-b"))
+            .containsExactly("/data/app/~~a/com.unique-b")
     }
 
     @Test fun `the platform's own paths are not touched`() {

@@ -16,6 +16,7 @@ import android.os.ParcelFileDescriptor
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.vam.LaunchInterceptor
+import com.unique.core.vam.GuestParcelables
 import com.unique.core.vam.VirtualColdBroadcast
 import com.unique.core.vam.VirtualComponentKind
 import com.unique.core.vam.VirtualDiagnostics
@@ -39,6 +40,10 @@ import com.unique.core.vam.VirtualProviderHost
 abstract class StubActivityBase(private val slot: Int) : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before the first read of any extra. See GuestParcelables: a Bundle resolves its
+        // class loader once, at the first read, and nothing can change it afterwards.
+        GuestParcelables.adopt(intent)
+        GuestParcelables.adopt(savedInstanceState)
         val routed = VirtualLaunchParams.from(intent)
         if (routed == null) {
             // Reached without routing information. This happens if the system restores a
@@ -104,6 +109,7 @@ abstract class StubServiceBase(private val slot: Int) : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        GuestParcelables.adopt(intent)
         val params = VirtualLaunchParams.from(intent)
 
         // A cold broadcast delivery. Unlike every other start that reaches this class,

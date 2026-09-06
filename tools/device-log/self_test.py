@@ -48,6 +48,8 @@ FIXTURE10 = os.path.join(HERE, "fixtures", "redmi-android15-run10.log")
 FIXTURE10_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run10.device.txt")
 FIXTURE11 = os.path.join(HERE, "fixtures", "redmi-android15-run11.log")
 FIXTURE11_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run11.device.txt")
+FIXTURE12 = os.path.join(HERE, "fixtures", "redmi-android15-run12.log")
+FIXTURE12_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run12.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -714,6 +716,57 @@ class RedmiRun11Test(unittest.TestCase):
         # inventing a pass. A build that publishes one and leaks is a different report.
         self.assertEqual(self.checks["detection"].verdict, analyze.PASS)
         self.assertIn("does not publish a /proc view", notes(self.checks["detection"]))
+
+
+class RedmiRun12Test(unittest.TestCase):
+    """The twelfth run: the first build with a `/proc` view, and it caught its own gap.
+
+    The point of making the engine check its own work was that a table with a wrong prefix
+    in it and no table at all produce the same "installed" line. This is the log where
+    that paid:
+
+    ```
+    PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=6 named=15 leaked=2
+        first=/data/data/com.unique/files/virtual/apk/com.axlebolt.standoff2/203908
+    ```
+
+    Thirteen of fifteen mappings renamed and two left naming UNIQUE — which for this
+    purpose is the same as none, because a check only has to find one. `/data/data/<pkg>`
+    is a symlink to `/data/user/0/<pkg>` and the view was built from only the second
+    spelling. The line names the directory the rule is missing for, which is the whole
+    diagnosis.
+
+    It also shows the class-loader fix from the run before doing nothing at all: Google
+    Sign-In crashes identically, because `setExtrasClassLoader` after the first read of an
+    extra changes nothing, and UNIQUE always reads first.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE12, FIXTURE12_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_view_reports_its_own_leak_and_names_the_missing_rule(self):
+        detail = findings(self.checks["detection"])
+        self.assertIn("still name UNIQUE", detail)
+        self.assertIn("/data/data/com.unique/files/virtual/apk", detail)
+
+    def test_the_engine_is_no_longer_the_story_for_slots_or_platform_calls(self):
+        # The eleventh run's stolen slot and its refused platform calls are both gone.
+        for name in ("slots", "platform", "storage", "native", "hooks", "isolation"):
+            self.assertEqual(self.checks[name].verdict, analyze.PASS, name)
+
+    def test_sign_in_still_dies_on_the_guest_s_own_class(self):
+        # The fix that shipped one run earlier could not have worked, and this is the log
+        # that says so rather than a re-reading of the code that says it should have.
+        self.assertIn("ClassNotFoundException", findings(self.checks["crash"]))
+
+    def test_a_relaunch_into_a_live_process_is_not_a_failed_launch(self):
+        # A launch into a process already grafted for that instance does not graft again,
+        # so it has a rewritten transaction and no BOOTSTRAP_OK. Counting that as a
+        # failure marked one of this run's two Standoff 2 launches broken while the game
+        # was plainly running.
+        self.assertNotIn("no BOOTSTRAP_OK", findings(self.checks["launch"]))
 
 
 HEALTHY = """\

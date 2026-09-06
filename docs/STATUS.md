@@ -1103,6 +1103,54 @@ is drawn there. It does not cover:
 So this is one vector closed, measured, with the rest named. Whether it is *the* vector
 Standoff 2 uses is what the next log says.
 
+### The twelfth run, and reading the game instead of guessing at it
+
+The first log from a build with the `/proc` view in it, and the check that was built to
+distrust itself did its job on the first phone that ran it:
+
+```
+PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=6 named=15 leaked=2
+    first=/data/data/com.unique/files/virtual/apk/com.axlebolt.standoff2/203908
+```
+
+Thirteen of fifteen mappings renamed and two not — which for this purpose is the same as
+none, because a check only has to find one. `/data/data/<pkg>` is a symlink to
+`/data/user/0/<pkg>` and the view was built from `Context.getFilesDir()`, which is the
+second spelling. `redirectionRules` has always covered both for the *guest*; nothing had
+needed it for the host until the view existed. Fixed, with the other two spellings derived
+rather than listed.
+
+| Found | Fixed by |
+|---|---|
+| **Google Sign-In crashed identically to the run before, with the fix for it in the build.** `setExtrasClassLoader(guestLoader)` cannot work and could never have worked: `BaseBundle` reads `mClassLoader` in exactly one place, `unparcel()`, and `unparcel` builds the map lazily — each value becomes a `Parcel.LazyValue` holding the loader *as it was at that moment*. The loader that decides is the one in place at the **first read of any key**, and UNIQUE always reads first: `VirtualLaunchParams.from(intent)` is the first line of every rewrite | `GuestParcelables.loader`, a single forwarding `ClassLoader` that resolves nothing itself and asks the current graft when it is *asked*. It can therefore be installed before the guest is known, which is the whole point — it goes on before the first read instead of after it. Installed on every launch intent, new intent, service intent, activity result, cold-broadcast payload and stub intent, each time on the line above the first read |
+| **A relaunch counted as a failed launch.** A launch into a process already grafted for that instance does not graft again, so it has a rewritten transaction and no `BOOTSTRAP_OK` — and the analyzer failed it while the game was plainly running | Both, not either. A rewrite cannot happen without a graft, since the interceptor only reaches it after `bootstrap` returns Ready |
+| **Firebase Analytics refused for the third pass running.** Each of the three fixes was real and each was followed by a log with the same message on a different route, because "the rewrite did not fire" and "the rewrite fired and something else refused" have looked identical in the log | Not a fourth guess. `GMS_PACKAGE_NOT_REWRITTEN` names the interface, the transaction code and the byte offset when the guest's package is in a request as a *bare* string rather than a `SafeParcel` field. Deliberately not rewritten there: replacing a bare string changes the length of everything after it, and a parcel gives no way to know whether it sits inside a length-prefixed container whose header would then be wrong. A corrupted request to Play services is a worse failure than a refused one |
+
+And then the game was read, which is what should have happened two passes earlier.
+`docs/STANDOFF2.md` has the whole of it; the part that changes this project's plan:
+
+- The message is **two** messages. `Anticheat/VirtualSpaceWarning` is set in-game by
+  `Axlebolt.Standoff.Anitcheat.AntiCheatManager`, which keeps a flag literally called
+  `VirtualSpaceDetected`. `AuthRestrictions/VirtualSpaceMessage` is a **server verdict**,
+  in a family with `RootFoundMessage`, `HackingSoftFoundMessage` and
+  `UnofficialVersionMessage`.
+- The verdict is decided from an `AppVerification` protobuf carrying `IsRooted`, `ApkHash`,
+  `JsonForbiddenApps`, **`Path`**, `ContentHash`, an `AppSnapshot` map and an RSA key —
+  and it is a **field of `GoogleAuthRequest`**. Signing in and being told this is a virtual
+  space are the same event.
+- What the client reads to fill it in is four getters, and the counts are in the binary:
+  `sourceDir` ×4, `getApplicationInfo` ×3, `getPackageCodePath` ×2, `nativeLibraryDir` ×1.
+  No `/proc`, no `dl_iterate_phdr`, no mount table.
+
+Which means the `/proc` view, built one pass earlier from reasoning about what such a check
+*would* read, closes a real vector and closes nothing **this** game uses. That is worth
+writing down rather than leaving as an implied win. It stays — the leak it closes is real
+and the reasoning was wrong only about which app — but the next step is now known instead
+of guessed: a guest's Java-visible paths have to be shaped like an installed app's, and
+they have to resolve, which needs the interception widened to `libjavacore.so` and
+`libandroidfw.so` with UNIQUE's own operations exempted. That is the largest change this
+engine has left and it is not one to make in the same build as three other fixes.
+
 ### What the sixth run settled about Google sign-in
 
 The Google layer used to answer `PASSTHROUGH` for `SIGN_IN` whenever an app declared an

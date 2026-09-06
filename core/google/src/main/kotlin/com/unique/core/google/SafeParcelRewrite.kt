@@ -178,6 +178,33 @@ internal object SafeParcelRewrite {
      * collide with text: the header's top two bytes are `0xffff`, and a UTF-16 string of
      * ASCII never produces those.
      */
+    /**
+     * Every 4-byte-aligned position at which [value] is written as a plain string.
+     *
+     * A diagnostic, not a step in the rewrite: a string found this way may be a field of
+     * something with a length prefix, and replacing it would leave that prefix wrong. It
+     * exists so a log can distinguish "the rewrite could not reach the name" from "the
+     * name was not in the request at all", which have looked the same for three passes.
+     *
+     * A string is written as a length in characters followed by UTF-16 and a terminator,
+     * padded to four bytes — so a match is confirmed by reading one and checking both the
+     * value and that it ends where a string of that length must.
+     */
+    fun findBareString(
+        limit: Int,
+        readInt: (Int) -> Int,
+        readStringAt: (Int) -> String?,
+        value: String,
+    ): List<Int> {
+        val found = ArrayList<Int>(2)
+        var at = 0
+        while (at + 4 <= limit) {
+            if (readInt(at) == value.length && readStringAt(at) == value) found += at
+            at += 4
+        }
+        return found
+    }
+
     fun candidateOffsets(limit: Int, readInt: (Int) -> Int): List<Int> {
         val found = ArrayList<Int>(2)
         var at = 0

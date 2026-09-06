@@ -294,7 +294,43 @@ class VirtualPathModel(private val hostFilesRoot: String) {
             ?.let { rules += RedirectRule(it, installed) }
         rules += RedirectRule(hostDataDir, installedData)
 
-        return rules.sortedByDescending { it.from.length }
+        return withDataDirAliases(rules, hostDataDir).sortedByDescending { it.from.length }
+    }
+
+    /**
+     * Adds the other spellings of the host's data directory to every rule under it.
+     *
+     * `/data/data/<pkg>` is a symlink to `/data/user/0/<pkg>`, and which of the two ends
+     * up in `/proc/self/maps` depends on the path the file happened to be opened with.
+     * The first build of this view was written from `Context.getFilesDir()`, which is the
+     * `/data/user/0` spelling, and its own self-check found the gap on the first phone
+     * that ran it:
+     *
+     * ```
+     * PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=6 named=15 leaked=2
+     *     first=/data/data/com.unique/files/virtual/apk/com.axlebolt.standoff2/203908
+     * ```
+     *
+     * Thirteen of fifteen mappings renamed and two left naming UNIQUE — which for this
+     * purpose is the same as none, since a check only has to find one. `redirectionRules`
+     * has always covered both spellings for the *guest*; this is the same rule for the
+     * host, which nothing needed until the view existed.
+     */
+    private fun withDataDirAliases(
+        rules: List<RedirectRule>,
+        hostDataDir: String,
+    ): List<RedirectRule> {
+        val aliases = dataDirAliases(hostDataDir).filter { it != hostDataDir }
+        if (aliases.isEmpty()) return rules
+        val out = ArrayList<RedirectRule>(rules.size * (aliases.size + 1))
+        for (rule in rules) {
+            out += rule
+            if (rule.from != hostDataDir && !rule.from.startsWith("$hostDataDir/")) continue
+            for (alias in aliases) {
+                out += RedirectRule(alias + rule.from.removePrefix(hostDataDir), rule.to)
+            }
+        }
+        return out
     }
 
     /** `/data/app/~~<a>/<pkg>-<b>`, as Android 11 and newer lay an installed app out. */
@@ -367,6 +403,34 @@ class VirtualPathModel(private val hostFilesRoot: String) {
 
         private const val BASE64URL =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+        /**
+         * Every spelling of one app-private data directory.
+         *
+         * `/data/data/<pkg>` is a symlink to `/data/user/0/<pkg>`, and `/data/user_de` is
+         * the device-protected sibling. All three name the same files and any of them can
+         * appear in a path a process is holding.
+         */
+        fun dataDirAliases(dataDir: String): List<String> {
+            val (user, pkg) = when {
+                dataDir.startsWith("/data/data/") -> 0 to dataDir.removePrefix("/data/data/")
+                dataDir.startsWith("/data/user/") ->
+                    dataDir.removePrefix("/data/user/").substringBefore('/').toIntOrNull()
+                        .let { it ?: return listOf(dataDir) } to
+                        dataDir.removePrefix("/data/user/").substringAfter('/', "")
+                dataDir.startsWith("/data/user_de/") ->
+                    dataDir.removePrefix("/data/user_de/").substringBefore('/').toIntOrNull()
+                        .let { it ?: return listOf(dataDir) } to
+                        dataDir.removePrefix("/data/user_de/").substringAfter('/', "")
+                else -> return listOf(dataDir)
+            }
+            if (pkg.isEmpty() || pkg.contains('/')) return listOf(dataDir)
+            return listOf(
+                "/data/user/$user/$pkg",
+                "/data/data/$pkg",
+                "/data/user_de/$user/$pkg",
+            ).distinct()
+        }
 
         /**
          * The directory name the *installer* extracts native libraries into.

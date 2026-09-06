@@ -359,7 +359,13 @@ def check_launches(run: Run) -> Check:
         where = f"{launch.package} u{launch.vuid} -> {launch.activity}"
         if launch.failure:
             check.fail(f"{where}: {launch.failure}", launch.failure_line or launch.lineno)
-        elif not launch.bootstrapped:
+        elif not launch.bootstrapped and not launch.rewritten:
+            # Both, not either. `BOOTSTRAP_OK` is written by the graft, and a launch into a
+            # process that is *already* grafted for that instance does not graft again — so
+            # a relaunch legitimately has a rewritten transaction and no `BOOTSTRAP_OK`,
+            # and reporting it failed one of the two launches in a run where the app was
+            # plainly running. A rewrite cannot happen without a graft: the interceptor
+            # only reaches it after `AppBootstrap.bootstrap` has returned Ready.
             check.fail(f"{where}: no BOOTSTRAP_OK followed the request", launch.lineno)
         elif not launch.rewritten:
             check.fail(
@@ -367,7 +373,7 @@ def check_launches(run: Run) -> Check:
                 f"stub was shown instead of the guest's Activity",
                 launch.lineno,
             )
-    ok = sum(1 for x in launches if x.bootstrapped and x.rewritten and not x.failure)
+    ok = sum(1 for x in launches if x.rewritten and not x.failure)
     check.note(f"{ok}/{len(launches)} launches reached the guest's Activity")
     return check
 
@@ -1070,6 +1076,17 @@ def check_google_stack(run: Run) -> Check:
         check.note(f"the Play services broker was wrapped for {len(wrapped)} bind(s)")
     if rewritten:
         check.note(f"{len(rewritten)} request(s) went out under UNIQUE's own name")
+    # Which route a refusal came in by, when the engine could see one. Three passes have
+    # been made at `Unknown calling package name`, each fixing a real route and each
+    # followed by a log with the same message on a different one — because "the rewrite
+    # did not fire" and "the rewrite fired and something else refused" looked identical.
+    for event in run.by_code("GMS_PACKAGE_NOT_REWRITTEN"):
+        check.fail(
+            f"{event['package']} sent its own name to Play services in a shape the "
+            f"rewrite cannot reach: {event['descriptor']} transaction {event['code']}, "
+            f"as a bare string at byte {event['bareAt']} of {event['size']}",
+            event.lineno,
+        )
     if refused and not wrapped:
         check.fail(
             f"Play services refused a guest's identity {len(refused)}x and the broker was "
