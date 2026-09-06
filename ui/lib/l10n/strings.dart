@@ -225,6 +225,10 @@ class Strings {
     'access.exactAlarm': 'Alarms and reminders',
     'access.battery': 'Run in the background unrestricted',
     'access.allFiles': 'Access to all files',
+    'launch.assetsUnreadable':
+        'Started, but this app\u2019s downloaded game files could not be copied in \u2014 '
+        'Android keeps Android/obb closed unless UNIQUE has access to all files.',
+    'launch.grantAllFiles': 'Allow',
     'details.storage': 'Storage',
     'details.data': 'Data',
     'details.cache': 'Cache',
@@ -441,6 +445,10 @@ class Strings {
     'access.exactAlarm': 'Будильники и напоминания',
     'access.battery': 'Работа в фоне без ограничений',
     'access.allFiles': 'Доступ ко всем файлам',
+    'launch.assetsUnreadable':
+        'Запущено, но скачанные файлы игры скопировать не удалось \u2014 Android '
+        'закрывает Android/obb, пока у UNIQUE нет доступа ко всем файлам.',
+    'launch.grantAllFiles': 'Разрешить',
     'details.storage': 'Хранилище',
     'details.data': 'Данные',
     'details.cache': 'Кэш',

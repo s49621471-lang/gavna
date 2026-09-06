@@ -4,12 +4,16 @@ Two APKs, both **arm64-v8a only**, both signed with the same key — so either c
 installed over the other. Android 12 or newer (`minSdk 31`), no root, no unlocked
 bootloader.
 
-> **Uninstall any earlier UNIQUE first.** These are signed with a *test* key, and the
-> build machine generates a new one each time — so a build from a different session will
-> not install over an older one, and Android's error for that is the unhelpful
-> `App not installed`. Uninstalling removes the instances and their data with it; that is
-> the cost of a test-signed pre-release, and it is stated here rather than discovered.
-> `SHA256SUMS` says which artifact this is.
+> **A build from a different session will not install over an older one.** These are
+> signed with a *test* key that the build machine generates, so two builds made on
+> different machines have different keys, and Android's error for that is the unhelpful
+> `App not installed`. When it happens, uninstall first — which removes the instances and
+> their data with it. That is the cost of a test-signed pre-release, and it is stated here
+> rather than discovered.
+>
+> Consecutive builds from the *same* session share a key and update in place, instances
+> intact. `apksigner verify --print-certs` on the APK you have and the one you are about
+> to install answers which case you are in; `SHA256SUMS` says which artifact this is.
 
 | File | Size | What it is |
 |---|---|---|

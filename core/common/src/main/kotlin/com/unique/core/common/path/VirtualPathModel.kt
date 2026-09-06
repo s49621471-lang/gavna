@@ -137,6 +137,17 @@ class VirtualPathModel(private val hostFilesRoot: String) {
     fun nativeExclusionsFile(vuid: Int, packageName: String) =
         "${runtimeDir()}/native/$vuid/$packageName.exclude"
 
+    /**
+     * Whether this instance is shown the device's Google Play services. One word.
+     *
+     * `show` or `hide`; anything else, or no file, leaves the rule in
+     * [com.unique.core.common.google.GoogleStackVisibility] to decide. Per instance
+     * rather than per package because two copies of one app can legitimately want
+     * different answers — one signed in through Google, one deliberately not.
+     */
+    fun googleVisibilityFile(vuid: Int, packageName: String) =
+        "${runtimeDir()}/google/$vuid/$packageName.visibility"
+
     /** Directories that must exist before an app is first launched. */
     fun instanceDirectories(vuid: Int, packageName: String): List<String> = listOf(
         dataDir(vuid, packageName),

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Process
 import com.unique.core.common.apk.ApkManifest
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.google.GoogleStackVisibility
 import com.unique.core.common.shim.MethodShim
 import com.unique.core.common.shim.shim
 import com.unique.core.diagnostics.Diagnostics
@@ -401,8 +402,8 @@ object VirtualPackageManagerHook {
      * games, and neither the app nor UNIQUE can do anything about it: what GMS sees for
      * UNIQUE's uid is decided in GMS's own process by the real `PackageManager`.
      *
-     * So the guest is told Play services is not installed, which is what every one of
-     * those SDKs is built to handle — `GoogleApiAvailability` answers `SERVICE_MISSING`,
+     * That is why the guest *may* be told Play services is not installed — which is what
+     * every one of those SDKs is built to handle — `GoogleApiAvailability` answers `SERVICE_MISSING`,
      * Firebase Analytics falls back to its bundled measurement module, and the app runs.
      * It is also *true* in the only sense that matters to the app: from inside UNIQUE
      * there is no Play services it can use.
@@ -416,22 +417,65 @@ object VirtualPackageManagerHook {
      * `resolveContentProvider`, because `DynamiteModule` loads GMS code through a provider
      * rather than a service and would otherwise still get in.
      */
+    /**
+     * The packages the hiding covers, when [visibility] says to hide.
+     *
+     * Whether it hides at all is decided per guest from its own manifest — see
+     * [GoogleStackVisibility] and [bindGoogleVisibility]. This set is only *which*
+     * packages, and it stays as it was: `com.android.vending` is deliberately not in it,
+     * because Play's licence check is an ordinary bind that works and a PAIRIP-protected
+     * app calls `System.exit(0)` when it cannot reach it.
+     */
     private val HIDDEN_FROM_GUEST = setOf(
         "com.google.android.gms",
         "com.google.android.gsf",
     )
 
+    /**
+     * Whether *this* guest is told the Google stack is absent.
+     *
+     * Hidden until the guest's own `com.google.android.gms.version` has been resolved,
+     * which is the safe direction: the decision needs that number, the guest's resources
+     * are what resolve it, and they do not exist until its `Application` does. The window
+     * is the few milliseconds between the `LoadedApk` and `makeApplication`, and nothing
+     * a Play services SDK does happens in it — those initialise from a provider or from
+     * `Application.onCreate`, both of which come later.
+     *
+     * @see GoogleStackVisibility
+     */
+    @Volatile private var visibility: GoogleStackVisibility.Decision =
+        GoogleStackVisibility.decide(declaredVersion = null).copy(
+            hidden = true,
+            detail = "hidden until the guest's own com.google.android.gms.version is resolved",
+        )
+
+    /**
+     * Settles the question for this process, once the guest's resources can answer it.
+     *
+     * Called from the graft the moment `ApplicationInfo.metaData` carries real values —
+     * see `AppBootstrap`. Reported whichever way it goes: "the guest was shown Play
+     * services" and "the guest was hidden from it" are both facts a later log has to be
+     * able to state, and the second used to be the only one that was ever printed.
+     */
+    @Synchronized
+    fun bindGoogleVisibility(decision: GoogleStackVisibility.Decision) {
+        visibility = decision
+        reportedHidden.clear()
+        Diagnostics.info(
+            DiagChannel.LAUNCH,
+            if (decision.hidden) "GOOGLE_STACK_HIDDEN" else "GOOGLE_STACK_VISIBLE",
+            decision.toMap() + mapOf("packages" to HIDDEN_FROM_GUEST.joinToString(",")),
+        )
+    }
+
     internal fun isHiddenFromGuest(name: String?): Boolean {
         if (name == null || name !in HIDDEN_FROM_GUEST) return false
+        val decision = visibility
+        if (!decision.hidden) return false
         if (reportedHidden.add(name)) {
             Diagnostics.info(
                 DiagChannel.LAUNCH, "GOOGLE_STACK_HIDDEN",
-                mapOf(
-                    "package" to name,
-                    "detail" to "Play services refuses a virtual app's identity and kills " +
-                        "it from a Handler; reported absent so the SDK takes its own " +
-                        "unavailable path",
-                ),
+                mapOf("package" to name) + decision.toMap(),
             )
         }
         return true

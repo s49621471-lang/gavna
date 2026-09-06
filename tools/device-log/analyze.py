@@ -466,7 +466,9 @@ def _exception_kind(reason: str) -> str:
     if not matches:
         return reason[:60]
     name, message = matches[-1]
-    return f"{name}:{message.strip()[:40]}"
+    # The simple name only. The platform's record says `java.lang.Error` where UNIQUE's
+    # says `Error`, and folding on the qualified name reported one crash twice.
+    return f"{name.rsplit('.', 1)[-1]}:{message.strip()[:40]}"
 
 
 def _exception_line(reason: str) -> str:
@@ -921,26 +923,81 @@ def check_native_hooks(run: Run) -> Check:
             check.note(f"left alone on purpose: {line.message.rsplit(':', 1)[-1].strip()}")
 
     reported: Set[int] = set()
-    for line in run.lines:
+    for index, line in enumerate(run.lines):
         fatal = (
             (line.tag in ("CRASH", "DEBUG") and "signal" in line.message)
             or (line.tag == "libc" and "Fatal signal" in line.message)
         )
         if not fatal or line.pid is None or line.pid in reported:
             continue
-        libraries = hooked_by_pid.get(line.pid)
-        if not libraries:
-            continue
         reported.add(line.pid)
         package = run.package_of_pid(line.pid) or "a guest"
+        libraries = hooked_by_pid.get(line.pid)
+
+        landing = _wild_jump_landing(run.lines, index)
+        if landing is not None:
+            # A jump to an address that is not instruction-aligned, into a page that is
+            # not a library. Compiled code cannot produce the first, and a GOT slot UNIQUE
+            # has patched points at a real function in a real library, so it cannot
+            # produce either. Reported as its own thing rather than blamed on the last
+            # library that happened to load, because that blame sent one investigation
+            # down a wrong path already.
+            check.fail(
+                f"{package} jumped to an unaligned address in {landing} — not a hooked "
+                f"library, and not something compiled code produces; the pointer it "
+                f"followed was already wrong",
+                line.lineno,
+                line.message.strip()[:160],
+            )
+            continue
+
+        if not libraries:
+            continue
         check.fail(
-            f"{package} died on a native signal after UNIQUE hooked "
-            f"{', '.join(reversed(libraries))} — try the last one first in "
+            f"{package} died on a native signal after UNIQUE patched slots while "
+            f"{', '.join(reversed(libraries))} were loading — try the last one first in "
             f"runtime/native/<vuid>/<package>.exclude",
             line.lineno,
             line.message.strip()[:160],
         )
     return check
+
+
+_TOP_FRAME = re.compile(r"#00 pc [0-9a-f]+\s+(\S+)")
+
+
+def _wild_jump_landing(lines: List[LogLine], index: int) -> Optional[str]:
+    """Where a crash landed, when it landed somewhere no code should be.
+
+    Two facts together, and neither alone says anything. `BUS_ADRALN` means the program
+    counter was not instruction-aligned — compiled code never produces that. And the top
+    frame names something that is not a shared library: an anonymous mapping, a `memfd`,
+    or a file marked `(deleted)`. Two physical runs of one game produced both, at the
+    same offset into the page, and the second run had the library UNIQUE hooked excluded:
+
+        run 6  #00 pc …9f7  <anonymous:0000007dd3321000>
+        run 7  #00 pc …9f7  /memfd:gralloc_shared_memory (deleted)
+
+    Which is why this is reported as itself rather than attributed to whichever library
+    loaded last. A pointer was already wrong before the jump; the page it happened to
+    land in is where the allocator had got to, and says nothing about the cause.
+
+    Indexed by position in the parsed list rather than by `lineno`, because the parser
+    drops lines it does not recognise and the two stop agreeing after the first one.
+    """
+    if "BUS_ADRALN" not in lines[index].message:
+        return None
+    for candidate in lines[index : index + 40]:
+        match = _TOP_FRAME.search(candidate.message)
+        if match is None:
+            continue
+        where = match.group(1)
+        if where.startswith("<anonymous") or where.startswith("/memfd:"):
+            return where
+        if "(deleted)" in candidate.message:
+            return where
+        return None
+    return None
 
 
 CHECKS = (

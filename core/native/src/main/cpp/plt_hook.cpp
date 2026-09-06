@@ -155,11 +155,24 @@ void patch_relocations(const Rela* rela, size_t count, const DynamicInfo& info,
 
             void* previous = nullptr;
             if (write_slot(slot, request.replacement, &previous)) {
-                // The first library patched supplies the original. Later ones must not
-                // overwrite it with a PLT resolver stub, which is what the GOT of an
-                // unbound entry holds.
+                // The original comes from the dynamic linker, never from the slot.
+                //
+                // Reading it out of the GOT is the obvious thing and it is only *usually*
+                // right: a lazily-bound entry holds the resolver stub rather than the
+                // function, and a trampoline that calls a resolver stub with the wrong
+                // arguments jumps somewhere that is not a function at all. The NDK links
+                // with `-z now` so the case is rare, which is exactly what makes it the
+                // kind of bug that surfaces once, on one device, minutes into a game.
+                //
+                // `dlsym(RTLD_DEFAULT)` asks the loader the same question the relocation
+                // asked and cannot answer with a stub. The GOT value is kept only as the
+                // fallback for a symbol the loader will not name.
                 if (request.original != nullptr && *request.original == nullptr) {
-                    *request.original = previous;
+                    void* resolved = dlsym(RTLD_DEFAULT, request.symbol);
+                    *request.original =
+                            (resolved != nullptr && resolved != request.replacement)
+                                    ? resolved
+                                    : previous;
                 }
                 ctx->report->slots_patched++;
             } else {

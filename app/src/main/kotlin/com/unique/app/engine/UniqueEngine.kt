@@ -75,6 +75,17 @@ object UniqueEngine {
     /** UNIQUE's own application context, held for the work that has no caller to pass one. */
     private val app: Context get() = requireNotNull(appRef) { "UniqueEngine.init not called" }
 
+    /**
+     * What the last launch's asset import found, for the caller to show the user.
+     *
+     * On the engine rather than in `LaunchResult` because a missing expansion file is not
+     * a launch failure and must not be reported as one: the app starts, and what the user
+     * needs is the sentence that connects an empty game menu to a Settings switch.
+     */
+    @Volatile
+    var lastAssetReport: Map<String, String>? = null
+        private set
+
     val storage: VirtualStorage get() = requireNotNull(storageRef) { "UniqueEngine.init not called" }
     val instances: InstanceManager get() = requireNotNull(managerRef) { "UniqueEngine.init not called" }
     val launcher: VirtualLauncher get() = requireNotNull(launcherRef) { "UniqueEngine.init not called" }
@@ -399,9 +410,31 @@ object UniqueEngine {
     ): LaunchResult {
         val instance = instances.instance(vuid)
             ?: return LaunchResult.Failed("NO_SUCH_INSTANCE", "Instance $vuid does not exist.")
+        lastAssetReport = null
         val manifest = runCatching { manifestOf(instance) }.getOrElse {
             return LaunchResult.Failed("MANIFEST_UNREADABLE", it.toString())
         }
+        // Before the launch, not after it, and on every launch rather than only at
+        // import.
+        //
+        // At import alone it reached nothing: an instance created by an earlier build
+        // has no expansion files and no import will ever run for it again, and a user who
+        // grants all-files access *after* importing — which is the order it actually
+        // happens in, because the failure is what tells them to — would have had to
+        // delete the instance and start over. From the seventh phone log, with the import
+        // running only at import time:
+        //
+        //   GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE
+        //     source=/storage/emulated/0/Android/obb/com.axlebolt.standoff2
+        //     detail=/storage/emulated/0/Android/obb is not readable by UNIQUE
+        //
+        // It is cheap to repeat: a file whose name and length already match is skipped,
+        // so a game whose assets are in place costs one directory listing.
+        val assets = runCatching {
+            importGuestAssets(vuid, instance.packageName)
+        }.getOrElse { emptyMap() }
+        lastAssetReport = assets
+
         val result = launcher.launch(
             context = context,
             vuid = vuid,
@@ -410,6 +443,21 @@ object UniqueEngine {
             manifest = manifest,
             targetActivity = targetActivity,
         )
+        if (result is LaunchResult.Started && assets["outcome"] == "SOURCE_UNREADABLE") {
+            // The app still starts — a game with no expansion files runs, it just has
+            // nothing to show — so this is a warning on a successful launch and not a
+            // failure. The caller turns it into something the user can act on, because
+            // "the game opened and its menu is empty" is not a sentence that points
+            // anywhere near all-files access.
+            Diagnostics.warn(
+                DiagChannel.STORAGE, "LAUNCHED_WITHOUT_ASSETS",
+                mapOf(
+                    "package" to instance.packageName,
+                    "vuid" to vuid.toString(),
+                    "detail" to (assets["detail"] ?: "-"),
+                ),
+            )
+        }
         if (result is LaunchResult.Started) {
             instances.markLaunched(vuid)
             // Superseded APKs are reclaimed here rather than at update time: a task

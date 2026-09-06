@@ -105,6 +105,7 @@ class EngineOutcome {
     this.vuid,
     this.cancelled = false,
     this.needsHostSettings = false,
+    this.warning,
   });
 
   final bool ok;
@@ -124,6 +125,13 @@ class EngineOutcome {
 
   /// Android will not show the permission dialog again; only its settings page will do.
   final bool needsHostSettings;
+
+  /// Something the user should know about an action that *succeeded*.
+  ///
+  /// A game launches whether or not its expansion files could be copied in — it simply
+  /// has nothing to show — so this cannot be an error, and it must not be silent either:
+  /// an empty game menu points nowhere near the Settings switch that fixes it.
+  final String? warning;
 
   /// What to show the user: the translation of [code] when there is one, then the
   /// engine's own sentence, then [fallback].
@@ -149,6 +157,7 @@ class EngineOutcome {
         vuid: (m['vuid'] as int?),
         cancelled: (m['cancelled'] as bool?) ?? false,
         needsHostSettings: (m['needsHostSettings'] as bool?) ?? false,
+        warning: (m['warning'] as String?),
       );
 }
 

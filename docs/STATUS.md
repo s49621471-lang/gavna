@@ -45,7 +45,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Which packages a guest may see | 6 | The Google stack hidden, `com.android.vending` not, a prefix match not enough, and both shapes intent resolution answers in — the emulator has no Play services, so this is where the decision is pinned |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**197 JVM tests, 15 Dart tests, 34 native checks, 66 off-device tool tests — all passing.**
+**204 JVM tests, 15 Dart tests, 34 native checks, 71 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -791,6 +791,56 @@ Two things this run found are **not** fixed, and are recorded rather than worked
   does not claim, and the analyzer asserts that it keeps being reported as
   `NO_APPLICATION` rather than passing quietly.
 - **A browser OAuth redirect cannot come back into a guest.** See below.
+
+### The seventh run: nothing broke a launch, and Google was the whole story
+
+`tools/device-log/fixtures/redmi-android15-run7.log`. Three launches, three into the
+guest's own Activity, no refused platform call, no poisoned slot — the first log in which
+the engine is not the story at all. What the user reported instead:
+
+> the games still do not see their resources, UNIQUE asks me to install Google services
+> when they are already installed, one game says it cannot see them, and signing into
+> ChatGPT with Google fails after the account picker
+
+Every one of those is in the log, and three of the four are one decision.
+
+| Found | Fixed by |
+|---|---|
+| **"UNIQUE asks me to install Google services."** `GOOGLE_STACK_HIDDEN` four times, then `W GooglePlayServicesUtil: com.axlebolt.standoff2 requires Google Play services, but they are missing` — on a phone with Play services 26.32.34 installed and enabled, which UNIQUE's own `GOOGLE_ENVIRONMENT` line records two seconds earlier. The hiding was unconditional, and it is a lie about the device that costs more than a message: `DynamiteModule` loads Google's own code through a provider, `AdvertisingIdClient` binds a service that never checks the caller, and `emoji2` disables itself when the package is absent | The hiding is decided per guest, from the guest's own manifest. What it was protecting against is one call — `GmsClient.getRemoteService` — and two logs say exactly who survives it. `play-services-basement 17.4.0` let the refusal reach the app's main looper and died; the 18.x line catches it, logs `Failed to get service from broker` and reports a `ConnectionResult`, which is the same path the SDK takes on a phone with no Google stack. An app states which it links, in `com.google.android.gms.version`, so that is what decides. `GoogleStackVisibility`, seven tests |
+| **The refusal was never prevented by hiding anyway.** With Play services hidden, `E GoogleApiManager: Unknown calling package name 'com.axlebolt.standoff2'` still appears: the SDK binds by explicit intent and never asks the package manager first. So the hiding bought silence, not safety | Nothing to fix — recorded because it is the fact that makes the row above safe. Hiding changes what an app is *told*, not what it does |
+| **"The games still do not see their resources."** `GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE … /storage/emulated/0/Android/obb is not readable by UNIQUE`, for all three apps. The import worked and the directory is guarded: since Android 11 `Android/obb` needs all-files access, which had not been granted — and nothing had asked for it, because the import only ran at *import* time and its failure went to a log file | The import runs on every launch, and it is cheap to repeat: a file whose name and length already match is skipped. A launch that starts an app without its expansion files now says so, in the language the user reads, with the switch that fixes it one tap away in the snackbar. Instances created by an earlier build get their assets on their next launch instead of needing to be deleted and re-imported |
+| **Signing into ChatGPT with Google.** The log shows what happened: `SERVICE_INTENT_CROSS_APP action=android.support.customtabs.action.CustomTabsService`, then `ACTIVITY_IMPLICIT_LEFT_GUEST action=VIEW data=https handledByHost=com.android.chrome`. Play services was hidden, so ChatGPT fell back to the browser — and the account picker the user saw was Google's *web* chooser in Chrome. The redirect back cannot arrive, for the reason the sixth run settled | Partly. With Play services visible ChatGPT takes its native path instead of the browser, which is the flow the user asked for. What that path returns is a separate and unsolved thing: Play services resolves the caller to UNIQUE, so a token comes back for UNIQUE's identity and not the app's. Only Play services *inside the space* can answer that, and this build does not have it |
+
+And one correction, which matters more than any of the rows above.
+
+**The sixth run's native finding was wrong.** It read: UNIQUE patched 22 GOT slots in a
+Unity game's `libgrave.so`, and six seconds later the process died — therefore the hook
+killed it. The seventh run excluded `libgrave.so`, and the same game died the same way:
+
+```
+run 6   #00 pc …9f7  <anonymous:0000007dd3321000>
+run 7   #00 pc …9f7  /memfd:gralloc_shared_memory (deleted)      libgrave.so excluded
+```
+
+Same signal, same code, the same offset into the page. The pairing was an ordering
+coincidence. What both logs actually support is narrower and is what the analyzer says
+now: a jump to an address that is not instruction-aligned, into a page that is not a
+library — a pointer that was already wrong before the jump, landing wherever the
+allocator had got to. The exclusion stays as hardening, and `GuestNativeExclusions` says
+in as many words that it is not a fix.
+
+Two things came out of taking that seriously:
+
+- `plt_hook` no longer takes the original function out of the GOT slot it overwrites. A
+  lazily-bound entry holds the resolver stub rather than the function, and a trampoline
+  that calls a resolver stub with the wrong arguments jumps somewhere that is not a
+  function at all. `dlsym(RTLD_DEFAULT, symbol)` asks the loader the question the
+  relocation asked and cannot answer with a stub. The NDK links with `-z now`, so the
+  case is rare — which is what makes it the shape of bug that surfaces once, on one
+  device, minutes into a game.
+- The analyzer reports a wild jump as itself instead of attributing it to whichever
+  library loaded last, because that attribution sent one investigation the wrong way and
+  would have sent the next one the same way.
 
 ### What the sixth run settled about Google sign-in
 

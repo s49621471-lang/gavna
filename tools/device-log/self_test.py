@@ -38,6 +38,8 @@ FIXTURE4_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run4.device.tx
 FIXTURE5 = os.path.join(HERE, "fixtures", "redmi-android15-run5.log")
 FIXTURE6 = os.path.join(HERE, "fixtures", "redmi-android15-run6.log")
 FIXTURE6_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run6.device.txt")
+FIXTURE7 = os.path.join(HERE, "fixtures", "redmi-android15-run7.log")
+FIXTURE7_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run7.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -365,14 +367,18 @@ class RedmiRun6Test(unittest.TestCase):
         self.assertEqual(check.verdict, analyze.FAIL)
         self.assertIn("because UNIQUE does not hold it", findings(check))
 
-    def test_the_native_crash_is_traced_to_the_library_UNIQUE_hooked(self):
-        # SIGBUS at an unaligned address inside an anonymous page, six seconds after 22
-        # GOT slots were written into a code-virtualization protector. Nothing in the
-        # tombstone names UNIQUE; the pairing is what makes it findable.
+    def test_the_native_crash_is_reported_without_blaming_the_hook(self):
+        # This assertion used to read "traced to the library UNIQUE hooked", because 22
+        # GOT slots had been written into `libgrave.so` six seconds earlier and the
+        # pairing looked conclusive. The next run disproved it: the same game, the same
+        # crash, at the same offset into the page, with `libgrave.so` excluded. The
+        # pairing was a coincidence of ordering, and what the log actually says is
+        # narrower — a jump to an address that is not instruction-aligned, into a page
+        # that is not a library.
         check = self.checks["native"]
         self.assertEqual(check.verdict, analyze.FAIL)
         self.assertIn("com.gordey.standarling", findings(check))
-        self.assertIn("libgrave.so", findings(check))
+        self.assertIn("unaligned address", findings(check))
 
     def test_the_fatal_notification_call_is_named_with_its_service(self):
         # The hook was installed nine milliseconds too late: providers ran first, and a
@@ -393,6 +399,56 @@ class RedmiRun6Test(unittest.TestCase):
 
     def test_no_guest_was_rendering_in_software(self):
         self.assertEqual(self.checks["render"].verdict, analyze.PASS)
+
+
+class RedmiRun7Test(unittest.TestCase):
+    """The seventh run: three apps launched, and Google was the whole story.
+
+    This is the first log in which nothing UNIQUE does breaks a launch — 3 of 3 reach the
+    guest's Activity, no `platform` refusal, no poisoned slot. What it says instead is
+    what the *previous* pass's fixes did and did not reach, and the assertions are about
+    the analyzer being able to tell those two apart.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE7, FIXTURE7_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_every_launch_reached_the_guest(self):
+        self.assertEqual(self.checks["launch"].verdict, analyze.PASS)
+        self.assertIn("3/3", notes(self.checks["launch"]))
+
+    def test_nothing_went_out_under_the_guest_s_name_and_was_refused(self):
+        # The notification call that killed an app one run earlier. The hooks now precede
+        # the providers, and this is the check that says so.
+        self.assertEqual(self.checks["platform"].verdict, analyze.PASS)
+
+    def test_the_expansion_files_still_could_not_be_read(self):
+        # The import ran and said exactly why, for all three apps: Android/obb is closed
+        # to UNIQUE until the user grants all-files access. Naming the directory is the
+        # point — "the game has no assets" points nowhere.
+        check = self.checks["storage"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("Android/obb/com.axlebolt.standoff2", findings(check))
+        self.assertIn("all-files access", findings(check))
+
+    def test_the_excluded_protector_is_reported_as_left_alone(self):
+        # libgrave.so was hooked in run 6 and excluded here, and the exclusion has to be
+        # visible: "not hooked on purpose" and "the scan missed it" are the same zero.
+        self.assertIn("libgrave.so", notes(self.checks["native"]))
+
+    def test_the_wild_jump_is_not_blamed_on_a_hooked_library(self):
+        # The same game still died, with libgrave excluded — so the crash was never the
+        # hook. An unaligned PC in a gralloc buffer is a pointer that was already wrong,
+        # and saying "after UNIQUE hooked libgrave.so" sent one investigation the wrong
+        # way already.
+        check = self.checks["native"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        detail = findings(check)
+        self.assertIn("unaligned address", detail)
+        self.assertIn("memfd:gralloc_shared_memory", detail)
+        self.assertNotIn("after UNIQUE hooked", detail)
 
 
 HEALTHY = """\

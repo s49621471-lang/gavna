@@ -407,9 +407,25 @@ object UniqueBridge {
         return mapOf("ok" to (report["outcome"] != "SOURCE_UNREADABLE")) + report
     }
 
+    /**
+     * Starts an instance, and says when it started without the files it needs.
+     *
+     * `warning` is deliberately not a failure: the app *did* start. A game whose
+     * expansion files could not be copied in runs and shows an empty menu, and nothing
+     * about that points the user at the one switch that fixes it — so the launch that
+     * succeeds carries the sentence with it.
+     */
     private suspend fun launchInstance(context: Context, vuid: Int): Map<String, Any?> =
         when (val r = UniqueEngine.launch(context, vuid)) {
-            is LaunchResult.Started -> mapOf("ok" to true, "activity" to r.activity)
+            is LaunchResult.Started -> buildMap {
+                put("ok", true)
+                put("activity", r.activity)
+                val assets = UniqueEngine.lastAssetReport
+                if (assets?.get("outcome") == "SOURCE_UNREADABLE") {
+                    put("warning", "ASSETS_UNREADABLE")
+                    put("warningDetail", assets["detail"] ?: "")
+                }
+            }
             is LaunchResult.Failed -> mapOf("ok" to false, "code" to r.code, "message" to r.message)
         }
 

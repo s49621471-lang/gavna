@@ -23,12 +23,26 @@ package com.unique.core.common.nativelib
  * F libc  : Fatal signal 11 (SIGSEGV) … in tid 12385 (dey.standarling)
  * ```
  *
- * A protector of that kind executes its own generated code out of anonymous pages and
- * checks its own relocations on the way. The crash is six seconds and several frames
- * away from anything that names UNIQUE, the faulting address is unaligned — a jump to a
- * value that was never a function — and the tombstone blames the game's own
- * `libunity.so`. Nothing in it says "a GOT slot was patched", which is exactly why the
- * list below is written down rather than rediscovered.
+ * ## What the next run said about that, and why the entry stays anyway
+ *
+ * The pairing looked conclusive and it was not. With `libgrave.so` excluded, the same
+ * game died the same way — the same signal, at the same offset into the page:
+ *
+ * ```
+ * run 6  #00 pc …9f7  <anonymous:0000007dd3321000>
+ * run 7  #00 pc …9f7  /memfd:gralloc_shared_memory (deleted)     (libgrave.so excluded)
+ * ```
+ *
+ * So the hook was not the cause, and the honest reading of both is narrower: a pointer
+ * that was already wrong, followed into whatever page the allocator had got to. That
+ * correction is recorded rather than quietly dropped, because "we fixed it" and "it kept
+ * happening" have to be distinguishable later.
+ *
+ * The entry stays for a different and smaller reason: a library that executes generated
+ * code and verifies its own relocations is one whose GOT UNIQUE has no business writing
+ * to, and the cost of leaving it alone is bounded and known. It is hardening, not a
+ * fix — and this comment says so rather than letting the list read as a list of solved
+ * crashes.
  *
  * ## What an exclusion costs, stated plainly
  *
@@ -60,9 +74,9 @@ object GuestNativeExclusions {
      * entry with no evidence behind it does not belong in this list.
      */
     val BUILT_IN: Set<String> = setOf(
-        // Code-virtualization protector shipped inside Unity games. Established on a
-        // Redmi 23030RAC7Y, Android 15, 2026-09-06: 22 slots patched, SIGBUS in an
-        // anonymous page seconds later. See the class comment.
+        // Code-virtualization protector shipped inside Unity games. Excluded as
+        // hardening, not as a fix: the crash that first drew attention to it happened
+        // again with the exclusion in place. See the class comment.
         "libgrave.so",
 
         // UNIQUE's own. It is inside the guest's process and outside the scope filter

@@ -128,8 +128,8 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     Expanded(
                       child: FilledButton.icon(
                         onPressed: launchable
-                            ? () => _run(
-                                context, () => state.launch(app), s.t('details.launching'))
+                            ? () => _run(context, () => state.launch(app),
+                                s.t('details.launching'), state: state)
                             : null,
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: Text(s.t('details.launch')),
@@ -380,14 +380,32 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   static Future<void> _run(
     BuildContext context,
     Future<EngineOutcome> Function() action,
-    String successMessage,
-  ) async {
+    String successMessage, {
+    AppState? state,
+  }) async {
     // Both are read before the await: the context may be gone by the time the engine
-    // answers, and a snackbar is not worth holding one across that gap.
+    // answers, and a snackbar is not worth holding one across that gap. `state` is passed
+    // in for the same reason — this is static, so there is no widget to read it from.
     final messenger = ScaffoldMessenger.of(context);
     final s = Strings.of(context);
     final failed = s.t('common.failed');
     final result = await action();
+    if (result.ok && result.warning == 'ASSETS_UNREADABLE') {
+      // A launch that worked and a game that will look broken. The switch that fixes it
+      // is two screens away and nothing about an empty menu points at it, so the snackbar
+      // carries the way there rather than only the news.
+      messenger.showSnackBar(SnackBar(
+        content: Text(s.t('launch.assetsUnreadable')),
+        duration: const Duration(seconds: 10),
+        action: state == null
+            ? null
+            : SnackBarAction(
+                label: s.t('launch.grantAllFiles'),
+                onPressed: () => state.openSpecialAccess('allFiles'),
+              ),
+      ));
+      return;
+    }
     messenger.showSnackBar(SnackBar(
       content: Text(result.ok ? successMessage : result.describe(s, failed)),
     ));

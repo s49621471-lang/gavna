@@ -16,6 +16,7 @@ import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.google.GoogleStackVisibility
 import com.unique.core.common.nativelib.GuestNativeExclusions
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.profile.DeviceProfileCodec
@@ -439,6 +440,29 @@ object AppBootstrap {
             ?: guestResources
         appInfo.metaData = GuestMetaData.bundle(manifest.applicationMetaDataEntries, guestResources)
 
+        // Whether this guest is told the device has Google Play services, decided from
+        // the version of the client library it links — which is the number that just
+        // became readable, because resolving `@integer/google_play_services_version`
+        // needs the guest's own resources.
+        //
+        // Here rather than at hook install for exactly that reason, and before
+        // `Application.onCreate` and the providers because that is where a Play services
+        // SDK initialises. See GoogleStackVisibility for the two device logs behind the
+        // rule and what the previous unconditional hiding cost.
+        runCatching {
+            VirtualPackageManagerHook.bindGoogleVisibility(
+                GoogleStackVisibility.decide(
+                    declaredVersion = declaredGmsVersion(appInfo),
+                    override = googleVisibilityOverride(hostContext, effective),
+                ),
+            )
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.LAUNCH, "GOOGLE_VISIBILITY_UNDECIDED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
         // The guest's own network security policy, replacing the one the platform installed
         // for UNIQUE before this process was anybody. Cleartext rules and pinning are the
         // guest's decisions; running its traffic under the host's policy is wrong even when
@@ -839,6 +863,47 @@ object AppBootstrap {
             )
         }
     }
+
+    /**
+     * The Play services client version the guest's own manifest declares, or null.
+     *
+     * Read from the resolved `metaData` rather than from the manifest's raw entry,
+     * because `android:value="@integer/google_play_services_version"` compiles to a
+     * reference and only the guest's `Resources` turn it into the number.
+     */
+    private fun declaredGmsVersion(appInfo: ApplicationInfo): Int? {
+        val meta = appInfo.metaData ?: return null
+        if (!meta.containsKey(GMS_VERSION_META_DATA)) return null
+        return runCatching { meta.getInt(GMS_VERSION_META_DATA) }.getOrNull()
+    }
+
+    /**
+     * A per-instance answer that overrides the rule, or null when there is none.
+     *
+     * One word — `show` or `hide` — in a file under `runtime/google/`. It exists because
+     * the rule is a generalisation from two device logs: an app whose behaviour
+     * contradicts it should cost a line in a file rather than a build, and a support
+     * session should be able to settle "is this the Google hiding?" in one launch.
+     */
+    private fun googleVisibilityOverride(
+        hostContext: Context,
+        params: VirtualLaunchParams,
+    ): Boolean? {
+        val model = VirtualPathModel(
+            (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+        )
+        val file = File(model.googleVisibilityFile(params.vuid, params.packageName))
+        val word = runCatching {
+            if (file.isFile) file.readText().trim().lowercase() else ""
+        }.getOrDefault("")
+        return when (word) {
+            "hide", "hidden" -> true
+            "show", "visible" -> false
+            else -> null
+        }
+    }
+
+    private const val GMS_VERSION_META_DATA = "com.google.android.gms.version"
 
     /**
      * The libraries the redirector must leave alone for this guest.
