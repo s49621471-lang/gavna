@@ -232,6 +232,9 @@ class Strings {
     'details.files': 'Files',
     'details.filesBody': 'Browse and add this app\u2019s files',
     'files.title': 'Files',
+    'files.noAppsTitle': 'No apps yet',
+    'files.noAppsBody':
+        'Add an app first. Its files appear here, and Import puts files into them.',
     'files.import': 'Import',
     'files.imported': 'Copied {files} file(s), {size}.',
     'files.importedNothing': 'Nothing was copied.',
@@ -472,6 +475,9 @@ class Strings {
     'details.files': 'Файлы',
     'details.filesBody': 'Посмотреть и добавить файлы приложения',
     'files.title': 'Файлы',
+    'files.noAppsTitle': 'Пока нет приложений',
+    'files.noAppsBody':
+        'Сначала добавьте приложение. Его файлы появятся здесь, а «Импорт» положит файлы внутрь.',
     'files.import': 'Импорт',
     'files.imported': 'Скопировано файлов: {files}, {size}.',
     'files.importedNothing': 'Ничего не скопировано.',

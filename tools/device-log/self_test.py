@@ -572,6 +572,20 @@ class RedmiRun9Test(unittest.TestCase):
         self.assertNotIn("grant UNIQUE all-files access", text)
         self.assertIn("file browser", text)
 
+    def test_the_broker_was_never_wrapped_in_this_run(self):
+        # The build that produced this log had no calling-package rewrite: 29 refusals
+        # and no `GMS_BROKER_WRAPPED`. That pairing is the assertion, because the same
+        # check must fail differently once the wrap exists — refusals *with* a wrap mean
+        # a route the rewrite does not cover, which is a different bug.
+        text = findings(self.checks["google"])
+        self.assertIn("never wrapped", text)
+
+    def test_the_sign_in_limit_is_named_from_this_phone_rather_than_reasoned_about(self):
+        # `ConnectionResult{statusCode=DEVELOPER_ERROR}`, from the user's own device.
+        # Google identifies an app by package and signing certificate; inside UNIQUE the
+        # call arrives as UNIQUE, so this is the answer and no rewriting changes it.
+        self.assertIn("DEVELOPER_ERROR", notes(self.checks["google"]))
+
     def test_the_packer_still_refuses_to_start(self):
         # Unchanged and still unsolved: `bin.mt.plus` unpacks its real application at
         # runtime and UNIQUE never finds one. Asserted so it stays visible rather than

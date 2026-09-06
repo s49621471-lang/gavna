@@ -51,6 +51,31 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
+- **Google Play services actually works now.** There was one refusal behind every Google
+  failure this project has ever had: Play services checks that the calling app's name
+  belongs to the calling process's uid, and inside UNIQUE the uid is UNIQUE's while the
+  name is the app's. Every Google API failed on that — Maps, Firebase, ads, the
+  advertising ID, analytics, FCM, the module loader. The request now goes out under
+  UNIQUE's own name, which is the truth about the uid, and Play services accepts it.
+- **Google sign-in still does not work, and here is exactly why.** Sign-in is the one
+  thing that asks *which app is this*. Google answers it from the app's package name **and
+  signing certificate**, registered in the app developer's own Google Cloud project. The
+  call now reaches Google — but it arrives as UNIQUE, which matches no such registration,
+  and Google replies `DEVELOPER_ERROR`. That reply is already in your last log. Nothing
+  UNIQUE can send changes it: the check is a signature check made inside Google's own
+  process. It needs Play services running *inside* the virtual space, which is a
+  reimplementation of GmsCore plus system-level signature spoofing — root or a modified
+  ROM. I am not going to pretend that is a build away.
+- **The file manager is on the home screen.** First tile, always there, no *Remove* — it
+  is part of the virtual device, like a file manager on a phone. Open it and you get the
+  list of apps in the space; open one and you get its folders under the paths the app
+  itself uses, `/data/data/<package>` and `/sdcard`, with `Android/obb/<package>` where a
+  game's instructions say it is. **Import** copies files in from anywhere the system
+  picker reaches, several at once. It is still reachable from an app's own Storage
+  section, which opens it directly inside that app.
+
+## What changed one run ago
+
 Six things were reported. Two of them were mistakes of mine, one was a request, and the
 log had all of them.
 

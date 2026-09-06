@@ -52,7 +52,7 @@ blame.
 | `platform` | Did a call go out under the guest's name and get refused, and by which service? |
 | `permissions` | Was a permission denied that no user could ever have granted — including one the *host* is blocked from holding? |
 | `storage` | Could a guest read its own external storage, and did its expansion files reach the instance? |
-| `google` | Was a guest told the phone has no Play services when it has? |
+| `google` | Was a guest told the phone has no Play services when it has, and did its requests reach Google under a name Google accepts? |
 | `native` | Did a native crash follow a library the path redirector patched? |
 | `hooks` | Did every shim bind to a real method, or did one bind to nothing? |
 | `providers` | Did the guest's ContentProviders publish and resolve? |
@@ -172,7 +172,7 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-67 tests, under a second, no dependencies. Three kinds:
+69 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that

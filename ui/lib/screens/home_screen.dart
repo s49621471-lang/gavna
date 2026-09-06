@@ -7,6 +7,7 @@ import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
 import 'add_app_screen.dart';
 import 'app_details_screen.dart';
+import 'files_screen.dart';
 import 'settings_screen.dart';
 
 /// Home.
@@ -104,31 +105,39 @@ class _HomeScreenState extends State<HomeScreen> {
                 sliver: SliverToBoxAdapter(child: _EngineNotice(engine: engine)),
               ),
 
-            if (_visible.isEmpty)
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: _EmptyState(onAdd: _openAddApp),
-              )
-            else
-              SliverPadding(
-                padding: const EdgeInsets.all(UniqueSpace.lg),
-                sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 132,
-                    mainAxisSpacing: UniqueSpace.md,
-                    crossAxisSpacing: UniqueSpace.md,
-                    childAspectRatio: 0.82,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) => _AppCard(
-                      app: _visible[index],
-                      state: widget.state,
-                      onOpen: () => _openDetails(_visible[index]),
-                    ),
-                    childCount: _visible.length,
-                  ),
+            // Files is a built-in app and sits in the grid with the others: it belongs
+            // to the virtual device the way a file manager belongs to a phone. It is
+            // always first, is never filtered out by a search, and has no Remove — a
+            // built-in app that could be deleted would leave the space with no way to
+            // put a file into it.
+            SliverPadding(
+              padding: const EdgeInsets.all(UniqueSpace.lg),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 132,
+                  mainAxisSpacing: UniqueSpace.md,
+                  crossAxisSpacing: UniqueSpace.md,
+                  childAspectRatio: 0.82,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) => index == 0
+                      ? _BuiltInCard(
+                          label: s.t('files.title'),
+                          icon: Icons.folder_rounded,
+                          onOpen: _openFiles,
+                        )
+                      : _AppCard(
+                          app: _visible[index - 1],
+                          state: widget.state,
+                          onOpen: () => _openDetails(_visible[index - 1]),
+                        ),
+                  childCount: _visible.length + 1,
                 ),
               ),
+            ),
+
+            if (_visible.isEmpty && _query.isEmpty)
+              SliverToBoxAdapter(child: _EmptyState(onAdd: _openAddApp)),
           ],
         ),
       ),
@@ -137,6 +146,12 @@ class _HomeScreenState extends State<HomeScreen> {
         icon: const Icon(Icons.add_rounded),
         label: Text(s.t('home.addApp')),
       ),
+    );
+  }
+
+  void _openFiles() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => FilesScreen(state: widget.state)),
     );
   }
 
@@ -226,9 +241,10 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final s = Strings.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(UniqueSpace.xxl),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          UniqueSpace.xxl, UniqueSpace.md, UniqueSpace.xxl, UniqueSpace.xxl),
+      child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -244,6 +260,59 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: UniqueSpace.xl),
             FilledButton(onPressed: onAdd, child: Text(s.t('home.addApp'))),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A tile for an app UNIQUE itself provides.
+///
+/// It looks like the others because it is one — the virtual device has a file manager the
+/// way a phone does. What it does not have is a long-press menu: *Remove* on the only
+/// thing that can put a file into the space would be a way to lock yourself out of it.
+class _BuiltInCard extends StatelessWidget {
+  const _BuiltInCard({
+    required this.label,
+    required this.icon,
+    required this.onOpen,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(UniqueSpace.radiusMd),
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              vertical: UniqueSpace.lg, horizontal: UniqueSpace.sm),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: UniqueColors.accentMuted,
+                  borderRadius: BorderRadius.circular(UniqueSpace.radiusMd),
+                ),
+                child: Icon(icon, size: 26, color: Colors.white),
+              ),
+              const SizedBox(height: UniqueSpace.md),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleMedium,
+              ),
+            ],
+          ),
         ),
       ),
     );

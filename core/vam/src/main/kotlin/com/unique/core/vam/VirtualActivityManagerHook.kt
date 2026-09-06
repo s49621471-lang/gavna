@@ -15,6 +15,7 @@ import com.unique.core.common.shim.MethodShim
 import com.unique.core.common.shim.ShimCall
 import com.unique.core.common.shim.shim
 import com.unique.core.diagnostics.Diagnostics
+import com.unique.core.google.GmsBrokerBinder
 import com.unique.core.hook.SystemServiceHook
 import com.unique.core.hook.Reflect
 import java.lang.reflect.Method
@@ -1038,7 +1039,31 @@ object VirtualActivityManagerHook {
      */
     private class RenamingConnection(private val delegate: ServiceConnection) : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: android.os.IBinder?) =
-            delegate.onServiceConnected(translate(name), service)
+            delegate.onServiceConnected(translate(name), correctIdentity(name, service))
+
+        /**
+         * Play services' broker, wrapped so the guest's requests carry a name it accepts.
+         *
+         * Done here because this is the moment the guest first holds that binder and
+         * before any call has gone out on it. Every other binder is passed straight
+         * through — the wrap decides for itself, from the interface descriptor, whether
+         * it is looking at the broker.
+         */
+        private fun correctIdentity(
+            name: ComponentName?,
+            service: android.os.IBinder?,
+        ): android.os.IBinder? {
+            val ready = AppBootstrap.current ?: return service
+            val host = AppBootstrap.hostPackageName ?: return service
+            return runCatching {
+                GmsBrokerBinder.wrapIfBroker(
+                    service,
+                    servicePackage = name?.packageName,
+                    guestPackage = ready.params.packageName,
+                    hostPackage = host,
+                )
+            }.getOrDefault(service)
+        }
 
         override fun onServiceDisconnected(name: ComponentName?) =
             delegate.onServiceDisconnected(translate(name))

@@ -22,10 +22,17 @@ import '../widgets/common.dart';
 ///
 /// The paths shown are the guest's own — `/sdcard/Android/obb/com.example.game` — because
 /// those are the paths a game's own instructions name.
+///
+/// ## Two ways in
+///
+/// Opened from the home screen it is the whole virtual device's storage, and the first
+/// level is the list of apps in it. Opened from one app it starts inside that app. Same
+/// screen, because they are the same tree seen from two heights.
 class FilesScreen extends StatefulWidget {
-  const FilesScreen({super.key, required this.app, required this.state});
+  const FilesScreen({super.key, this.app, required this.state});
 
-  final VirtualApp app;
+  /// The app to open inside, or null to start at the list of them.
+  final VirtualApp? app;
   final AppState state;
 
   @override
@@ -33,8 +40,11 @@ class FilesScreen extends StatefulWidget {
 }
 
 class _FilesScreenState extends State<FilesScreen> {
-  /// Where we are. Empty is the root list, which is where the screen opens: a guest has
-  /// two trees and neither contains the other, so there is no one directory above them.
+  /// Which app's tree is on screen. Null only in whole-device mode, before one is picked.
+  VirtualApp? _app;
+
+  /// Where we are inside [_app]. Empty is that app's root list: a guest has two trees and
+  /// neither contains the other, so there is no one directory above them.
   String _path = '';
   GuestListing? _listing;
   bool _busy = false;
@@ -42,12 +52,35 @@ class _FilesScreenState extends State<FilesScreen> {
   @override
   void initState() {
     super.initState();
+    _app = widget.app;
+    if (_app != null) _load('');
+  }
+
+  /// True while the screen is showing the apps rather than any app's files.
+  bool get _atAppList => _app == null;
+
+  void _openApp(VirtualApp app) {
+    setState(() {
+      _app = app;
+      _listing = null;
+    });
     _load('');
   }
 
+  /// Back out of an app's root list to the app list, when there is one to go back to.
+  void _leaveApp() {
+    setState(() {
+      _app = null;
+      _path = '';
+      _listing = null;
+    });
+  }
+
   Future<void> _load(String path) async {
+    final app = _app;
+    if (app == null) return;
     setState(() => _busy = true);
-    final listing = await widget.state.listFiles(widget.app.vuid, path);
+    final listing = await widget.state.listFiles(app.vuid, path);
     if (!mounted) return;
     setState(() {
       _path = path;
@@ -70,7 +103,7 @@ class _FilesScreenState extends State<FilesScreen> {
     final s = Strings.of(context);
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
-    final result = await widget.state.importFilesInto(widget.app.vuid, _path);
+    final result = await widget.state.importFilesInto(_app!.vuid, _path);
     if (!mounted) return;
     setState(() => _busy = false);
     await _load(_path);
@@ -112,7 +145,7 @@ class _FilesScreenState extends State<FilesScreen> {
       ),
     );
     if (name == null || name.isEmpty || !mounted) return;
-    await widget.state.createFolder(widget.app.vuid, _path, name);
+    await widget.state.createFolder(_app!.vuid, _path, name);
     if (!mounted) return;
     await _load(_path);
   }
@@ -137,7 +170,7 @@ class _FilesScreenState extends State<FilesScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await widget.state.deleteFile(widget.app.vuid, entry.path);
+    await widget.state.deleteFile(_app!.vuid, entry.path);
     if (!mounted) return;
     await _load(_path);
   }
@@ -147,13 +180,16 @@ class _FilesScreenState extends State<FilesScreen> {
     final s = Strings.of(context);
     final listing = _listing;
     final atRoot = _path.isEmpty;
+    // Whether Back inside the screen has anywhere to go. In whole-device mode an app's
+    // root list goes back to the app list; opened from one app, that level is the top.
+    final canGoUp = !_atAppList && (!atRoot || widget.app == null);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(s.t('files.title')),
+        title: Text(_atAppList ? s.t('files.title') : (_app?.label ?? s.t('files.title'))),
         // The path, not the app name: the app name is on the screen before this one and
         // the path is the thing that changes as you move.
-        bottom: atRoot
+        bottom: (atRoot || _atAppList)
             ? null
             : PreferredSize(
                 preferredSize: const Size.fromHeight(28),
@@ -173,14 +209,14 @@ class _FilesScreenState extends State<FilesScreen> {
                   ),
                 ),
               ),
-        leading: atRoot
-            ? null
-            : IconButton(
+        leading: canGoUp
+            ? IconButton(
                 icon: const Icon(Icons.arrow_back_rounded),
-                onPressed: () => _load(_parent),
-              ),
+                onPressed: atRoot ? _leaveApp : () => _load(_parent),
+              )
+            : null,
         actions: [
-          if (!atRoot)
+          if (!atRoot && !_atAppList)
             IconButton(
               icon: const Icon(Icons.create_new_folder_outlined),
               tooltip: s.t('files.newFolder'),
@@ -188,21 +224,54 @@ class _FilesScreenState extends State<FilesScreen> {
             ),
         ],
       ),
-      floatingActionButton: atRoot
+      floatingActionButton: (atRoot || _atAppList)
           ? null
           : FloatingActionButton.extended(
               onPressed: _busy ? null : _import,
               icon: const Icon(Icons.add_rounded),
               label: Text(s.t('files.import')),
             ),
-      body: listing == null
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: () => _load(_path),
-              child: atRoot
-                  ? _roots(context, listing)
-                  : _entries(context, listing, s),
-            ),
+      body: _atAppList
+          ? _appList(context, s)
+          : listing == null
+              ? const Center(child: CircularProgressIndicator())
+              : RefreshIndicator(
+                  onRefresh: () => _load(_path),
+                  child: atRoot
+                      ? _roots(context, listing)
+                      : _entries(context, listing, s),
+                ),
+    );
+  }
+
+  /// Every app in the space, which is what "the virtual device's files" means.
+  Widget _appList(BuildContext context, Strings s) {
+    final apps = widget.state.apps;
+    if (apps.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(UniqueSpace.lg),
+        children: [
+          NoticeBanner(
+            tone: NoticeTone.info,
+            title: s.t('files.noAppsTitle'),
+            message: s.t('files.noAppsBody'),
+          ),
+        ],
+      );
+    }
+    return ListView.separated(
+      itemCount: apps.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final app = apps[index];
+        return ListTile(
+          leading: AppIconTile(label: app.label, bytes: app.icon, size: 40),
+          title: Text(app.label, overflow: TextOverflow.ellipsis),
+          subtitle: Text(app.packageName, overflow: TextOverflow.ellipsis),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => _openApp(app),
+        );
+      },
     );
   }
 
@@ -216,7 +285,7 @@ class _FilesScreenState extends State<FilesScreen> {
         NoticeBanner(
           tone: NoticeTone.info,
           title: s.t('files.aboutTitle'),
-          message: s.t('files.aboutBody', {'package': widget.app.packageName}),
+          message: s.t('files.aboutBody', {'package': _app!.packageName}),
         ),
         const SizedBox(height: UniqueSpace.md),
         for (final root in listing.roots)

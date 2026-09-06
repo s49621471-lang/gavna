@@ -85,16 +85,22 @@ class GoogleCompatRouter(
         }
 
         return when (flow) {
-            // Package+signature bound. Only an in-space GMS can answer correctly; a host
-            // bridge would return a token for the wrong OAuth client, which fails
-            // server-side in a way the app developer cannot debug.
+            // Package+signature bound, and the one flow the broker rewrite cannot help
+            // with. `GmsBrokerBinder` corrects the calling package so Play services
+            // accepts the bind — which is what makes Maps, Firebase, ads and Dynamite
+            // work — but it makes the caller UNIQUE, and sign-in asks Google *which app
+            // is this*. Play services answers that from the OAuth client registered for
+            // the app's package and signing certificate in the developer's own Google
+            // Cloud project, so a request arriving as UNIQUE gets DEVELOPER_ERROR. No
+            // amount of rewriting changes it: the check is made in another process
+            // against a record UNIQUE has no part in.
             GoogleFlow.SIGN_IN -> when {
                 capabilities.virtualGmsInstalled ->
                     RoutingDecision(flow, GoogleMode.VIRTUAL_GMS,
                         "Legacy Google Sign-In checks the app's package and signing certificate, which only in-space Google Play services can satisfy.")
                 else ->
                     RoutingDecision(flow, GoogleMode.UNSUPPORTED,
-                        "Legacy Google Sign-In requires in-space Google Play services. Enable them for this space, or use an app that supports Sign in with Google.")
+                        "Google Play services works for this app, but sign-in does not: it identifies the app by package name and signing certificate, and inside UNIQUE the call arrives as UNIQUE. Google answers DEVELOPER_ERROR. Only in-space Google Play services can present the app's own identity.")
             }
 
             // Reasoning, not a measurement: the audience of a Sign in with Google token is

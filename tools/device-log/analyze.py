@@ -897,6 +897,9 @@ def check_storage(run: Run) -> Check:
     return check
 
 
+_REFUSED_CALLER = re.compile(r"Unknown calling package name")
+
+
 def check_google_stack(run: Run) -> Check:
     """Was a guest told the device has no Play services when it has?
 
@@ -964,6 +967,46 @@ def check_google_stack(run: Run) -> Check:
             )
         else:
             check.note(f"{package} wants Play services, which this phone does not have")
+
+    # Whether the calling-package rewrite is doing its job. A run with refusals and no
+    # rewrites means the broker was never wrapped; a run with both means it was wrapped
+    # and something still got through, which is a different bug and worth telling apart.
+    rewritten = run.by_code("GMS_CALLING_PACKAGE_REWRITTEN")
+    wrapped = run.by_code("GMS_BROKER_WRAPPED")
+    refused = [
+        line for line in run.lines
+        if _REFUSED_CALLER.search(line.message)
+    ]
+    if wrapped:
+        check.note(f"the Play services broker was wrapped for {len(wrapped)} bind(s)")
+    if rewritten:
+        check.note(f"{len(rewritten)} request(s) went out under UNIQUE's own name")
+    if refused and not wrapped:
+        check.fail(
+            f"Play services refused a guest's identity {len(refused)}x and the broker was "
+            f"never wrapped — the bind did not go through the connection UNIQUE corrects",
+            refused[0].lineno,
+            refused[0].message.strip()[:160],
+        )
+    elif refused:
+        check.fail(
+            f"Play services still refused a guest's identity {len(refused)}x with the "
+            f"broker wrapped — a request reached it by a route the rewrite does not cover",
+            refused[0].lineno,
+            refused[0].message.strip()[:160],
+        )
+
+    # The one failure the rewrite cannot fix, named so it is not mistaken for one it can.
+    for line in run.lines:
+        if "DEVELOPER_ERROR" not in line.message:
+            continue
+        package = run.package_of_pid(line.pid) or "a guest"
+        check.note(
+            f"{package}: Google answered DEVELOPER_ERROR — sign-in identifies an app by "
+            f"package and signing certificate, and inside UNIQUE the call arrives as "
+            f"UNIQUE. Not fixable without in-space Play services"
+        )
+        break
     return check
 
 _HOOKED_LIBRARY = re.compile(r"hooked \d+ new slot\(s\) after loading (\S+)")

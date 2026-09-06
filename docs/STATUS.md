@@ -916,6 +916,66 @@ visible ChatGPT takes its native path, Play services resolves the caller to UNIQ
 token comes back for UNIQUE's identity rather than the app's. In-space Play services is
 still the only architecture that answers it, and it is still not built.
 
+### Making Play services actually work, and the exact point where it stops
+
+Two asks: *"сделай нормальный полноценный гугл сервисы и гугл вход"*, and put the file
+manager on the home screen rather than inside an app's settings. The second is done. The
+first splits cleanly in two, and the split is not a matter of effort.
+
+**The one refusal, and how it is answered now.** Every Play services client, for every
+API, starts the same way:
+
+```java
+GetServiceRequest request = new GetServiceRequest(...);
+request.callingPackage = context.getPackageName();
+broker.getService(callbacks, request);
+```
+
+`com.google.android.gms` takes `Binder.getCallingUid()`, asks the package manager which
+packages that uid owns, and refuses if the request's calling package is not among them.
+Inside UNIQUE the uid is always UNIQUE's, so this failed for **every** guest and every
+Google API — and every Google-shaped failure in this project was behind it.
+
+The uid cannot be changed; it is the kernel's, checked in another process. The *name* in
+the request can be, and `com.unique` genuinely is a package that uid owns. So the request
+is rewritten in flight: `GmsBrokerBinder` wraps the broker at the moment the guest first
+holds it, and rewrites the calling package inside the marshalled `GetServiceRequest`.
+
+Rebuilding rather than patching, because `Parcel.marshall()` refuses any parcel holding a
+binder and this one holds the client's callbacks. `Parcel.appendFrom` carries binder
+references across, so every byte except the replaced string is copied verbatim. The
+`SafeParcelWriter` layout is walked without knowing one field number — the field is found
+**by value**, as the one whose contents decode to exactly the guest's package name,
+because the index is Google's private business and changes between versions while the
+value never does. Any inconsistency abandons the rewrite and forwards what the app wrote,
+so the worst case is the refusal that was happening anyway.
+
+**Where it stops, and why no amount of work moves it.** Play services now believes the
+caller is `com.unique`, because that is the truth about the uid. Anything that is *about
+which app this is* is therefore answered for UNIQUE. Google Sign-In identifies an app by
+package name **and signing certificate**, checked against the OAuth client in the app
+developer's own Google Cloud project. A request arriving as `com.unique` matches no such
+client, and Google answers `DEVELOPER_ERROR`.
+
+That is not a prediction. It is in the ninth run's log, from the user's own phone:
+
+```
+W GoogleApiManager: connectionResult is not user-facing:
+    ConnectionResult{statusCode=DEVELOPER_ERROR, resolution=null}
+```
+
+To present the app's own identity, the call has to *originate* from a uid that owns the
+app's package and be signed by the app's certificate. Inside a virtual space that means
+implementing Play services in the space (`GoogleMode.VIRTUAL_GMS`), which is a GmsCore
+reimplementation — and one that still needs system-level signature spoofing to satisfy
+the certificate half. Root or a patched ROM. It is a real project and it is not this one.
+
+| Found | Fixed by |
+|---|---|
+| **Play services refused every guest, for every API.** One call, `GmsClient.getRemoteService`, and behind it Maps, Firebase, ads, the advertising ID, Dynamite modules, analytics and FCM | `GmsBrokerBinder` + `SafeParcelRewrite`. The broker is wrapped only when the bind is to `com.google.android.gms` — checked before the interface descriptor, because reading a descriptor from a remote binder is a synchronous transaction on the app's main thread. Eleven tests over the parcel walk, all but one about what it *refuses* to touch |
+| **Google sign-in.** `DEVELOPER_ERROR` in the ninth run, on the user's own device | Not fixed, and now stated exactly rather than as "requires in-space GMS": the bind succeeds, the identity check does not, and the reason is a signature check made by another process against a record UNIQUE has no part in. The analyzer names it when it sees it, so it stops looking like a bug in the app |
+| **The file manager was inside an app's settings.** It is the virtual device's file manager, not one app's | It is a built-in app on the home screen, first in the grid, with no *Remove* — deleting the only thing that can put a file into the space would lock the user out of it. Opened there it starts at the list of apps; opened from an app it starts inside that app. Same screen, same tree, two heights |
+
 ### What the sixth run settled about Google sign-in
 
 The Google layer used to answer `PASSTHROUGH` for `SIGN_IN` whenever an app declared an

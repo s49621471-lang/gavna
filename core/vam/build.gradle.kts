@@ -21,4 +21,5 @@ dependencies {
     implementation(project(":core:vprocess"))
     implementation(project(":core:vpermission"))
     implementation(project(":core:diagnostics"))
+    implementation(project(":core:google"))
 }
