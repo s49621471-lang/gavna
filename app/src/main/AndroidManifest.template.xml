@@ -139,13 +139,24 @@
 
       Redirecting the guest at an empty directory and then having no way to fill it is
       what "the game does not see its OBB" was, and no amount of correct redirection
-      fixes it. Since Android 11 that directory is guarded, and this is the permission
-      the guard asks for.
+      fixes it.
 
-      Declaring it grants nothing on its own — this is *special access*, and the user
+      IMPORTANT, and it is the opposite of what this comment used to say: this permission
+      does NOT open that directory. `MANAGE_EXTERNAL_STORAGE` explicitly excludes
+      `Android/data` and `Android/obb` - the platform filters both subtrees out below the
+      permission check, so an app holding All-files access sees exactly what an app
+      holding nothing sees. A build shipped that told the user to grant it, for every app
+      including ones with no expansion files; they granted it and nothing changed. It
+      could not have. The route that works is the user handing the file over, which is
+      what the instance's file browser is for.
+
+      It is still declared, because it does widen the rest of shared storage - Download,
+      Documents, a game's assets sitting anywhere a user put them - which is where an
+      .obb usually is by the time someone is copying it. It is offered as an access the
+      user may turn on, and nothing in UNIQUE claims it will fix a game.
+
+      Declaring it grants nothing on its own - this is *special access*, and the user
       must turn it on from a Settings screen, which `SpecialAccess.ALL_FILES` opens.
-      Everything degrades without it: `GuestAssetImport` reports SOURCE_UNREADABLE and
-      the user can still hand UNIQUE the .obb file directly.
 
       maxSdkVersion is deliberately absent: this permission exists from API 30 on and is
       the only route on every release UNIQUE supports.

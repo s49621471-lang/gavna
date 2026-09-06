@@ -158,6 +158,8 @@ class Strings {
     'engine.SIGNER_UNKNOWN':
         'Could not verify that the update is signed by the same developer.',
     'engine.NO_SUCH_INSTANCE': 'That copy no longer exists.',
+    'engine.NO_DESTINATION': 'Open a folder first, then import into it.',
+    'engine.NO_UI': 'The file picker could not be opened.',
     'engine.NO_LAUNCHABLE_ACTIVITY': 'This app has no screen UNIQUE can open.',
     'engine.PROCESS_POOL_EXHAUSTED':
         'Every virtual process is in use. Stop an app and try again.',
@@ -225,15 +227,28 @@ class Strings {
     'access.exactAlarm': 'Alarms and reminders',
     'access.battery': 'Run in the background unrestricted',
     'access.allFiles': 'Access to all files',
-    'launch.assetsUnreadable':
-        'Started, but this app\u2019s downloaded game files could not be copied in \u2014 '
-        'Android keeps Android/obb closed unless UNIQUE has access to all files.',
-    'launch.grantAllFiles': 'Allow',
-    'details.assetsBlocked': 'Game files are out of reach',
-    'details.assetsBlockedBody':
-        'This app has downloaded game files on the device, and Android keeps '
-        'Android/obb closed until UNIQUE has access to all files. Without it the app '
-        'starts with none of them.',
+    'common.create': 'Create',
+    'common.delete': 'Delete',
+    'details.files': 'Files',
+    'details.filesBody': 'Browse and add this app\u2019s files',
+    'files.title': 'Files',
+    'files.import': 'Import',
+    'files.imported': 'Copied {files} file(s), {size}.',
+    'files.importedNothing': 'Nothing was copied.',
+    'files.newFolder': 'New folder',
+    'files.folderName': 'Name',
+    'files.deleteTitle': 'Delete?',
+    'files.deleteBody': '{name} will be deleted from this app, permanently.',
+    'files.items': '{count} item(s)',
+    'files.unreadable': 'cannot be listed',
+    'files.emptyTitle': 'Empty',
+    'files.emptyBody':
+        'Nothing here yet. Import puts files from the device into this folder.',
+    'files.aboutTitle': 'This app\u2019s own files',
+    'files.aboutBody':
+        'These are the paths the app itself uses. Game expansion files belong in '
+        '/sdcard/Android/obb/{package} \u2014 Android does not let UNIQUE copy them '
+        'from the device on its own, so import them here.',
     'details.storage': 'Storage',
     'details.data': 'Data',
     'details.cache': 'Cache',
@@ -384,6 +399,8 @@ class Strings {
     'engine.SIGNER_UNKNOWN':
         'Не удалось проверить, что обновление подписано тем же разработчиком.',
     'engine.NO_SUCH_INSTANCE': 'Этой копии больше нет.',
+    'engine.NO_DESTINATION': 'Сначала откройте папку, потом импортируйте в неё.',
+    'engine.NO_UI': 'Не удалось открыть выбор файлов.',
     'engine.NO_LAUNCHABLE_ACTIVITY': 'У приложения нет экрана, который UNIQUE может открыть.',
     'engine.PROCESS_POOL_EXHAUSTED':
         'Все виртуальные процессы заняты. Остановите какое-нибудь приложение и повторите.',
@@ -450,15 +467,28 @@ class Strings {
     'access.exactAlarm': 'Будильники и напоминания',
     'access.battery': 'Работа в фоне без ограничений',
     'access.allFiles': 'Доступ ко всем файлам',
-    'launch.assetsUnreadable':
-        'Запущено, но скачанные файлы игры скопировать не удалось \u2014 Android '
-        'закрывает Android/obb, пока у UNIQUE нет доступа ко всем файлам.',
-    'launch.grantAllFiles': 'Разрешить',
-    'details.assetsBlocked': 'Файлы игры недоступны',
-    'details.assetsBlockedBody':
-        'У этого приложения на устройстве есть скачанные файлы игры, а Android '
-        'закрывает Android/obb, пока у UNIQUE нет доступа ко всем файлам. Без него '
-        'приложение запустится вообще без них.',
+    'common.create': 'Создать',
+    'common.delete': 'Удалить',
+    'details.files': 'Файлы',
+    'details.filesBody': 'Посмотреть и добавить файлы приложения',
+    'files.title': 'Файлы',
+    'files.import': 'Импорт',
+    'files.imported': 'Скопировано файлов: {files}, {size}.',
+    'files.importedNothing': 'Ничего не скопировано.',
+    'files.newFolder': 'Новая папка',
+    'files.folderName': 'Название',
+    'files.deleteTitle': 'Удалить?',
+    'files.deleteBody': '{name} будет удалён из этого приложения безвозвратно.',
+    'files.items': 'Объектов: {count}',
+    'files.unreadable': 'не читается',
+    'files.emptyTitle': 'Пусто',
+    'files.emptyBody':
+        'Здесь пока ничего нет. Кнопка «Импорт» кладёт сюда файлы с устройства.',
+    'files.aboutTitle': 'Собственные файлы приложения',
+    'files.aboutBody':
+        'Это те пути, которыми пользуется само приложение. Файлы игры (OBB) лежат в '
+        '/sdcard/Android/obb/{package} \u2014 Android не даёт UNIQUE скопировать их '
+        'с устройства самостоятельно, поэтому импортируйте их здесь.',
     'details.storage': 'Хранилище',
     'details.data': 'Данные',
     'details.cache': 'Кэш',

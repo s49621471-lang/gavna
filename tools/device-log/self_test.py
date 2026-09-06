@@ -42,6 +42,8 @@ FIXTURE7 = os.path.join(HERE, "fixtures", "redmi-android15-run7.log")
 FIXTURE7_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run7.device.txt")
 FIXTURE8 = os.path.join(HERE, "fixtures", "redmi-android15-run8.log")
 FIXTURE8_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run8.device.txt")
+FIXTURE9 = os.path.join(HERE, "fixtures", "redmi-android15-run9.log")
+FIXTURE9_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run9.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -505,6 +507,76 @@ class RedmiRun8Test(unittest.TestCase):
 
     def test_the_protector_is_still_left_alone_on_purpose(self):
         self.assertIn("libgrave.so", notes(self.checks["native"]))
+
+
+class RedmiRun9Test(unittest.TestCase):
+    """The ninth run: what making Play services visible actually cost.
+
+    The previous build stopped hiding Google from guests, and this log is the bill. Three
+    apps died of the refusal the hiding was protecting them from — on the main looper,
+    where nothing can catch it — while a fourth hit the same refusal ten times and
+    survived it, because its client library is newer:
+
+        FATAL  SecurityException: Unknown calling package name 'com.gordey.standarling'
+               at …c.getRemoteService (play-services-basement@@17.4.0:25)
+               at …c$g.handleMessage · Looper.loop
+
+        E GoogleApiManager: Failed to get service from broker.
+          SecurityException: Unknown calling package name 'com.openai.chatgpt'
+
+    Same refusal, same run, opposite outcomes, and the difference is Google's code and not
+    UNIQUE's. That is what `GuestLooperGuard` is for.
+
+    The other thing this log settles is the expansion-file message. It appears here for
+    `com.openai.chatgpt`, `bin.mt.plus` and `com.a0soft.gphone.acc.free` — a chat app, a
+    file manager and a cleaner, none of which has ever had an OBB file — because the
+    engine inferred "blocked" from "cannot see it", and on Android 11 and later nothing
+    can see it. The user granted all-files access, which does not cover `Android/obb`, and
+    nothing changed. It could not have.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE9, FIXTURE9_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_refusal_killed_the_apps_with_the_old_client(self):
+        check = self.checks["crash"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        detail = findings(check)
+        self.assertIn("Unknown calling package name", detail)
+        # Three, not one: this is a property of the client library each app ships, so it
+        # hits several unrelated apps at once and none of them is at fault.
+        self.assertGreaterEqual(detail.count("Unknown calling package name"), 3)
+
+    def test_the_same_refusal_was_survived_by_a_newer_client_in_the_same_run(self):
+        # The evidence that the crash is not inherent. If this stops being true the
+        # looper guard is solving a problem that does not exist in this shape.
+        survived = [
+            line for line in self.parsed.lines
+            if "Failed to get service from broker" in line.message
+        ]
+        self.assertTrue(survived)
+
+    def test_the_expansion_message_reached_apps_that_have_no_expansion_files(self):
+        # The false positive, stated as itself. `bin.mt.plus` is a file manager.
+        findings_text = findings(self.checks["storage"])
+        self.assertIn("bin.mt.plus", findings_text)
+        self.assertIn("com.openai.chatgpt", findings_text)
+
+    def test_the_advice_no_longer_prescribes_a_grant_that_cannot_help(self):
+        # The message the user acted on and got nothing for. `MANAGE_EXTERNAL_STORAGE`
+        # does not cover `Android/data` or `Android/obb`, so telling anyone to grant it
+        # for expansion files is telling them to do something that has no effect.
+        text = findings(self.checks["storage"])
+        self.assertNotIn("grant UNIQUE all-files access", text)
+        self.assertIn("file browser", text)
+
+    def test_the_packer_still_refuses_to_start(self):
+        # Unchanged and still unsolved: `bin.mt.plus` unpacks its real application at
+        # runtime and UNIQUE never finds one. Asserted so it stays visible rather than
+        # being quietly forgotten between runs.
+        self.assertIn("NO_APPLICATION", findings(self.checks["launch"]))
 
 
 HEALTHY = """\

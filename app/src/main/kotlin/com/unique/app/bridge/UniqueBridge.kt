@@ -28,6 +28,7 @@ import com.unique.core.vpermission.PermissionGroup
 import com.unique.core.vpermission.PermissionState
 import com.unique.core.vpm.CreateResult
 import com.unique.core.vpm.InstanceManager
+import com.unique.core.vstorage.FileBrowser
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
@@ -136,6 +137,10 @@ object UniqueBridge {
             "cloneInstance" -> cloneInstance(a["package"] as String)
             "importGuestAssets" -> importGuestAssets(a)
             "guestAssetStatus" -> UniqueEngine.guestAssetStatus((a["vuid"] as Number).toInt())
+            "listFiles" -> listFiles(context, a)
+            "importFilesInto" -> importFilesInto(context, a)
+            "createFolder" -> createFolder(context, a)
+            "deleteFile" -> deleteFile(context, a)
             "launchInstance" -> launchInstance(context, (a["vuid"] as Number).toInt())
             "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
             "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)
@@ -408,25 +413,140 @@ object UniqueBridge {
         return mapOf("ok" to (report["outcome"] != "SOURCE_UNREADABLE")) + report
     }
 
+    // ---- the instance's own files ---------------------------------------------------
+    //
+    // A guest's directories live inside UNIQUE's private storage, where no file manager
+    // on the phone can reach them. These four methods are what makes them reachable, and
+    // they exist because of a limit nothing else can get around: since Android 11 the
+    // platform hides `Android/data` and `Android/obb` from every app *including one
+    // holding all-files access*, so UNIQUE cannot fetch a game's expansion files however
+    // many permissions it is given. The user can hand them over, and this is the hand.
+
     /**
-     * Starts an instance, and says when it started without the files it needs.
+     * Lists one directory of one instance, plus the roots when the path is empty.
      *
-     * `warning` is deliberately not a failure: the app *did* start. A game whose
-     * expansion files could not be copied in runs and shows an empty menu, and nothing
-     * about that points the user at the one switch that fixes it — so the launch that
-     * succeeds carries the sentence with it.
+     * The paths are the guest's own — `/data/data/<pkg>` and `/sdcard` — not the real
+     * ones on disk. A user following a game's instructions is looking for
+     * `Android/obb/com.example.game`, and that is what they should find.
+     */
+    private suspend fun listFiles(context: Context, a: Map<String, Any?>): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false, "code" to "NO_SUCH_INSTANCE")
+        val browser = FileBrowser(context)
+        val path = (a["path"] as? String).orEmpty()
+        return withContext(Dispatchers.IO) {
+            if (path.isEmpty()) {
+                mapOf(
+                    "ok" to true,
+                    "path" to "",
+                    "roots" to browser.roots(vuid, instance.packageName).map {
+                        mapOf("label" to it.label, "path" to it.guestPath)
+                    },
+                    "entries" to emptyList<Any?>(),
+                )
+            } else {
+                mapOf(
+                    "ok" to true,
+                    "path" to path,
+                    "roots" to browser.roots(vuid, instance.packageName).map {
+                        mapOf("label" to it.label, "path" to it.guestPath)
+                    },
+                    "entries" to browser.list(vuid, instance.packageName, path).map { it.toMap() },
+                )
+            }
+        }
+    }
+
+    /**
+     * Opens the system picker and copies what the user chose into [path].
+     *
+     * Reads through a `ContentResolver` rather than a file path: the picker returns a
+     * `content://` URI, and the file behind it may be in another app's storage, on a
+     * removable volume, or in a cloud provider with no local file at all.
+     */
+    private suspend fun importFilesInto(context: Context, a: Map<String, Any?>): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false, "code" to "NO_SUCH_INSTANCE")
+        val path = (a["path"] as? String).orEmpty()
+        if (path.isEmpty()) return mapOf("ok" to false, "code" to "NO_DESTINATION")
+        val chooser = picker ?: return mapOf("ok" to false, "code" to "NO_UI")
+        val uris = chooser.pickApks()
+        if (uris.isEmpty()) return mapOf("ok" to true, "files" to 0, "bytes" to 0)
+
+        val browser = FileBrowser(context)
+        val resolver = context.contentResolver
+        return withContext(Dispatchers.IO) {
+            var files = 0
+            var bytes = 0L
+            val failures = ArrayList<String>(1)
+            for (uri in uris) {
+                val name = displayNameOf(context, uri) ?: uri.lastPathSegment ?: "imported"
+                val stream = runCatching { resolver.openInputStream(uri) }.getOrNull()
+                if (stream == null) {
+                    failures += "$name: could not be opened"
+                    continue
+                }
+                browser.importInto(vuid, instance.packageName, path, name, stream)
+                    .onSuccess { files++; bytes += it }
+                    .onFailure { failures += "$name: ${it.message ?: it.javaClass.simpleName}" }
+            }
+            Diagnostics.info(
+                DiagChannel.STORAGE, "GUEST_FILES_IMPORTED",
+                mapOf(
+                    "package" to instance.packageName,
+                    "vuid" to vuid.toString(),
+                    "path" to path,
+                    "files" to files.toString(),
+                    "bytes" to bytes.toString(),
+                ),
+            )
+            buildMap {
+                put("ok", failures.isEmpty())
+                put("files", files)
+                put("bytes", bytes)
+                if (failures.isNotEmpty()) put("message", failures.joinToString("; ").take(300))
+            }
+        }
+    }
+
+    private suspend fun createFolder(context: Context, a: Map<String, Any?>): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false, "code" to "NO_SUCH_INSTANCE")
+        val path = (a["path"] as? String).orEmpty()
+        val name = (a["name"] as? String).orEmpty()
+        return withContext(Dispatchers.IO) {
+            mapOf(
+                "ok" to FileBrowser(context)
+                    .createFolder(vuid, instance.packageName, path, name),
+            )
+        }
+    }
+
+    private suspend fun deleteFile(context: Context, a: Map<String, Any?>): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf("ok" to false, "code" to "NO_SUCH_INSTANCE")
+        val path = (a["path"] as? String).orEmpty()
+        return withContext(Dispatchers.IO) {
+            mapOf("ok" to FileBrowser(context).delete(vuid, instance.packageName, path))
+        }
+    }
+
+    /**
+     * Starts an instance.
+     *
+     * This used to carry a `warning` when the expansion-file import could not read its
+     * source. It said so for every app — the platform hides `Android/obb` from every
+     * package on Android 11 and later — so it was a warning about the device, attached to
+     * apps that have no expansion files at all. The files go in through the instance's
+     * file browser now, and a launch reports only whether it started.
      */
     private suspend fun launchInstance(context: Context, vuid: Int): Map<String, Any?> =
         when (val r = UniqueEngine.launch(context, vuid)) {
-            is LaunchResult.Started -> buildMap {
-                put("ok", true)
-                put("activity", r.activity)
-                val assets = UniqueEngine.lastAssetReport
-                if (assets?.get("outcome") == "SOURCE_UNREADABLE") {
-                    put("warning", "ASSETS_UNREADABLE")
-                    put("warningDetail", assets["detail"] ?: "")
-                }
-            }
+            is LaunchResult.Started -> mapOf("ok" to true, "activity" to r.activity)
             is LaunchResult.Failed -> mapOf("ok" to false, "code" to r.code, "message" to r.message)
         }
 

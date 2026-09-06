@@ -445,10 +445,10 @@ object AppBootstrap {
         //
         // Visible unless *this instance* has already died of the one refusal that kills
         // an old Play services client — which the crash handler below records, because a
-        // crash is the last moment anything in the process can write a file. Before
-        // `Application.onCreate` and the providers, because that is where a Play services
-        // SDK initialises. See GoogleStackVisibility, including the rule this replaced
-        // and why the version number it read cannot say what it looked like it said.
+        // survive it instead. Before `Application.onCreate` and the providers, because
+        // that is where a Play services SDK initialises. See GoogleStackVisibility for
+        // the rule this replaced and why the version number it read cannot say what it
+        // looked like it said, and GuestLooperGuard for why one exception is caught.
         val visibilityFile = File(
             VirtualPathModel(
                 (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
@@ -458,7 +458,7 @@ object AppBootstrap {
             VirtualPackageManagerHook.bindGoogleVisibility(
                 GoogleStackVisibility.decide(readVisibilityOverride(visibilityFile)),
             )
-            installGoogleCrashObserver(visibilityFile, params)
+            installGoogleRefusalGuard(visibilityFile, params)
         }.onFailure {
             Diagnostics.warn(
                 DiagChannel.LAUNCH, "GOOGLE_VISIBILITY_UNDECIDED",
@@ -874,20 +874,23 @@ object AppBootstrap {
         }.getOrNull()
 
     /**
-     * Records, at the moment of the crash, that this instance cannot see Play services.
+     * Survives the Play services refusal, and records it only if surviving stops working.
      *
-     * The refusal is fatal precisely because it arrives on the app's own looper, so there
-     * is no catching it and no asking afterwards — the process is gone. What *can* be
-     * done is leave a mark the next launch reads, which turns "this app is broken forever
-     * with Play services visible" into "this app crashed once and then behaved".
+     * Two layers, in the order they should apply. `GuestLooperGuard` catches the refusal
+     * on the main looper and lets the app carry on — which is what every current version
+     * of the library that raises it already does, so the app ends up on the path its own
+     * newer sibling takes. Nothing is hidden and nothing else is lost.
      *
-     * A crash that is anything else is left alone. Writing the mark for every crash would
-     * quietly disable Play services for an app that died of its own bug, and nothing
-     * would ever say why.
+     * The second layer is for an app that hits the refusal in a loop rather than
+     * recovering from it. There, surviving each one costs a stack frame and buys nothing,
+     * so the instance's visibility file is marked and the *next* launch hides Play
+     * services from that instance alone, which ends the retries at the source.
+     *
+     * `CrashGuard`'s observer stays as the last resort: a refusal that arrives somewhere
+     * the guard cannot wrap still leaves the mark before the process goes.
      */
-    private fun installGoogleCrashObserver(file: File, params: VirtualLaunchParams) {
-        CrashGuard.observer = observer@{ error ->
-            if (!GoogleStackVisibility.isRefusedCallingPackage(error)) return@observer
+    private fun installGoogleRefusalGuard(file: File, params: VirtualLaunchParams) {
+        val record = record@{ reason: String ->
             val written = runCatching {
                 file.parentFile?.mkdirs()
                 file.writeText(GoogleStackVisibility.AUTO_HIDE_MARKER)
@@ -899,9 +902,22 @@ object AppBootstrap {
                     "package" to params.packageName,
                     "vuid" to params.vuid.toString(),
                     "recorded" to written.toString(),
-                    "detail" to "Play services refused this guest's identity on its own " +
-                        "looper; hidden from this instance from the next launch on",
+                    "detail" to reason,
                 ),
+            )
+        }
+        GuestLooperGuard.onThrash = { count ->
+            record(
+                "Play services refused this guest $count times in one launch; hidden " +
+                    "from this instance from the next launch on",
+            )
+        }
+        runCatching { GuestLooperGuard.install(android.os.Looper.getMainLooper()) }
+        CrashGuard.observer = observer@{ error ->
+            if (!GoogleStackVisibility.isRefusedCallingPackage(error)) return@observer
+            record(
+                "Play services refused this guest's identity where the looper guard " +
+                    "could not reach it; hidden from this instance from the next launch on",
             )
         }
     }

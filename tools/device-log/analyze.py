@@ -852,6 +852,12 @@ def check_storage(run: Run) -> Check:
 
     That line is the app's own and is the strongest evidence there is, so it is read
     directly rather than inferred from UNIQUE's events.
+
+    A `SOURCE_UNREADABLE` finding used to say "grant UNIQUE all-files access". That was
+    wrong: `MANAGE_EXTERNAL_STORAGE` does not cover `Android/data` or `Android/obb`, so
+    the grant cannot help and the user who gave it saw no change. The engine no longer
+    infers the outcome from a hidden directory, and this check no longer prescribes the
+    grant — see `check_obb_advice` for the assertion that keeps both true.
     """
     check = Check("storage", "Could a guest read its own external storage and expansion files?")
 
@@ -874,7 +880,8 @@ def check_storage(run: Run) -> Check:
         if outcome == "SOURCE_UNREADABLE":
             check.fail(
                 f"{event['package']}: {event['source'] or 'the source directory'} could "
-                f"not be read; grant UNIQUE all-files access or add the files by hand",
+                f"not be read; add the files through the instance's file browser "
+                f"(all-files access does not cover Android/obb)",
                 event.lineno,
                 event["detail"] or "",
             )

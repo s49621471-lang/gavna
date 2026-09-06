@@ -172,14 +172,14 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-62 tests, under a second, no dependencies. Three kinds:
+67 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that
   happened to a real phone, so a check that stops reporting one has regressed. It is the
   full run filtered to the lines that carry evidence (941 of 26,950); the verdicts are
   identical to those from the unfiltered log.
-- **`fixtures/redmi-android15-run4.log` … `-run8.log`** — the runs after it,
+- **`fixtures/redmi-android15-run4.log` … `-run9.log`** — the runs after it,
   each filtered the same way. Every fault a run found has an assertion here, so a check
   that stops reporting one is a regression in the tool rather than progress in the
   engine. The sixth is the run in which six of seven apps launched and the games could
@@ -189,7 +189,10 @@ tools/device-log/self_test.py
   library UNIQUE hooked" now says what both logs actually support. The eighth disproved a
   rule shipped one pass earlier: three unrelated apps, one of them ChatGPT, all declaring
   `gmsVersion=12451000` on a phone running GmsCore 26.32.34, which is what `google` was
-  written against.
+  written against. The ninth is the bill for the fix — three apps killed by the refusal
+  that hiding used to prevent, a fourth surviving the same refusal ten times in the same
+  run, and the expansion-file message reaching a chat app, a cleaner and a file manager
+  that have never had an expansion file between them.
 - **A synthetic healthy run** — every check must pass on it. Without that the suite would
   prove only that the tool says FAIL, which a tool that always says FAIL would also
   pass.

@@ -105,7 +105,8 @@ class EngineOutcome {
     this.vuid,
     this.cancelled = false,
     this.needsHostSettings = false,
-    this.warning,
+    this.files = 0,
+    this.bytes = 0,
   });
 
   final bool ok;
@@ -126,12 +127,12 @@ class EngineOutcome {
   /// Android will not show the permission dialog again; only its settings page will do.
   final bool needsHostSettings;
 
-  /// Something the user should know about an action that *succeeded*.
+  /// How much an action moved, for the ones that move files. Zero for everything else.
   ///
-  /// A game launches whether or not its expansion files could be copied in — it simply
-  /// has nothing to show — so this cannot be an error, and it must not be silent either:
-  /// an empty game menu points nowhere near the Settings switch that fixes it.
-  final String? warning;
+  /// A file import that copies nothing and one that copies four gigabytes both succeed,
+  /// and the difference is the whole content of what the user needs told.
+  final int files;
+  final int bytes;
 
   /// What to show the user: the translation of [code] when there is one, then the
   /// engine's own sentence, then [fallback].
@@ -157,7 +158,8 @@ class EngineOutcome {
         vuid: (m['vuid'] as int?),
         cancelled: (m['cancelled'] as bool?) ?? false,
         needsHostSettings: (m['needsHostSettings'] as bool?) ?? false,
-        warning: (m['warning'] as String?),
+        files: (m['files'] as num?)?.toInt() ?? 0,
+        bytes: (m['bytes'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -422,5 +424,82 @@ class GoogleRoute {
         flow: (m['flow'] as String?) ?? '',
         mode: (m['mode'] as String?) ?? 'UNSUPPORTED',
         why: (m['why'] as String?) ?? '',
+      );
+}
+
+/// One directory of one instance, as the file browser shows it.
+///
+/// The paths here are the *guest's* — `/sdcard/Android/obb/com.example.game`, not the
+/// real location inside UNIQUE's private storage. That is the whole point of the screen:
+/// a user following a game's own instructions is looking for the path the game names,
+/// and the real one is an implementation detail that would only mislead.
+class GuestListing {
+  const GuestListing({
+    required this.path,
+    required this.roots,
+    required this.entries,
+  });
+
+  /// Where this listing is. Empty means the roots themselves, which is where it opens.
+  final String path;
+
+  /// The trees this instance has, in the order they are shown.
+  final List<GuestRoot> roots;
+
+  final List<GuestFile> entries;
+
+  static GuestListing fromMap(Map<Object?, Object?> m) => GuestListing(
+        path: (m['path'] as String?) ?? '',
+        roots: ((m['roots'] as List<Object?>?) ?? const [])
+            .whereType<Map<Object?, Object?>>()
+            .map(GuestRoot.fromMap)
+            .toList(),
+        entries: ((m['entries'] as List<Object?>?) ?? const [])
+            .whereType<Map<Object?, Object?>>()
+            .map(GuestFile.fromMap)
+            .toList(),
+      );
+}
+
+class GuestRoot {
+  const GuestRoot({required this.label, required this.path});
+
+  final String label;
+  final String path;
+
+  static GuestRoot fromMap(Map<Object?, Object?> m) => GuestRoot(
+        label: (m['label'] as String?) ?? '',
+        path: (m['path'] as String?) ?? '',
+      );
+}
+
+class GuestFile {
+  const GuestFile({
+    required this.name,
+    required this.path,
+    required this.isDirectory,
+    required this.bytes,
+    required this.modified,
+    required this.children,
+  });
+
+  final String name;
+  final String path;
+  final bool isDirectory;
+  final int bytes;
+
+  /// Milliseconds since the epoch, or 0 when the platform would not say.
+  final int modified;
+
+  /// How many entries a directory holds; -1 when it could not be listed.
+  final int children;
+
+  static GuestFile fromMap(Map<Object?, Object?> m) => GuestFile(
+        name: (m['name'] as String?) ?? '',
+        path: (m['path'] as String?) ?? '',
+        isDirectory: m['isDirectory'] == true,
+        bytes: (m['bytes'] as num?)?.toInt() ?? 0,
+        modified: (m['modified'] as num?)?.toInt() ?? 0,
+        children: (m['children'] as num?)?.toInt() ?? 0,
       );
 }

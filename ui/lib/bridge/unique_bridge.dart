@@ -71,6 +71,27 @@ class UniqueBridgeClient {
     };
   }
 
+  /// One directory of an instance, in the guest's own paths.
+  ///
+  /// An empty [path] asks for the roots and nothing else, which is what the browser
+  /// opens on: a guest has two trees and neither is a parent of the other, so there is no
+  /// single directory above them to list.
+  Future<GuestListing> listFiles(int vuid, String path) async {
+    final result = await _method
+        .invokeMapMethod<Object?, Object?>('listFiles', {'vuid': vuid, 'path': path});
+    return GuestListing.fromMap(result ?? const {});
+  }
+
+  /// Opens the system picker and copies what the user chose into [path].
+  Future<EngineOutcome> importFilesInto(int vuid, String path) async =>
+      _outcome('importFilesInto', {'vuid': vuid, 'path': path});
+
+  Future<EngineOutcome> createFolder(int vuid, String path, String name) async =>
+      _outcome('createFolder', {'vuid': vuid, 'path': path, 'name': name});
+
+  Future<EngineOutcome> deleteFile(int vuid, String path) async =>
+      _outcome('deleteFile', {'vuid': vuid, 'path': path});
+
   Future<EngineOutcome> removeInstance(int vuid) async =>
       _outcome('removeInstance', {'vuid': vuid});
 

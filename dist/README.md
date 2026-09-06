@@ -51,7 +51,42 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
-The last log was answered with two words — *"nothing changed"* — and a screenshot of a
+Six things were reported. Two of them were mistakes of mine, one was a request, and the
+log had all of them.
+
+- **Apps stopped crashing on Google Play services.** Making the stack visible had a cost
+  and this is it: three apps died of `SecurityException: Unknown calling package name` on
+  their own main thread. In the *same run*, ChatGPT hit the identical refusal ten times
+  and carried on — because it ships a newer Google library, and the newer one catches it.
+  UNIQUE now catches it too. One exception, from one API, is caught on the guest's main
+  loop; everything else still ends the process as before. An old app ends up on the same
+  path its own newer sibling takes: that one call fails, the app is told, and nothing else
+  is lost. Play services stays visible for everything else.
+- **"Why does it say OBB is needed for apps that don't even have it?"** Because I got it
+  wrong. UNIQUE decided the expansion files were present-and-blocked whenever it could not
+  *see* the directory — and since Android 11 it can never see it, so every app matched,
+  including a chat app, a cleaner and a file manager that have never had one. Nothing is
+  inferred any more; an invisible directory is now reported as nothing at all.
+- **"I gave all-files access and nothing changed."** It could not have. **All-files access
+  does not cover `Android/data` or `Android/obb`** — Android filters those two folders out
+  below the permission check, so an app with the permission sees exactly what an app
+  without it sees. Every message that told you to grant it is gone.
+- **The banners are gone.** The warning banner on App Details and the ten-second message
+  after every launch have been removed. They were asking for that same permission, for
+  every app, whether or not it was true.
+- **There is a file manager now, which is what was actually needed.** **App Details →
+  Storage → Files.** It shows the app's own folders under the paths the app itself uses —
+  `/data/data/<package>` and `/sdcard`, with `Android/obb/<package>` where the game's own
+  instructions say it is — and **Import** copies files in from anywhere the system picker
+  can reach. Multiple files at once. That is the way to give a game its `.obb`, and it is
+  the only way Android leaves open.
+- **Google sign-in is still not fixed**, and I am not going to claim otherwise. Play
+  services resolves the caller to UNIQUE, so a token comes back for UNIQUE and not for the
+  app. Only Play services running *inside* the space can answer that, and it is not built.
+
+## What changed two runs ago
+
+That log was answered with two words — *"nothing changed"* — and a screenshot of a
 notification asking to install Google Play services. That was fair. The build was
 installed and its new code was running; the code was wrong.
 
@@ -66,12 +101,11 @@ installed and its new code was running; the code was wrong.
   process goes; the next launch of that one app takes the path its SDK has for a phone
   with no Google, and nothing else is affected.
 - **The all-files request is on the app's own screen now, not in a snackbar.** Expansion
-  files (`Android/obb`) have needed all-files access since Android 11, and a game without
-  them looks like a broken download. The previous build said so in a message that
-  disappears; this one puts a banner on the app's details screen that stays until the
-  access is granted, with an **Allow** button that opens the right settings page. Until it
-  is granted the games will keep starting without their assets — there is no way around
-  the grant, only around missing it.
+  files (`Android/obb`) have been out of reach since Android 11, and a game without them
+  looks like a broken download. This build put a banner on the app's details screen asking
+  for all-files access. **That access does not cover `Android/obb`** — see the section
+  above — so the banner asked for something that could not have helped, and it appeared
+  for apps with no expansion files at all.
 - **The device-log analyzer has a check for exactly this mistake.** It pairs "the phone
   has Play services" with "a guest was told it does not" and fails the run. Sixteen checks
   passed on the log that produced that notification; this is the seventeenth, and it is

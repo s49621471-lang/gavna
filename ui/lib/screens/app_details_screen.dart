@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/unique_theme.dart';
 import '../widgets/common.dart';
+import 'files_screen.dart';
 
 /// App Details.
 ///
@@ -36,13 +37,6 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   List<GoogleRoute>? _routes;
   String? _busyGroup;
 
-  /// Whether this instance's expansion files are in place, and why not when they are not.
-  ///
-  /// Read on every visit rather than cached with the instance: the answer changes the
-  /// moment the user grants all-files access, and coming back to this screen is exactly
-  /// what they do next.
-  String? _assetOutcome;
-
   @override
   void initState() {
     super.initState();
@@ -54,14 +48,12 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
     final permissions = await state.instancePermissions(app.vuid);
     final google = await state.googleStatus();
     final routes = await state.googleRouting(app.vuid);
-    final assets = await state.guestAssetStatus(app.vuid);
     if (!mounted) return;
     setState(() {
       _permissions = permissions;
       _special = special;
       _google = google;
       _routes = routes;
-      _assetOutcome = assets['outcome'];
     });
   }
 
@@ -138,7 +130,7 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                       child: FilledButton.icon(
                         onPressed: launchable
                             ? () => _run(context, () => state.launch(app),
-                                s.t('details.launching'), state: state)
+                                s.t('details.launching'))
                             : null,
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: Text(s.t('details.launch')),
@@ -160,26 +152,6 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     message: s.t('engine.degraded.body'),
                   ),
                 ],
-                // Stated before the launch, not after it. A game whose expansion files
-                // are not there starts and shows an empty menu, and nothing about that
-                // points at a Settings switch two screens away — so the switch is here,
-                // on the screen with the Launch button, for as long as it is needed.
-                if (_assetOutcome == 'SOURCE_UNREADABLE') ...[
-                  const SizedBox(height: UniqueSpace.md),
-                  NoticeBanner(
-                    tone: NoticeTone.warning,
-                    title: s.t('details.assetsBlocked'),
-                    message: s.t('details.assetsBlockedBody'),
-                    action: TextButton(
-                      onPressed: () async {
-                        await state.openSpecialAccess('allFiles');
-                        await _load();
-                      },
-                      child: Text(s.t('launch.grantAllFiles')),
-                    ),
-                  ),
-                ],
-
                 SectionCard(
                   title: s.t('details.general'),
                   children: [
@@ -270,6 +242,19 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     SectionRow(label: s.t('details.cache'), value: formatBytes(app.cacheBytes)),
                     const Divider(),
                     SectionRow(label: s.t('details.external'), value: formatBytes(app.externalBytes)),
+                    const Divider(),
+                    // In Storage rather than as a banner of its own: looking at an app's
+                    // files is an ordinary thing to want, not a warning about a fault.
+                    SectionRow(
+                      label: s.t('details.files'),
+                      value: s.t('details.filesBody'),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => FilesScreen(app: app, state: state),
+                        ),
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
+                    ),
                     const Divider(),
                     SectionRow(
                       label: s.t('details.clearCache'),
@@ -408,32 +393,14 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   static Future<void> _run(
     BuildContext context,
     Future<EngineOutcome> Function() action,
-    String successMessage, {
-    AppState? state,
-  }) async {
+    String successMessage,
+  ) async {
     // Both are read before the await: the context may be gone by the time the engine
-    // answers, and a snackbar is not worth holding one across that gap. `state` is passed
-    // in for the same reason — this is static, so there is no widget to read it from.
+    // answers, and a snackbar is not worth holding one across that gap.
     final messenger = ScaffoldMessenger.of(context);
     final s = Strings.of(context);
     final failed = s.t('common.failed');
     final result = await action();
-    if (result.ok && result.warning == 'ASSETS_UNREADABLE') {
-      // A launch that worked and a game that will look broken. The switch that fixes it
-      // is two screens away and nothing about an empty menu points at it, so the snackbar
-      // carries the way there rather than only the news.
-      messenger.showSnackBar(SnackBar(
-        content: Text(s.t('launch.assetsUnreadable')),
-        duration: const Duration(seconds: 10),
-        action: state == null
-            ? null
-            : SnackBarAction(
-                label: s.t('launch.grantAllFiles'),
-                onPressed: () => state.openSpecialAccess('allFiles'),
-              ),
-      ));
-      return;
-    }
     messenger.showSnackBar(SnackBar(
       content: Text(result.ok ? successMessage : result.describe(s, failed)),
     ));

@@ -43,13 +43,41 @@ import java.io.File
  * a user is *moving* into UNIQUE and the wrong one when they are running a second copy
  * beside the first, so it is the caller's decision and not a default.
  *
- * ## Reading the source is not guaranteed, and the failure is reported, not hidden
+ * ## ANDROID_11_NOTE: on Android 11 and later this cannot work, and saying so is the point
  *
- * Since Android 11 an app cannot open another package's `Android/data`, and access to
- * `Android/obb` depends on the release, the OEM and whether the user has granted UNIQUE
- * all-files access. So every outcome here is one of four named results rather than a
- * boolean, and "the source could not be read" never looks the same as "there was nothing
- * to copy" — the first is fixable by the user and the second is not a problem at all.
+ * `MANAGE_EXTERNAL_STORAGE` — "All files access", the widest storage permission Android
+ * has — **explicitly does not cover `Android/data` and `Android/obb`.** The platform
+ * filters those two subtrees out below the permission check, so an app holding all-files
+ * access sees exactly what an app holding nothing sees: `exists()` is false for every
+ * package's OBB directory, whether that package has expansion files or not.
+ *
+ * UNIQUE told the user otherwise. It asked whether the *parent* directory was readable,
+ * decided that an unreadable parent meant the files were there and blocked, and reported
+ * `SOURCE_UNREADABLE … grant all-files access` — for **every** package, including ones
+ * that have never had an OBB file. The user granted the access, nothing changed, and the
+ * message kept appearing for apps with nothing to import:
+ *
+ * ```
+ * GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE source=…/Android/obb/com.openai.chatgpt
+ * GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE source=…/Android/obb/bin.mt.plus
+ * ```
+ *
+ * Neither of those apps has expansion files. The finding was an artefact of the test.
+ *
+ * So this class no longer guesses. If the source is not visible, the outcome is
+ * [Outcome.NOTHING_TO_IMPORT] and nothing is said, because there is genuinely nothing to
+ * say — UNIQUE cannot tell "no OBB" from "OBB behind the platform's filter", and a
+ * message that is wrong for most apps teaches the user to ignore all of them.
+ * [Outcome.SOURCE_UNREADABLE] is kept for the case that is real: a directory that *is*
+ * visible and still cannot be listed, which happens on releases before 11 and on some
+ * OEM builds.
+ *
+ * ## What actually works, and where it lives
+ *
+ * The user hands UNIQUE the file. That is [importFiles], and the route to it is the
+ * instance's file browser (`FileBrowser`) — the guest's own directory tree, with an
+ * import that copies from anywhere the system picker can reach. It is the same thing a
+ * file manager does on a normal device, which is what a virtual device should have.
  */
 class GuestAssetImport(context: Context) {
 
@@ -128,6 +156,22 @@ class GuestAssetImport(context: Context) {
     }
 
     /**
+     * What a source directory that cannot be seen means. It means nothing.
+     *
+     * A named function with a test behind it, because this is where the mistake was and
+     * the mistake was one line: UNIQUE asked whether the *parent* of the OBB directory
+     * was readable and, when it was not, reported the files as present and blocked. On
+     * Android 11 and later the parent is never readable — `MANAGE_EXTERNAL_STORAGE` does
+     * not cover `Android/data` or `Android/obb` — so every package matched, including
+     * every package with no expansion files at all, and the user was told to grant an
+     * access that would not have helped.
+     *
+     * There is no test that distinguishes "not there" from "hidden" from inside an app,
+     * so nothing is claimed. See [Outcome.NOTHING_TO_IMPORT].
+     */
+    internal fun outcomeForInvisibleSource(): Outcome = invisibleSourceOutcome()
+
+    /**
      * The same question as [importFor], asked without copying anything.
      *
      * For a screen that has to say *before* the user launches a game that its assets are
@@ -145,20 +189,15 @@ class GuestAssetImport(context: Context) {
                 source = source.path,
             )
         }
-        val parent = source.parentFile
-        if (parent != null && parent.exists() && !parent.canRead()) {
-            return Result(
-                Outcome.SOURCE_UNREADABLE, source = source.path,
-                detail = "${parent.path} is not readable by UNIQUE; grant all-files " +
-                    "access, or add the files by hand",
-            )
-        }
-        // Nothing on the device to copy. Whether the instance already has files of its
-        // own is what separates "this game has no expansion files" from "this game has
-        // them and they came from somewhere else", and both are fine.
+        // Nothing this process can see. On Android 11 and later that is true of every
+        // package's `Android/obb`, whether it has files or not, so it is not reported as
+        // something the user can fix — see [outcomeForInvisibleSource]. Whether the
+        // instance already has files of its own is what separates "this game has no
+        // expansion files" from "this game has them and they came from somewhere else",
+        // and both are fine.
         val present = target.walkTopDown().any { it.isFile }
         return Result(
-            if (present) Outcome.ALREADY_PRESENT else Outcome.NOTHING_TO_IMPORT,
+            if (present) Outcome.ALREADY_PRESENT else outcomeForInvisibleSource(),
             source = source.path,
         )
     }
@@ -244,21 +283,15 @@ class GuestAssetImport(context: Context) {
     )
 
     private fun copyTree(source: File, target: File): Result {
-        // exists() and listFiles() disagree in exactly the case that matters: on a
-        // directory the platform hides, exists() answers false and there is nothing to
-        // tell it apart from a package with no OBB. canRead() on the parent is what
-        // separates "not there" from "not allowed", so both are asked.
+        // A directory the platform hides answers false to exists(), and so does one that
+        // is not there. UNIQUE used to tell them apart by asking whether the *parent* was
+        // readable — and on Android 11 and later the parent is never readable, so every
+        // package got "your expansion files could not be read", including the ones that
+        // have none. The user granted all-files access, nothing changed, and the message
+        // stayed: see [ANDROID_11_NOTE]. There is no way to distinguish the two from
+        // here, so nothing is claimed.
         if (!source.exists()) {
-            val parent = source.parentFile
-            return if (parent != null && parent.exists() && !parent.canRead()) {
-                Result(
-                    Outcome.SOURCE_UNREADABLE, source = source.path,
-                    detail = "${parent.path} is not readable by UNIQUE; grant all-files " +
-                        "access, or add the files by hand",
-                )
-            } else {
-                Result(Outcome.NOTHING_TO_IMPORT, source = source.path)
-            }
+            return Result(outcomeForInvisibleSource(), source = source.path)
         }
         val entries = source.walkTopDown().filter { it.isFile }.toList()
         if (entries.isEmpty()) {
@@ -323,7 +356,14 @@ class GuestAssetImport(context: Context) {
         return destination.length()
     }
 
-    private companion object {
-        const val DEFAULT_BUFFER_SIZE = 1 shl 20
+    companion object {
+        private const val DEFAULT_BUFFER_SIZE = 1 shl 20
+
+        /**
+         * The outcome for a source directory this process cannot see, wherever it is
+         * asked. Static so the rule can be tested on its own — the class needs a
+         * `Context` and a real external volume, and neither is what went wrong.
+         */
+        internal fun invisibleSourceOutcome(): Outcome = Outcome.NOTHING_TO_IMPORT
     }
 }

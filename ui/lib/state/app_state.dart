@@ -175,6 +175,24 @@ class AppState extends ChangeNotifier {
   Future<Map<String, String>> guestAssetStatus(int vuid) =>
       _bridge.guestAssetStatus(vuid);
 
+  // ---- the instance's own files -----------------------------------------------------
+  //
+  // Pass-throughs on purpose: unlike the instance list there is nothing to cache here.
+  // The browser is looking at a directory that the guest may be writing to while the
+  // screen is open, so every listing has to be fresh.
+
+  Future<GuestListing> listFiles(int vuid, String path) =>
+      _bridge.listFiles(vuid, path);
+
+  Future<EngineOutcome> importFilesInto(int vuid, String path) =>
+      _bridge.importFilesInto(vuid, path);
+
+  Future<EngineOutcome> createFolder(int vuid, String path, String name) =>
+      _bridge.createFolder(vuid, path, name);
+
+  Future<EngineOutcome> deleteFile(int vuid, String path) =>
+      _bridge.deleteFile(vuid, path);
+
   Future<List<InstalledApp>> installedApps({bool includeSystem = false}) =>
       _bridge.listInstalledApps(includeSystem: includeSystem);
 
