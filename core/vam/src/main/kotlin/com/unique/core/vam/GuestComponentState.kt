@@ -57,7 +57,7 @@ internal object GuestComponentState {
     @Synchronized
     fun bind(vuid: Int, packageName: String, context: Context) {
         val host = context.applicationContext ?: context
-        val model = VirtualPathModel(host.filesDir.absolutePath)
+        val model = VirtualPathModel(HostPaths.filesRoot(host))
         val file = File(model.componentStateFile(vuid, packageName))
         val states = HashMap<String, Int>()
         runCatching {

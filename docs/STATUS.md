@@ -29,6 +29,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | ELF: ARM64 + 16 KB alignment | 7 | Against real NDK r27 `.so`, 4 KB and 16 KB |
 | Virtual path contract | 12 | Every accessor and every alias pinned |
 | Native redirect table (C++) | 34 checks | Host-side binary, no device needed |
+| The two path tables are inverses (C++) | 27 checks | Every path a guest is handed round-trips; no rule can match UNIQUE's own files |
 | Signature-agnostic shim engine | 12 | Includes one shim bound to two different signatures, and conditional `proceed()` |
 | Settings screens a guest opens about itself | 6 | Which half of the intent names the app, and every case that must be left alone |
 | Device profile model | 9 | Shape, stability, regeneration, RFC 4122 |
@@ -45,7 +46,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Which packages a guest may see | 6 | The Google stack hidden, `com.android.vending` not, a prefix match not enough, and both shapes intent resolution answers in — the emulator has no Play services, so this is where the decision is pinned |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**269 JVM tests, 15 Dart tests, 65 native checks, 99 off-device tool tests — all passing.**
+**290 JVM tests, 15 Dart tests, 92 native checks, 109 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -1083,22 +1084,26 @@ Three properties it was built to have:
   `PROC_VIEW_INSTALLED … named=17 leaked=0`. The analyzer's new `detection` check fails on
   anything but zero and names the directory the missing rule is for.
 
-**What it does not cover, stated rather than discovered.** The hook is a PLT patch in the
-*guest's own* libraries, which is where anti-cheat code lives and is the reason the scope
-is drawn there. It does not cover:
+**What it did not cover, as written at the time.** The hook was a PLT patch in the
+*guest's own* libraries, which is where anti-cheat code lives and was the reason the scope
+was drawn there. It did not cover:
 
 - **Java.** `new FileInputStream("/proc/self/maps")` goes through `libjavacore.so`, a
-  system library UNIQUE does not patch — patching it would redirect UNIQUE's own file
+  system library UNIQUE did not patch — patching it would redirect UNIQUE's own file
   operations in the same process, which is a much larger change than this one.
 - **`dl_iterate_phdr` and `dladdr`**, which read the linker's own tables and never open a
   file.
 - **A raw `syscall(SYS_openat, …)`**, which crosses no PLT.
-- **`ApplicationInfo.dataDir`,** which is the virtual path and has to be: the guest's Java
+- **`ApplicationInfo.dataDir`,** which was the virtual path and had to be: the guest's Java
   code writes there through those same unpatched system libraries. An app comparing it
   with `/data/user/0/<its own package>` sees the difference. Closing that means redirecting
   Java file IO too, which means patching the platform's libraries and exempting UNIQUE's
   own reads — a real design and the obvious next step, and not one to make on reasoning
   alone the week a build is going onto a phone.
+
+The first, third-from-last and last of those are no longer true: the thirteenth run's
+section below is that change, made once the game had been read and the scope of it was a
+fact rather than a guess. `dl_iterate_phdr`, `dladdr` and a raw syscall remain outside it.
 
 So this is one vector closed, measured, with the rest named. Whether it is *the* vector
 Standoff 2 uses is what the next log says.
@@ -1150,6 +1155,107 @@ of guessed: a guest's Java-visible paths have to be shaped like an installed app
 they have to resolve, which needs the interception widened to `libjavacore.so` and
 `libandroidfw.so` with UNIQUE's own operations exempted. That is the largest change this
 engine has left and it is not one to make in the same build as three other fixes.
+
+### The thirteenth run, and the change the game's own binary asked for
+
+The first log in which nothing except Google passes or fails by surprise. Eighteen checks,
+seventeen green, on the same phone and the same game:
+
+```
+PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=16 named=16 leaked=0
+detection  ok    16 mapping(s) named UNIQUE, none readable through the view
+launch     ok    1/1 launches reached the guest's Activity
+crash      ok
+```
+
+`named=15 leaked=2` one run earlier, `leaked=0` here — the alias was the whole of it. The
+forwarding class loader also held: no `ClassNotFoundException`, no crash, sign-in reaches
+Play services and is refused there instead of dying on the way. And the one failing check
+names its own route with a byte offset rather than a suspicion:
+
+```
+GMS_PACKAGE_NOT_REWRITTEN descriptor=android.os.IMessenger code=1
+    package=com.axlebolt.standoff2 bareAt=144 size=308
+```
+
+The analyzer had one bug of its own, found by reading its output against the log rather
+than trusting it: it reported *"Google answered `DEVELOPER_ERROR`"* on a run where Play
+services answered no such thing. The only line containing the word was UNIQUE's own
+`GOOGLE_ROUTE` explanation of what **would** happen if a guest signed in. A tool that
+cannot tell a forecast from an observation is worse than no tool, because its verdict reads
+identically in both cases. It now reads Google's side of the conversation only, and says
+so explicitly when the prediction is all there is.
+
+**Then the change the previous run's reading had named.** `docs/STANDOFF2.md` said the
+detection is four getters and nothing else. So:
+
+| Was | Is |
+|---|---|
+| `sourceDir` → `…/com.unique/files/virtual/apk/com.axlebolt.standoff2/203908/base.apk` | `/data/app/~~<a>/com.axlebolt.standoff2-<b>/base.apk` |
+| `nativeLibraryDir` → `…/203908/lib/arm64-v8a` | `/data/app/~~<a>/com.axlebolt.standoff2-<b>/lib/arm64` |
+| `getPackageCodePath()` → the same virtual path | the installed one |
+| `dataDir` → `…/virtual/users/1/data/com.axlebolt.standoff2` | `/data/user/0/com.axlebolt.standoff2` |
+
+Two halves, and the second is what makes it more than cosmetic:
+
+1. **`GuestIdentityPaths`** writes those values *after* the class loader and the
+   `AssetManager` have been built from the real ones. `mResDir`, `mSplitResDirs`, `mLibDir`
+   and `mClassLoader` are left alone deliberately — resources are rebuilt from `mResDir` on
+   a configuration change.
+2. **The published paths resolve**, because the interception was widened to the three
+   platform libraries a guest's Java file operations pass through: `libjavacore.so`
+   (`java.io.File`, every stream, every `SharedPreferences`), `libsqlite.so` and
+   `libandroid_runtime.so` (a database opened by absolute path). Android's libcore is
+   written against the directory-relative calls, so `openat`, `fstatat`, `fstatat64`,
+   `faccessat`, `mkdirat`, `unlinkat`, `renameat`, `readlinkat`, `fchmodat`, `realpath`
+   and `statvfs` are hooked alongside the plain names.
+
+This is the change the eleventh run's notes called *"the largest change this engine has
+left"*, and the reason it can be made without redirecting UNIQUE out of its own files is a
+property of the **table**, not of the scope. Every rule in `redirectionRules` names either
+the guest's package or a shared-storage alias; none can match `/data/user/0/com.unique`.
+That claim is now a test (`tools/native-test/round_trip_test.cpp`, 27 checks) rather than a
+paragraph: UNIQUE's own prefs, database, diagnostics and installed APK all pass through
+untouched, and every path a guest is handed round-trips back to itself.
+
+`realpath` is the one call that runs both directions at once — argument inward so it
+succeeds, answer outward through the `/proc` view — because otherwise
+`File.getCanonicalPath()` would be the single remaining accessor handing a guest UNIQUE's
+directory.
+
+**Three things this pass refused to assume.**
+
+- **The data directory is measured, not reasoned about.** A published path that does not
+  resolve fails silently, as a guest that cannot read its own saved games. So the data half
+  applies only after a probe writes a byte through the published path and finds it at the
+  real one — twice, once through `java.io.File` and once by opening a SQLite database,
+  because those are different hooks and one library out of scope would let the first pass
+  while every database the guest opened went somewhere UNIQUE cannot see. The code half is
+  not gated: nothing can be lost by it. Both are reported:
+  `GUEST_PATHS_PUBLISHED … code=… data=… detail=…`.
+- **The graft's self-check had to stop reading through the thing it tests.**
+  `PROC_VIEW_INSTALLED` counted mappings that still name UNIQUE by reading
+  `/proc/self/maps` from Kotlin — a genuine second opinion for exactly as long as Java file
+  IO crossed no patched PLT. It now does. The check reads through a new
+  `UniqueNative.readUnviewed`, which steps around the view; otherwise it would have been
+  answered by its own output and could never have failed again.
+- **One answer to "where are UNIQUE's own files".** `VirtualPathModel` is constructed from
+  `context.filesDir` in a dozen places, correct for as long as `getFilesDir()` in a
+  `:vappN` could only mean UNIQUE's directory. `GuestIdentityPaths` ends that. `HostPaths`
+  captures the real root once, at the start of the graft, before anything is swapped. The
+  call this would have broken first is `VirtualJobDispatcher.stop` — which turned out to
+  have been reading the routing store from the *guest's* context all along, finding no
+  record, and stopping jobs with the host's own job id. Fixed in passing, with the reason
+  written next to it.
+
+**What the next log has to show.** `GUEST_PATHS_PUBLISHED … code=true data=true`, the
+`detection` check still at `leaked=0`, every app that ran before still running — the blast
+radius here is every file operation of every guest, and a regression would show as an app
+that cannot read its own data rather than as a crash — and the game reaching its own menu.
+The Google sign-in refusal is *not* expected to move: `AppVerification` rides on
+`GoogleAuthRequest`, and that request arrives at Play services as UNIQUE by kernel uid.
+This closes the virtual-space verdict, not the Google identity, and those are different
+problems with different ceilings.
 
 ### What the sixth run settled about Google sign-in
 
@@ -1343,10 +1449,26 @@ caught `restrictions`, `locale` and `connectivity` before one did.
 
 ## Next steps, in order
 
-1. **The seventh phone run**, which is the only place most of this pass's fixes can be
-   observed at all: the verification emulator has no Play services, no IME, no
-   `Android/obb` to import from and no code-virtualization protector to break. What to
-   watch for, in the order the sixth run failed:
+1. **The fourteenth phone run.** This pass changed every file operation of every guest and
+   the identity a guest reports for itself; neither can be observed anywhere but on a
+   phone. In order of what would matter most if it were wrong:
+   - `GUEST_PATHS_PUBLISHED package=… code=true data=true`. `data=false` is not a crash
+     and not a regression — it means the probe refused, and `detail=` says which of the two
+     probes and why. The code half applying with the data half refused is the designed
+     fallback, not a half-failure.
+   - **Every app that ran before still running, and still holding its own data.** A guest
+     that cannot find its saved games is what a redirect gone wrong looks like; it does not
+     announce itself. Open something with state — a launcher, a browser with a session, an
+     app that was signed in — before looking at the game.
+   - `PROC_VIEW_INSTALLED … leaked=0`, still, now that the check reads around the view
+     rather than through it.
+   - The game: whether `Anticheat/VirtualSpaceWarning` still appears. That is the flag this
+     pass is aimed at. `AuthRestrictions/VirtualSpaceMessage` on sign-in is a *different*
+     ceiling and is not expected to move — see the thirteenth run's section.
+2. **The seventh phone run's open items**, which the verification emulator still cannot
+   answer: it has no Play services, no IME, no `Android/obb` to import from and no
+   code-virtualization protector to break. What to watch for, in the order the sixth run
+   failed:
    - `GUEST_OBB_IMPORT outcome=IMPORTED files=… bytes=…` at import, and **no**
      `Skipping OBB loading` from Unity afterwards. `SOURCE_UNREADABLE` means all-files
      access has not been granted — App Details → Special access → *Access to all files*.
@@ -1365,22 +1487,22 @@ caught `restrictions`, `locale` and `connectivity` before one did.
    steps, send the capture. `tools/device-log/analyze.py` reads it with no toolchain at
    all, and the two checks added for the sixth run mean an asset or protector fault names
    itself now instead of looking like the app's own bug.
-2. ARM64 native code, a real GPU driver, a hardware Vulkan ICD, WebView rendering and a
+3. ARM64 native code, a real GPU driver, a hardware Vulkan ICD, WebView rendering and a
    real engine app — five things only a phone can answer, and every one of them is
    `NOT_TESTED` until it does.
-3. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
+4. A temporary URI grant handed *into* a guest — the case a photo picker actually uses.
    Sharing outward works (`t34`) and the inbound request is at least well-formed (`t36`),
    but arranging a real grant needs a third APK: instrumentation runs under the target
    app's uid and can neither write another app's files nor grant for its authority.
-4. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
+5. Google, which needs a device with a Google stack. `docs/GOOGLE_DEVICE_TEST.md` is the
    procedure, in the order that makes one failure explain the next.
-5. A real engine sample (Unity/Unreal). None is available in this environment, and no
+6. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-6. **Re-running the `verify` build.** Everything after `t38` has only been run on
+7. **Re-running the `verify` build.** Everything after `t38` has only been run on
    `debug`, and the `verify` build is what a tester installs — the difference is not
    cosmetic: it is unminified but non-debuggable, so ActivityManager holds it to the
    ordinary ten-second process-start budget.
-7. **Verifying the minified release build.** The artifact a tester is actually given is
+8. **Verifying the minified release build.** The artifact a tester is actually given is
    already covered: `BUILD_TYPE=verify ./tools/verify-device.sh` runs the whole suite
    against the exact APK in `dist/` — not a near neighbour of it — and passed 38 of 38
    against the suite as it stood then.

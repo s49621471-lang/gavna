@@ -141,7 +141,7 @@ object VirtualPermissions {
     ) {
         val host = context.applicationContext ?: context
         hostContext = host
-        val model = VirtualPathModel(host.filesDir.absolutePath)
+        val model = VirtualPathModel(HostPaths.filesRoot(host))
         val b = Binding(
             vuid = vuid,
             packageName = packageName,

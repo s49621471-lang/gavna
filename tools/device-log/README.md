@@ -205,14 +205,14 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-82 tests, under a second, no dependencies. Three kinds:
+92 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that
   happened to a real phone, so a check that stops reporting one has regressed. It is the
   full run filtered to the lines that carry evidence (941 of 26,950); the verdicts are
   identical to those from the unfiltered log.
-- **`fixtures/redmi-android15-run4.log` … `-run11.log`** — the runs after it,
+- **`fixtures/redmi-android15-run4.log` … `-run13.log`** — the runs after it,
   each filtered the same way. Every fault a run found has an assertion here, so a check
   that stops reporting one is a regression in the tool rather than progress in the
   engine. The sixth is the run in which six of seven apps launched and the games could
@@ -233,7 +233,15 @@ tools/device-log/self_test.py
   game is *used* — Standoff 2 to its own login screen, on the hardware renderer, taking a
   touch — and is kept for what was underneath: a job for that game grafted itself into a
   process another app had failed to start in, and the game ran under the other app's
-  `ANDROID_ID`. One line said so, `PROFILE_REBIND_IGNORED`, and no check read it.
+  `ANDROID_ID`. One line said so, `PROFILE_REBIND_IGNORED`, and no check read it. The twelfth is
+  the first with a `/proc` view in it, kept because the view's own self-check caught the
+  gap the view had — `named=15 leaked=2`, naming the missing `/data/data/<pkg>` alias —
+  and because it disproved the class-loader fix shipped one run earlier, with that fix in
+  the build. The thirteenth is the first in which only `google` fails, and is kept for
+  two things: `leaked=0` on the same phone and the same game, and a bug in *this tool* —
+  it reported "Google answered `DEVELOPER_ERROR`" on a run where the only line containing
+  the word was UNIQUE's own prediction of what would happen. An assertion now pins that
+  the forecast is not read as the answer.
 - **A synthetic healthy run** — every check must pass on it. Without that the suite would
   prove only that the tool says FAIL, which a tool that always says FAIL would also
   pass.

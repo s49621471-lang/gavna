@@ -73,7 +73,7 @@ internal object VirtualExternalStorage {
      */
     fun prepare(hostContext: Context, params: VirtualLaunchParams): Boolean {
         val model = VirtualPathModel(
-            (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+            HostPaths.filesRoot(hostContext.applicationContext ?: hostContext),
         )
         val dir = File(model.externalRoot(params.vuid))
         // Created here as well as at instance preparation: an instance restored from an

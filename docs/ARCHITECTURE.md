@@ -217,7 +217,7 @@ that cannot bind logs a structured `HOOK_BIND_FAILED` diagnostic instead of thro
 | Binder | Cached singletons (`ActivityManager.IActivityManagerSingleton`, `ActivityTaskManager.IActivityTaskManagerSingleton`, `AppGlobals.sPackageManager`, `ContentResolver` provider cache, …) | The framework caches the *unwrapped* interface; a `ServiceManager`-only hook is not enough. A sweep re-wraps every known singleton after `ServiceManager` patching. |
 | ART | `Instrumentation`, `ActivityThread.mAppThread`, `ClientTransactionHandler` | Activity/Service lifecycle (§6.1) |
 | ART (LSPlant) | `Build` accessors, `System.loadLibrary`, `Runtime.loadLibrary0` | Reserved for phase 4/6: only for call sites genuinely unreachable through the Binder layer. `Settings.Secure.getString` is *not* one of them — it routes through `IContentProvider`, which the Binder shims already cover — so LSPlant is not yet a dependency. |
-| Native (ShadowHook) | `open/openat/openat2, stat/lstat/fstatat, access/faccessat, mkdir/mkdirat, unlink/unlinkat, rename/renameat/renameat2, chmod/chown, link/symlink/readlink, opendir, statfs/statvfs, execve, dlopen/android_dlopen_ext, __system_property_get/find/read_callback` | IO redirection + property virtualization (§7.3, §11.4) |
+| Native (PLT/GOT) | `open/openat, stat/lstat/fstatat/fstatat64, access/faccessat, mkdir/mkdirat, rmdir, unlink/unlinkat, rename/renameat, chmod/fchmodat, readlink/readlinkat, realpath, opendir, fopen, statfs/statvfs/statvfs64, dlopen/android_dlopen_ext, __system_property_get/find/read_callback` | IO redirection + property virtualization (§7.3, §7.3.2, §11.4) |
 
 ---
 
@@ -1196,12 +1196,24 @@ trees, exactly as the brief requires.
 
 Every one of these must be internally consistent, because apps cross-check them:
 
+Two spellings answer every row below, and they name the same bytes. The **real** one is
+where the file is: under UNIQUE's own private directory, because on an unrooted device
+there is nowhere else. The **published** one is what the guest is told, and it is what an
+installed copy of that app would report for itself. §7.3.2 is how the second is made to
+resolve, and it is the only reason the second may exist at all.
+
+| API | Real | Published to the guest |
+|---|---|---|
+| `ApplicationInfo.sourceDir` / `publicSourceDir` | `…/apk/<pkg>/<vc>/base.apk` | `/data/app/~~<a>/<pkg>-<b>/base.apk` |
+| `ApplicationInfo.splitSourceDirs` | selected splits, in manifest order | the same names under `/data/app/~~<a>/<pkg>-<b>` |
+| `ApplicationInfo.nativeLibraryDir` | `…/apk/<pkg>/<vc>/lib/arm64-v8a` | `/data/app/~~<a>/<pkg>-<b>/lib/arm64` |
+| `ApplicationInfo.dataDir` / `deviceProtectedDataDir` | `…/users/<vuid>/data/<pkg>` | `/data/user/0/<pkg>` |
+| `Context.getPackageCodePath()` (`LoadedApk.mAppDir`) | `…/apk/<pkg>/<vc>/base.apk` | `/data/app/~~<a>/<pkg>-<b>/base.apk` |
+
+Everything derived from `dataDir` follows it, in both spellings:
+
 | API | Value |
 |---|---|
-| `ApplicationInfo.sourceDir` / `publicSourceDir` | `…/apk/<pkg>/<vc>/base.apk` |
-| `ApplicationInfo.splitSourceDirs` | selected splits, in manifest order |
-| `ApplicationInfo.nativeLibraryDir` | `…/apk/<pkg>/<vc>/lib/arm64-v8a` |
-| `ApplicationInfo.dataDir` / `deviceProtectedDataDir` | `…/users/<vuid>/data/<pkg>` |
 | `Context.getFilesDir()` | `<dataDir>/files` |
 | `Context.getCacheDir()` | `<dataDir>/cache` |
 | `Context.getCodeCacheDir()` | `<dataDir>/code_cache` |
@@ -1209,7 +1221,6 @@ Every one of these must be internally consistent, because apps cross-check them:
 | `Context.getDatabasePath(n)` | `<dataDir>/databases/n` |
 | `Context.getExternalFilesDirs()` | `…/users/<vuid>/sdcard/Android/data/<pkg>/files` |
 | `Context.getObbDirs()` | `…/users/<vuid>/sdcard/Android/obb/<pkg>` |
-| `Context.getPackageCodePath()` | == `sourceDir` |
 | `Context.getPackageResourcePath()` | == `publicSourceDir` |
 | `Environment.getExternalStorageDirectory()` | `…/users/<vuid>/sdcard` |
 
@@ -1282,22 +1293,76 @@ Four decisions worth stating, because each was the alternative to something wors
    which is worse than one that can read UNIQUE out of them.
 4. **The graft checks its own work.** A table with a wrong prefix in it and no table at
    all produce the same "installed" line and opposite behaviour. So the graft reads the
-   real file from Kotlin — which does not cross a patched PLT, and is therefore a genuine
-   second opinion — puts it through the same code that serves it, and counts what still
-   names UNIQUE: `PROC_VIEW_INSTALLED … named=17 leaked=0`.
+   real file, puts it through the same code that serves it, and counts what still names
+   UNIQUE: `PROC_VIEW_INSTALLED … named=16 leaked=0`. The read goes through
+   `UniqueNative.readUnviewed`, which steps around the view: a Kotlin read used to be a
+   genuine second opinion because Java file IO crossed no patched PLT, and since §7.3.2
+   it does — the view would answer this check with its own output and it could never fail
+   again. The twelfth phone run is what this is for: `named=15 leaked=2`, naming the
+   `/data/data/<pkg>` alias the table was missing.
 
-**Scope, and what is outside it.** The hook is a PLT patch in the *guest's own* libraries,
-which is where anti-cheat code lives and is why the scope is drawn there (§7.3). It does
-not cover a read made through Java, because `libjavacore.so` is a system library and
-patching it would redirect UNIQUE's own file operations in the same process; nor
-`dl_iterate_phdr` and `dladdr`, which read the linker's tables and open nothing; nor a raw
-`syscall(SYS_openat, …)`, which crosses no PLT. And it does not change
-`ApplicationInfo.dataDir`, which is the virtual path and has to be, because the guest's
-Java code writes there through those same unpatched libraries — an app comparing it with
-`/data/user/0/<its own package>` sees the difference. Closing that means redirecting Java
-file IO as well, which means patching the platform's libraries and exempting UNIQUE's own
-reads. That is a real design and the obvious next step; it is not one to make on reasoning
-alone.
+**Scope, and what is outside it.** The hook is a PLT patch in the guest's own libraries
+*and* in the three platform libraries through which the guest's Java file operations pass
+— see §7.3.2. It does not cover `dl_iterate_phdr` and `dladdr`, which read the linker's
+tables and open nothing, nor a raw `syscall(SYS_openat, …)`, which crosses no PLT.
+
+### 7.3.2 The guest is told it is installed
+
+Standoff 2 was read out of its own binary rather than guessed at
+(`docs/STANDOFF2.md`). It does not look at `/proc`, does not enumerate processes and does
+not check for an emulator. It calls four getters through JNI — `sourceDir` four times,
+`getApplicationInfo` three, `getPackageCodePath` twice, `nativeLibraryDir` once — puts the
+APK path into an `AppVerification` protobuf as `Path`, and sends it **as a field of
+`GoogleAuthRequest`**. The server answers `AuthRestrictions/VirtualSpaceMessage`. Every one
+of those four values used to contain `com.unique`, which no installed copy of any app can
+produce, so no comparison was even needed to see it.
+
+`GuestIdentityPaths` (`core/vam`) changes what those four report. Two things make it
+possible to do at all:
+
+1. **Order.** The class loader is built from `sourceDir` and the `AssetManager` from
+   `publicSourceDir`, both before this runs, both from the real paths. What changes
+   afterwards is only what is *reported*: the `ApplicationInfo` object and
+   `LoadedApk.mAppDir`. `mResDir`, `mSplitResDirs`, `mLibDir` and `mClassLoader` are
+   deliberately untouched — a configuration change rebuilds resources from `mResDir`.
+2. **The published path resolves.** `redirectionRules` carries the inverse of every rule in
+   §7.3.1, so `/data/app/~~<a>/<pkg>-<b>/base.apk` and `/data/user/0/<pkg>/files` open the
+   real files. `round_trip_test.cpp` asserts the two tables are inverses on the exact
+   paths a guest is handed.
+
+For the second to be true of a guest's **Java** code, three platform libraries are in the
+hook's scope: `libjavacore.so` (every `java.io.File`, stream and `SharedPreferences`),
+`libsqlite.so` and `libandroid_runtime.so` (every `SQLiteDatabase` opened by absolute
+path). Android's libcore is written against the directory-relative calls, so the scope also
+had to grow `openat`, `fstatat`/`fstatat64`, `faccessat`, `mkdirat`, `unlinkat`,
+`renameat`, `readlinkat`, `fchmodat`, plus `realpath` and `statvfs`.
+
+Widening a redirect into the platform's own libraries is the largest blast radius in this
+engine, and the argument that it is safe is a property of the **table**, not of the scope:
+every rule in `redirectionRules` names either the guest's package (`/data/data/<guest>`,
+`/data/user/0/<guest>`, `/data/app/…<guest>…`) or a shared-storage alias (`/sdcard`,
+`/storage/emulated/0`, `/storage/self/primary`, `/mnt/sdcard`). **None can match a path
+under `/data/user/0/com.unique`**, so UNIQUE's own operations in the same process pass
+through untouched whatever library makes them. `round_trip_test.cpp` asserts that too,
+against UNIQUE's own prefs, database, diagnostics and installed APK.
+
+`realpath` is the one call that runs both directions at once: the argument goes inward so
+the call succeeds, and the answer comes back outward through the `/proc` view so
+`File.getCanonicalPath()` does not become the single accessor that still hands a guest
+UNIQUE's directory.
+
+**The data half is measured, not reasoned about.** Reporting a data directory that does not
+resolve would not fail visibly; it would fail as a guest that silently cannot read its own
+saved games. So it is applied only after a probe writes a byte through the published path
+and finds it at the real one — twice, once through `java.io.File` and once by opening a
+SQLite database, because those are different hooks. The code half is not gated: the class
+loader and resources are already built, and a wrong value there loses nothing. Both halves
+are reported: `GUEST_PATHS_PUBLISHED package=… code=… data=… apk=… detail=…`.
+
+**One rule this created.** `VirtualPathModel` is constructed from `context.filesDir` in a
+dozen places, which was correct for exactly as long as `getFilesDir()` in a `:vappN` could
+only mean UNIQUE's directory. It no longer can. `HostPaths` captures the real root once, at
+the start of the graft, and every later construction reads it from there.
 
 ### 7.4 Scoped storage, MediaStore, URIs
 

@@ -46,7 +46,7 @@ object VirtualJobDispatcher {
     @Synchronized
     fun start(stub: JobService, params: JobParameters?): Dispatch {
         val hostJobId = params?.jobId ?: return Dispatch.NotReached("no JobParameters")
-        val record = VirtualJobStore(VirtualPathModel(stub.filesDir.absolutePath)).get(hostJobId)
+        val record = VirtualJobStore(VirtualPathModel(HostPaths.filesRoot(stub))).get(hostJobId)
         if (record == null) {
             // The routing record is gone: UNIQUE's data was cleared, or the job outlived
             // the instance. Nothing can run, and saying which job is what makes it
@@ -101,8 +101,14 @@ object VirtualJobDispatcher {
     fun stop(params: JobParameters?): Boolean {
         val hostJobId = params?.jobId ?: return false
         val guest = running.remove(hostJobId) ?: return false
+        // The routing store is UNIQUE's, not the instance's, and `start` reads it from
+        // UNIQUE's root. This read used `guest.filesDir` — the guest service, deliberately
+        // attached to the guest's own Context a few lines below — which resolves into the
+        // *instance's* directory, where no store has ever been written. It found no record
+        // and stopped the job with the host's own parameters, which is the wrong job id
+        // seen from inside the guest. The root is the same one `start` used.
         val record = VirtualJobStore(
-            VirtualPathModel(guest.filesDir?.absolutePath ?: return false)
+            VirtualPathModel(HostPaths.known ?: guest.filesDir?.absolutePath ?: return false)
         ).get(hostJobId)
         val guestParams = record?.let { VirtualJobRewriter.toGuest(params, it.virtualJobId) } ?: params
         return runCatching { guest.onStopJob(guestParams) }.getOrElse {
@@ -164,7 +170,7 @@ object VirtualJobDispatcher {
      * whatever is installed now rather than whatever was current when it was scheduled.
      */
     private fun versionCodeOf(context: Context, record: VirtualJob): Long? {
-        val model = VirtualPathModel(context.filesDir.absolutePath)
+        val model = VirtualPathModel(HostPaths.filesRoot(context))
         val dir = java.io.File(model.apkDir(record.packageName, 0L)).parentFile
         val versions = dir?.listFiles()?.mapNotNull { it.name.toLongOrNull() }.orEmpty()
         if (versions.isEmpty()) {

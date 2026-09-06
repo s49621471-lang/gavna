@@ -431,7 +431,7 @@ object AppBootstrap {
 
     private fun graft(hostContext: Context, params: VirtualLaunchParams): Result {
         val started = System.nanoTime()
-        val model = VirtualPathModel(hostContext.filesDir.absolutePath)
+        val model = VirtualPathModel(HostPaths.remember(hostContext) ?: hostContext.filesDir.absolutePath)
 
         // The version in the launch intent can be stale, and legitimately so.
         //
@@ -613,7 +613,7 @@ object AppBootstrap {
         // looked like it said, and GuestLooperGuard for why one exception is caught.
         val visibilityFile = File(
             VirtualPathModel(
-                (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+                HostPaths.filesRoot(hostContext.applicationContext ?: hostContext),
             ).googleVisibilityFile(params.vuid, params.packageName),
         )
         runCatching {
@@ -653,6 +653,25 @@ object AppBootstrap {
         // after this point is not covered until the next install; that limit is recorded
         // rather than papered over.
         installIoRedirection(hostContext, effective, appInfo)
+
+        // Now that the class loader and the resources exist — built from the real paths —
+        // and the interception that makes the public ones resolve is in, tell the guest it
+        // is installed. This is the whole of what one shipping game checks; see
+        // GuestIdentityPaths and docs/STANDOFF2.md.
+        runCatching {
+            GuestIdentityPaths.apply(
+                hostContext = ready.application,
+                model = model,
+                params = effective,
+                appInfo = appInfo,
+                loadedApk = loadedApk,
+            )
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.LAUNCH, "GUEST_PATHS_NOT_PUBLISHED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
 
         // Must happen before any guest code can touch a WebView, and cannot be undone
         // afterwards. See setWebViewDataDirectorySuffix.
@@ -1019,6 +1038,41 @@ object AppBootstrap {
         }
     }
 
+    /**
+     * The platform's own libraries through which a guest's **Java** file operations pass.
+     *
+     * Until this list existed the interception was scoped to the guest's own `.so` files,
+     * which is the right scope for a guest's *native* code and covers none of its Java.
+     * `new FileOutputStream(...)`, `File.exists()`, every `SharedPreferences` write and
+     * every `SQLiteDatabase` open in the process go through `libcore.io.Linux`, whose
+     * native half is `libjavacore.so` — so a guest that hard-coded `/sdcard/…` in Java
+     * wrote to the device's real shared storage, and one that hard-coded
+     * `/data/data/<pkg>/…` wrote nowhere at all.
+     *
+     * ## Why widening it is safe, which is the only reason to do it
+     *
+     * A hook that redirects is only as dangerous as the table it applies. Every rule in
+     * `VirtualPathModel.redirectionRules` names either the **guest's** package
+     * (`/data/data/<guest>`, `/data/user/0/<guest>`, `/data/app/<guest>`, the instance's
+     * public APK directory) or a shared-storage alias (`/sdcard`, `/storage/emulated/0`,
+     * `/storage/self/primary`, `/mnt/sdcard`). **None of them can match a path under
+     * `/data/user/0/com.unique`**, so UNIQUE's own file operations in the same process —
+     * its diagnostics, its runtime state, the instance directories it creates — pass
+     * through untouched no matter which library makes them.
+     *
+     * That is a property of the table rather than of the scope, and it is what makes the
+     * difference between this and "redirect every file operation in the process", which
+     * `set_scope` still refuses to do.
+     *
+     * `libsqlite.so` is here because a database is opened by absolute path from
+     * `libandroid_runtime.so`, and neither of those is `libjavacore.so`.
+     */
+    private val PLATFORM_IO_LIBRARIES = listOf(
+        "libjavacore.so",
+        "libsqlite.so",
+        "libandroid_runtime.so",
+    )
+
     /** What [armIoRedirection] published, so [installIoRedirection] can report it. */
     private data class Armed(
         val rules: Int,
@@ -1074,13 +1128,19 @@ object AppBootstrap {
             val scope = listOfNotNull(
                 appInfo.nativeLibraryDir,
                 appInfo.sourceDir?.substringBeforeLast('/'),
-            ).filter { it.isNotBlank() }.flatMap(::pathAliases).distinct()
+            ).filter { it.isNotBlank() }.flatMap(::pathAliases).distinct() + PLATFORM_IO_LIBRARIES
             UniqueNative.setRedirectScope(scope)
             // Set before install, never after: install() walks what is loaded now, and an
             // exclusion that arrives afterwards excludes a library that is already hooked.
             val exclusions = nativeExclusionsFor(hostContext, params)
             UniqueNative.setRedirectExclusions(exclusions)
             val watch = UniqueNative.watchLibraryLoads()
+            // Scanned here as well as later. The platform's own IO libraries are loaded
+            // from the moment the process exists, so one pass now covers every Java file
+            // operation the graft itself and the guest's `Application` will make — where
+            // waiting for the pass after `makeApplication` would leave the earliest ones
+            // unredirected. Idempotent, so the later passes still cost only a walk.
+            val firstPass = UniqueNative.installIoRedirect()
             Diagnostics.info(
                 DiagChannel.NATIVE, "IO_REDIRECT_ARMED",
                 mapOf(
@@ -1088,6 +1148,8 @@ object AppBootstrap {
                     "rules" to rules.size.toString(),
                     "procView" to view.size.toString(),
                     "watch" to watch.name,
+                    "status" to firstPass.name,
+                    "slots" to UniqueNative.redirectSlotsPatched().toString(),
                 ),
             )
             Armed(rules.size, view.size, scope, exclusions, watch).also { armed = it }
@@ -1107,10 +1169,11 @@ object AppBootstrap {
      * the real question: take this process's own `/proc/self/maps`, put it through the
      * view, and count what still names UNIQUE.
      *
-     * The read is done from Kotlin, which is exactly why it works as a check: Java file
-     * IO does not cross a PLT the hook has patched, so this reads the *real* file and the
-     * rewriting is the only thing under test. It is also why the guest's own Java code can
-     * still read the real one — stated in COMPATIBILITY.md rather than left to be found.
+     * The read steps around the view deliberately. Java file IO used to be outside the
+     * hook's scope, which made a plain Kotlin read a genuine second opinion; now that the
+     * platform's own IO libraries are covered, it is not — the view would answer this
+     * check with its own output and it could never fail again. `readUnviewed` is what a
+     * second opinion looks like once everything else is covered.
      *
      * Only counts and one prefix are reported. The paths in a maps file are UNIQUE's own
      * and the guest's own library names; nothing from inside the app's data ever appears
@@ -1124,7 +1187,8 @@ object AppBootstrap {
         if (procViewReported) return
         procViewReported = true
         val host = hostContext.packageName
-        val maps = runCatching { File("/proc/self/maps").readText() }.getOrNull()
+        val maps = UniqueNative.readUnviewed("/proc/self/maps")
+            ?: runCatching { File("/proc/self/maps").readText() }.getOrNull()
         if (maps == null) {
             Diagnostics.warn(
                 DiagChannel.NATIVE, "PROC_VIEW_UNCHECKED",
@@ -1239,7 +1303,7 @@ object AppBootstrap {
         params: VirtualLaunchParams,
     ): List<String> {
         val model = VirtualPathModel(
-            (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+            HostPaths.filesRoot(hostContext.applicationContext ?: hostContext),
         )
         val file = File(model.nativeExclusionsFile(params.vuid, params.packageName))
         val extra = runCatching {
@@ -1269,7 +1333,7 @@ object AppBootstrap {
      * device's, because its halves disagree with each other.
      */
     private fun bindDeviceProfile(hostContext: Context, params: VirtualLaunchParams) {
-        val model = VirtualPathModel(hostContext.filesDir.absolutePath)
+        val model = VirtualPathModel(HostPaths.filesRoot(hostContext))
         val file = File(model.profileFile(params.vuid))
         val profile = runCatching {
             if (file.isFile) DeviceProfileCodec.decode(file.readText()) else null

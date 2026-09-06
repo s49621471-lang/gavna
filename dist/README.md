@@ -4,11 +4,10 @@ Two APKs, both **arm64-v8a only**, both signed with the same key — so either c
 installed over the other. Android 12 or newer (`minSdk 31`), no root, no unlocked
 bootloader.
 
-> **The build before this one needed one uninstall. This one installs over it** — same
-> key, instances and data intact. If you skipped that build, the paragraph below still
-> applies to you once.
+> **This installs over the last two builds** — same key, instances and data intact. If you
+> last installed something older than that, the paragraph below still applies to you once.
 >
-> Every build before it was signed with a key the *build machine* generated for itself,
+> Every build before those was signed with a key the *build machine* generated for itself,
 > so two builds made in two sessions had two different keys — and Android's error for
 > that is the unhelpful `App not installed`. The only way through it is to uninstall,
 > which deletes the instances, their data, and any expansion file you spent an evening
@@ -22,8 +21,8 @@ bootloader.
 > distributed. `apksigner verify --print-certs` on the APK you have and the one you are
 > about to install says which case you are in; `SHA256SUMS` says which artifact this is.
 >
-> So: **uninstall UNIQUE once, install this, and re-import your apps.** After that,
-> updates keep everything.
+> So: if you have never installed one of the keyed builds, **uninstall UNIQUE once, install
+> this, and re-import your apps.** After that, updates keep everything.
 
 | File | Size | What it is |
 |---|---|---|
@@ -64,6 +63,76 @@ must not be distributed as a release, and an app signed with a real key later wi
 install over them.
 
 ## What changed since the last phone run
+
+**Your last log was the best one yet: seventeen of eighteen checks passed.** The game
+launched, ran, did not crash, and did not die on the sign-in button the way it did before.
+The `/proc` cover that had a hole in it last time is now complete on your phone — the
+engine's own self-check went from "two entries still name UNIQUE" to zero. So this build is
+not another round of fixing what broke; it is the one large change I said I would not make
+in the same build as anything else.
+
+**The game is now told it is installed.**
+
+Last time I read the game's own binary instead of guessing at it, and it turned out to
+check exactly four things — where its APK is, where its libraries are, where its code is,
+and where its data folder is. Inside UNIQUE, all four answered with a path containing
+`com.unique`. No real installation of any app on Earth produces such a path, so the game
+did not have to be clever; it only had to look.
+
+Those four now answer the way an installed copy would:
+
+| The game asks | It used to hear | It now hears |
+|---|---|---|
+| where is my APK | `…/com.unique/files/virtual/apk/…` | `/data/app/~~…/com.axlebolt.standoff2-…/base.apk` |
+| where are my libraries | the same, plus `lib/arm64-v8a` | the same folder, `lib/arm64` — which is how a real install spells it |
+| where is my data | `…/com.unique/files/virtual/users/1/…` | `/data/user/0/com.axlebolt.standoff2` |
+
+The hard half is not telling it that. The hard half is that those paths have to **work** —
+if the game opens the folder it was just told about and finds nothing there, that is worse
+than the truth, because the game silently loses its settings and its downloads. Making them
+work meant redirecting the game's file access at a level UNIQUE had never touched before:
+not just the game's own code, but the Android libraries every app's `File`, save-file and
+database goes through.
+
+That is the largest single change this engine has had, and it touches **every file
+operation of every app you run**, not just the game. Two things keep it honest:
+
+- UNIQUE's own files are provably out of reach of the redirection — the rules can only ever
+  match the *guest's* package name or the shared-storage folders, never UNIQUE's own — and
+  there is now a test that checks precisely that, including UNIQUE's settings, database and
+  logs by name.
+- The data-folder half is **not applied on faith**. Before the app is told its new data
+  path, UNIQUE writes a byte through it and checks the byte arrives where it should — twice,
+  once as an ordinary file and once by opening a database, because those take different
+  routes. If either fails, the data path stays as it was, the app keeps working, and the log
+  says which probe refused and why.
+
+**What I need from the next log, in order of importance:**
+
+1. `GUEST_PATHS_PUBLISHED … code=true data=true`. If it says `data=false`, nothing is
+   broken — the safety check refused, and the line says why.
+2. **Open a few apps you already had, with data in them,** before you open the game. This
+   change touches every file every app reads. An app that lost its settings is what a
+   mistake here looks like — it will not crash, it will just look empty. That is the single
+   most useful thing you can check.
+3. Then the game: whether the "virtual space" notice still appears.
+
+**What this does not fix, and I want to be exact about it.** Google sign-in will still be
+refused. That is not the same problem. Google identifies an app by its package name *and*
+its signing certificate, resolved from the kernel — inside UNIQUE the request genuinely
+arrives from UNIQUE, and no amount of path work changes who is calling. The game's
+"virtual space" verdict and the Google refusal have been failing together because the game
+sends its environment report *inside* the sign-in request; this build addresses the report,
+not the sign-in. If the notice disappears and sign-in still fails, that is the expected
+outcome and it is progress, not a half-fix.
+
+**One more thing fixed along the way, from reading my own output.** My log analyzer had
+been reporting *"Google answered DEVELOPER_ERROR"* on runs where Google had answered no
+such thing — the only line containing that word was UNIQUE's own explanation of what
+*would* happen. A tool that cannot tell its own prediction from a real answer is worse than
+no tool, because both read identically. Fixed, with a test.
+
+## What changed one run ago
 
 **I read the game.** Two passes were spent guessing at what Standoff 2 checks; this time
 the check itself was found, in the shipping build, and it is not what either of us assumed.
@@ -158,7 +227,7 @@ What was new is underneath, and it is worse than the crash:
   the protector changes its mind is a measurement, not a promise — if it still fails, it
   fails for a reason worth reading.
 
-## What changed one run ago
+## What changed two runs ago
 
 The rewrite from the last build worked — your log shows 17 requests going out under a
 name Google accepts, and the game-files message is gone. What it uncovered is three more
@@ -185,7 +254,7 @@ covered all of them.** The `DEVELOPER_ERROR` is real for a request that reaches 
 UNIQUE. But this crash never reached Google at all. Try signing in on this build and send
 the log: what happens now is something nobody has measured, me included.
 
-## What changed two runs ago
+## What changed three runs ago
 
 - **Google Play services actually works now.** There was one refusal behind every Google
   failure this project has ever had: Play services checks that the calling app's name
@@ -210,7 +279,7 @@ the log: what happens now is something nobody has measured, me included.
   picker reaches, several at once. It is still reachable from an app's own Storage
   section, which opens it directly inside that app.
 
-## What changed three runs ago
+## What changed four runs ago
 
 Six things were reported. Two of them were mistakes of mine, one was a request, and the
 log had all of them.
@@ -245,7 +314,7 @@ log had all of them.
   services resolves the caller to UNIQUE, so a token comes back for UNIQUE and not for the
   app. Only Play services running *inside* the space can answer that, and it is not built.
 
-## What changed four runs ago
+## What changed five runs ago
 
 That log was answered with two words — *"nothing changed"* — and a screenshot of a
 notification asking to install Google Play services. That was fair. The build was
@@ -272,7 +341,7 @@ installed and its new code was running; the code was wrong.
   passed on the log that produced that notification; this is the seventeenth, and it is
   asserted against that same log so the rule cannot come back quietly.
 
-## What changed five runs ago
+## What changed six runs ago
 
 Six apps launched in that run and three of them died seconds later, all of the same thing.
 This build answers everything that log reported.
@@ -414,20 +483,28 @@ so an ordinary capture carries the whole run — `tools/device-log/analyze.py` r
 
 ## What is not claimed
 
-Standoff 2 is recorded `PARTIAL` on ARM64 in `docs/COMPATIBILITY.md`, not `SUPPORTED`, and
-the gap is named there: Google sign-in from it has never completed, and whether the game
-shows its *"running in a virtual space"* notice further in has not been measured under a
-build with the `/proc` view in it. Everything else — hardware Vulkan, WebView rendering,
-Play Integrity, Play Billing, Play Games — is still `NOT_TESTED` or `UNSUPPORTED` and stays
-that way until a run says otherwise.
+Standoff 2 is recorded `PARTIAL` on ARM64 in `docs/COMPATIBILITY.md`, not `SUPPORTED`.
+Google sign-in from it has never completed and is not expected to — that limit is
+explained above and is not a bug waiting to be found. Whether the *"running in a virtual
+space"* notice still appears has **not been measured under this build**: the change that
+targets it is tested on the build machine only, and a phone is the only thing that can
+answer it. Everything else — hardware Vulkan, WebView rendering, Play Integrity, Play
+Billing, Play Games — is still `NOT_TESTED` or `UNSUPPORTED` and stays that way until a run
+says otherwise.
+
+This build also carries the widest change the engine has ever had — every file operation of
+every app goes through it — and no phone has run it yet. That is stated plainly rather than
+left in a footnote.
 
 What would help most from the next log, in order:
 
-1. **`PROC_VIEW_INSTALLED … leaked=0`** — confirms the hole your last log found is closed.
-   Anything else names the folder still missing a rule.
-2. **Whether Google sign-in gets past the crash** and what it does instead. It should now
-   reach Google rather than dying in UNIQUE. What Google then answers is a measurement
-   nobody has taken; and per `docs/STANDOFF2.md`, the game attaches its environment report
-   to that same request, so this is also where the virtual-space refusal would come from.
-3. **`GMS_PACKAGE_NOT_REWRITTEN`**, if it appears — that line names the last Google route
+1. **`GUEST_PATHS_PUBLISHED … code=true data=true`** — the new line. `data=false` is the
+   designed safe outcome, not a failure, and `detail=` says which check refused.
+2. **Whether apps you already had still have their data.** Open two or three with something
+   saved in them, before the game. This is the only failure here that would not announce
+   itself.
+3. **Whether the "virtual space" notice still appears in the game.**
+4. **`PROC_VIEW_INSTALLED … leaked=0`**, still — the check now reads around its own cover
+   rather than through it, so it can still fail, which is the point of it.
+5. **`GMS_PACKAGE_NOT_REWRITTEN`**, if it appears — that line names the last Google route
    that is still refused, precisely enough to fix without guessing.

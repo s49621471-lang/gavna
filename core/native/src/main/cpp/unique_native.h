@@ -77,6 +77,9 @@ int proc_view_rule_count();
 // Rewrites arbitrary text through the outward table. Exposed for the diagnostic that
 // reports what a guest would see, so the answer comes from the same code that serves it.
 std::string proc_view_rewrite(const char* text);
+// Reads a file bypassing the /proc view, for the one caller that must not be answered by
+// it: the graft's own check that the view leaks nothing.
+std::string read_unviewed(const char* path);
 // Installs the libc interception into the scoped libraries. Idempotent, and meant to be
 // repeated after the guest loads more libraries.
 InstallStatus install();

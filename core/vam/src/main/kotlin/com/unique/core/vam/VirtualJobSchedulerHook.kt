@@ -35,7 +35,7 @@ object VirtualJobSchedulerHook {
 
     /** Records for this process, so the inbound side can resolve a fired job. */
     fun storeFor(context: Context): VirtualJobStore =
-        store ?: VirtualJobStore(VirtualPathModel(context.filesDir.absolutePath)).also { store = it }
+        store ?: VirtualJobStore(VirtualPathModel(HostPaths.filesRoot(context))).also { store = it }
 
     /**
      * Methods that carry a whole `JobInfo`: `schedule`, `enqueue`, `scheduleAsPackage`.
@@ -68,7 +68,7 @@ object VirtualJobSchedulerHook {
 
         slot = ready.params.slot
         vuid = ready.params.vuid
-        store = VirtualJobStore(VirtualPathModel(hostContext.filesDir.absolutePath))
+        store = VirtualJobStore(VirtualPathModel(HostPaths.filesRoot(hostContext)))
 
         val report = SystemServiceHook.install(
             target,

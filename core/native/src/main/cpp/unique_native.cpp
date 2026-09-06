@@ -127,6 +127,21 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeProcViewRuleCount(JNIEnv*, 
     return unique::io_redirect::proc_view_rule_count();
 }
 
+// A file as the kernel has it, with the /proc view stepped around.
+//
+// Java file IO now goes through the same trampolines as everything else, which is the
+// point — and it means UNIQUE's own check that the view hides everything would be
+// answered by the view. A check that cannot fail is not a check.
+UNIQUE_EXPORT JNIEXPORT jstring JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeReadUnviewed(
+        JNIEnv* env, jclass, jstring path) {
+    ScopedUtf p(env, path);
+    if (p.get() == nullptr) return nullptr;
+    const std::string out = unique::io_redirect::read_unviewed(p.get());
+    if (out.empty()) return nullptr;
+    return env->NewStringUTF(out.c_str());
+}
+
 // What the guest would see in place of this text. Used by the diagnostic that reports
 // whether anything of UNIQUE's is still readable, so the answer comes from the code that
 // serves it rather than from a second implementation that can drift from it.

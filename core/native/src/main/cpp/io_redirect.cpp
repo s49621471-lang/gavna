@@ -6,8 +6,10 @@
 #include <fcntl.h>
 #include <mutex>
 #include <string>
+#include <climits>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/vfs.h>
 #include <unistd.h>
 #include <vector>
@@ -122,6 +124,27 @@ DIR* (*o_opendir)(const char*) = nullptr;
 FILE* (*o_fopen)(const char*, const char*) = nullptr;
 ssize_t (*o_readlink)(const char*, char*, size_t) = nullptr;
 int (*o_statfs)(const char*, struct statfs*) = nullptr;
+
+// The `*at` family, which is what the platform's own libraries call.
+//
+// The plain names above are enough for a guest's own `.so` files, compiled against NDK
+// headers where `stat`, `mkdir` and the rest are real exported functions. They are *not*
+// enough for `libjavacore.so`, which is where every `java.io.File`, `FileInputStream` and
+// `SharedPreferences` write in the process ends up: `libcore.io.Linux` is written against
+// the directory-relative calls, so a guest's Java code reaches `openat` and `fstatat64`
+// and never touches `open` or `stat` at all.
+//
+// A relative path with a real `dirfd` is left alone by construction: the redirect table
+// only matches paths beginning with `/`.
+int (*o_fstatat)(int, const char*, struct stat*, int) = nullptr;
+int (*o_faccessat)(int, const char*, int, int) = nullptr;
+int (*o_mkdirat)(int, const char*, mode_t) = nullptr;
+int (*o_unlinkat)(int, const char*, int) = nullptr;
+int (*o_renameat)(int, const char*, int, const char*) = nullptr;
+ssize_t (*o_readlinkat)(int, const char*, char*, size_t) = nullptr;
+int (*o_fchmodat)(int, const char*, mode_t, int) = nullptr;
+char* (*o_realpath)(const char*, char*) = nullptr;
+int (*o_statvfs)(const char*, struct statvfs*) = nullptr;
 
 /// Rewrites `path` when a rule matches, otherwise hands back the original pointer.
 ///
@@ -336,6 +359,104 @@ int h_statfs(const char* path, struct statfs* out) {
     return o_statfs != nullptr ? o_statfs(target, out) : ::statfs(target, out);
 }
 
+// ---------------------------------------------------------------------------------
+// The `*at` family. Same three lines each, with the path in second position.
+// ---------------------------------------------------------------------------------
+
+int h_fstatat(int dirfd, const char* path, struct stat* out, int flags) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_fstatat != nullptr ? o_fstatat(dirfd, target, out, flags)
+                                : ::fstatat(dirfd, target, out, flags);
+}
+
+int h_faccessat(int dirfd, const char* path, int mode, int flags) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_faccessat != nullptr ? o_faccessat(dirfd, target, mode, flags)
+                                  : ::faccessat(dirfd, target, mode, flags);
+}
+
+int h_mkdirat(int dirfd, const char* path, mode_t mode) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_mkdirat != nullptr ? o_mkdirat(dirfd, target, mode)
+                                : ::mkdirat(dirfd, target, mode);
+}
+
+int h_unlinkat(int dirfd, const char* path, int flags) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_unlinkat != nullptr ? o_unlinkat(dirfd, target, flags)
+                                 : ::unlinkat(dirfd, target, flags);
+}
+
+int h_renameat(int from_dirfd, const char* from, int to_dirfd, const char* to) {
+    std::string from_holder, to_holder;
+    const char* from_target = rewrite(from, from_holder);
+    const char* to_target = rewrite(to, to_holder);
+    return o_renameat != nullptr ? o_renameat(from_dirfd, from_target, to_dirfd, to_target)
+                                 : ::renameat(from_dirfd, from_target, to_dirfd, to_target);
+}
+
+ssize_t h_readlinkat(int dirfd, const char* path, char* buf, size_t size) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    const ssize_t n = o_readlinkat != nullptr ? o_readlinkat(dirfd, target, buf, size)
+                                              : ::readlinkat(dirfd, target, buf, size);
+    if (n <= 0 || buf == nullptr) return n;
+    std::string shown;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_proc_view.empty()) return n;
+        if (!g_proc_view.rewrite_path(buf, static_cast<size_t>(n), shown)) return n;
+    }
+    const size_t copied = shown.size() < size ? shown.size() : size;
+    std::memcpy(buf, shown.data(), copied);
+    return static_cast<ssize_t>(copied);
+}
+
+int h_fchmodat(int dirfd, const char* path, mode_t mode, int flags) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_fchmodat != nullptr ? o_fchmodat(dirfd, target, mode, flags)
+                                 : ::fchmodat(dirfd, target, mode, flags);
+}
+
+/// `File.getCanonicalPath()`, which resolves the path *and hands it back*.
+///
+/// Both halves matter and they pull opposite ways: the argument is redirected inward so
+/// the call succeeds, and the answer is rewritten outward so what comes back is the path
+/// the guest asked about rather than the one it really resolved to. Without the second
+/// half, `getCanonicalPath()` would be the one call that hands a guest UNIQUE's directory
+/// after everything else stopped doing so.
+char* h_realpath(const char* path, char* resolved) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    char* answer = o_realpath != nullptr ? o_realpath(target, resolved)
+                                         : ::realpath(target, resolved);
+    if (answer == nullptr) return answer;
+    std::string shown;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_proc_view.empty()) return answer;
+        if (!g_proc_view.rewrite_path(answer, std::strlen(answer), shown)) return answer;
+    }
+    // A caller-supplied buffer is PATH_MAX by contract; one realpath allocated is at
+    // least as long as what it wrote. Either way a longer answer is refused rather than
+    // written past the end, because a buffer overrun here would be UNIQUE's worst bug.
+    const size_t room = resolved != nullptr ? PATH_MAX : std::strlen(answer) + 1;
+    if (shown.size() + 1 > room) return answer;
+    std::memcpy(answer, shown.c_str(), shown.size() + 1);
+    return answer;
+}
+
+int h_statvfs(const char* path, struct statvfs* out) {
+    std::string holder;
+    const char* target = rewrite(path, holder);
+    return o_statvfs != nullptr ? o_statvfs(target, out) : ::statvfs(target, out);
+}
+
 std::vector<std::string> g_filters;
 std::vector<std::string> g_excludes;
 
@@ -397,6 +518,17 @@ void* h_dlopen(const char* path, int flags) {
 
 }  // namespace
 
+/// Reads a file the way it is on the kernel's side of every hook this process has.
+///
+/// The `/proc` view is served through the same trampolines that now cover the platform's
+/// own libraries, which means Java reads of `/proc/self/maps` are covered too — a gain,
+/// and a problem for exactly one caller: the graft's own check that the view leaks
+/// nothing. Reading through the view would make that check report success unconditionally,
+/// which is the failure it exists to prevent. This is the second opinion it needs.
+std::string read_unviewed(const char* path) {
+    return path == nullptr ? std::string() : read_all(path);
+}
+
 void set_scope(const char** paths, int count) {
     std::vector<std::string> filters;
     for (int i = 0; i < count; ++i) {
@@ -445,6 +577,21 @@ InstallStatus install_locked() {
         {"fopen",    reinterpret_cast<void*>(h_fopen),    reinterpret_cast<void**>(&o_fopen)},
         {"readlink", reinterpret_cast<void*>(h_readlink), reinterpret_cast<void**>(&o_readlink)},
         {"statfs",   reinterpret_cast<void*>(h_statfs),   reinterpret_cast<void**>(&o_statfs)},
+
+        // The directory-relative spellings, which is what `libjavacore.so` calls. Both
+        // `fstatat` names are requested because bionic exports the LFS alias and which
+        // one a library imports depends on how it was built.
+        {"fstatat",     reinterpret_cast<void*>(h_fstatat),     reinterpret_cast<void**>(&o_fstatat)},
+        {"fstatat64",   reinterpret_cast<void*>(h_fstatat),     reinterpret_cast<void**>(&o_fstatat)},
+        {"faccessat",   reinterpret_cast<void*>(h_faccessat),   reinterpret_cast<void**>(&o_faccessat)},
+        {"mkdirat",     reinterpret_cast<void*>(h_mkdirat),     reinterpret_cast<void**>(&o_mkdirat)},
+        {"unlinkat",    reinterpret_cast<void*>(h_unlinkat),    reinterpret_cast<void**>(&o_unlinkat)},
+        {"renameat",    reinterpret_cast<void*>(h_renameat),    reinterpret_cast<void**>(&o_renameat)},
+        {"readlinkat",  reinterpret_cast<void*>(h_readlinkat),  reinterpret_cast<void**>(&o_readlinkat)},
+        {"fchmodat",    reinterpret_cast<void*>(h_fchmodat),    reinterpret_cast<void**>(&o_fchmodat)},
+        {"realpath",    reinterpret_cast<void*>(h_realpath),    reinterpret_cast<void**>(&o_realpath)},
+        {"statvfs",     reinterpret_cast<void*>(h_statvfs),     reinterpret_cast<void**>(&o_statvfs)},
+        {"statvfs64",   reinterpret_cast<void*>(h_statvfs),     reinterpret_cast<void**>(&o_statvfs)},
     };
 
     std::vector<std::string> filters;

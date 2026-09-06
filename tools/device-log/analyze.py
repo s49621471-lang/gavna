@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import uniquelog  # noqa: E402
-from uniquelog import Event, LogLine  # noqa: E402
+from uniquelog import UNIQUE_TAG, Event, LogLine  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -1103,8 +1103,17 @@ def check_google_stack(run: Run) -> Check:
         )
 
     # The one failure the rewrite cannot fix, named so it is not mistaken for one it can.
+    #
+    # Read from Google's side of the conversation only. UNIQUE's own `GOOGLE_ROUTE`
+    # event spells out `DEVELOPER_ERROR` inside its explanation of what *will* happen if
+    # a guest signs in, so a plain substring search over every line reported UNIQUE's own
+    # forecast back as Google's answer — in runs where Play services had not answered at
+    # all. A tool that cannot tell a prediction from an observation is worse than no tool,
+    # because its verdict reads identically in both cases.
     for line in run.lines:
         if "DEVELOPER_ERROR" not in line.message:
+            continue
+        if line.tag == UNIQUE_TAG or "GOOGLE_ROUTE" in line.message:
             continue
         package = run.package_of_pid(line.pid) or "a guest"
         check.note(
@@ -1113,6 +1122,12 @@ def check_google_stack(run: Run) -> Check:
             f"UNIQUE. Not fixable without in-space Play services"
         )
         break
+    else:
+        if run.by_code("GOOGLE_ROUTE"):
+            check.note(
+                "Play services never answered DEVELOPER_ERROR in this run; the only "
+                "mention of it is UNIQUE's own explanation of the sign-in limit"
+            )
     return check
 
 _HOOKED_LIBRARY = re.compile(r"hooked \d+ new slot\(s\) after loading (\S+)")

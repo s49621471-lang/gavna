@@ -50,6 +50,8 @@ FIXTURE11 = os.path.join(HERE, "fixtures", "redmi-android15-run11.log")
 FIXTURE11_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run11.device.txt")
 FIXTURE12 = os.path.join(HERE, "fixtures", "redmi-android15-run12.log")
 FIXTURE12_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run12.device.txt")
+FIXTURE13 = os.path.join(HERE, "fixtures", "redmi-android15-run13.log")
+FIXTURE13_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run13.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -767,6 +769,86 @@ class RedmiRun12Test(unittest.TestCase):
         # failure marked one of this run's two Standoff 2 launches broken while the game
         # was plainly running.
         self.assertNotIn("no BOOTSTRAP_OK", findings(self.checks["launch"]))
+
+
+class RedmiRun13Test(unittest.TestCase):
+    """The thirteenth run: everything closes except Google, and Google is named exactly.
+
+    The build under this log carries the `/proc` view with the alias the twelfth run's
+    self-check found missing, and the forwarding class loader that replaced the
+    `setExtrasClassLoader` fix the twelfth run disproved. Both show:
+
+    ```
+    PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=16 named=16 leaked=0
+    ```
+
+    Sixteen mappings named UNIQUE and none of them readable through the view, against
+    `named=15 leaked=2` one run earlier. The game launches, runs, and does not crash on
+    its own class any more.
+
+    What is left is one route, and the value of this fixture is that the route is a
+    number rather than a suspicion:
+
+    ```
+    GMS_PACKAGE_NOT_REWRITTEN descriptor=android.os.IMessenger code=1
+        package=com.axlebolt.standoff2 bareAt=144 size=308
+    ```
+
+    Firebase Analytics sends the guest's package as a bare string inside a Bundle in an
+    `IMessenger` transaction — not as a SafeParcel field, which is the only shape the
+    rewrite can edit without recomputing an enclosing length. Six refusals follow, from
+    `FA`, with the broker wrapped for fifteen binds and sixteen requests already
+    corrected. "The rewrite did not fire" and "the rewrite fired and one route is not
+    covered" are different bugs and this log distinguishes them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE13, FIXTURE13_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_proc_view_leaks_nothing(self):
+        # The twelfth run's own self-check reported two mappings still naming UNIQUE.
+        # This is the assertion that the alias closed them, made against the engine's
+        # measurement rather than against the rule table it was built from.
+        check = self.checks["detection"]
+        self.assertEqual(check.verdict, analyze.PASS)
+        self.assertIn("none readable through the view", notes(check))
+
+    def test_the_guest_no_longer_dies_on_its_own_class(self):
+        # The twelfth run crashed in `ClassNotFoundException` on every sign-in attempt.
+        self.assertEqual(self.checks["crash"].verdict, analyze.PASS)
+        self.assertNotIn("ClassNotFoundException", findings(self.checks["crash"]))
+
+    def test_the_last_google_route_is_named_with_its_offset(self):
+        # A byte offset and a transaction code, so the next pass at this has somewhere to
+        # start that is not a re-reading of the same code.
+        detail = findings(self.checks["google"])
+        self.assertIn("android.os.IMessenger transaction 1", detail)
+        self.assertIn("bare string at byte 144 of 308", detail)
+
+    def test_the_refusals_are_reported_as_a_route_and_not_as_a_missing_wrap(self):
+        # The broker *was* wrapped here, so the finding must not repeat run 10's
+        # diagnosis. Reporting "never wrapped" against a log with fifteen wraps in it
+        # would send the next fix to the wrong layer.
+        detail = findings(self.checks["google"])
+        self.assertIn("with the broker wrapped", detail)
+        self.assertNotIn("never wrapped", detail)
+
+    def test_unique_s_own_forecast_is_not_reported_as_google_s_answer(self):
+        # Play services never answered `DEVELOPER_ERROR` in this run. The only line
+        # containing the word is UNIQUE's `GOOGLE_ROUTE` explanation of what would happen
+        # if a guest signed in — which the check used to match and attribute to Google.
+        text = notes(self.checks["google"])
+        self.assertIn("never answered DEVELOPER_ERROR", text)
+        self.assertNotIn("Google answered DEVELOPER_ERROR", text)
+
+    def test_google_is_the_only_failing_check(self):
+        failing = sorted(
+            name for name, check in self.checks.items()
+            if check.verdict == analyze.FAIL
+        )
+        self.assertEqual(failing, ["google"])
 
 
 HEALTHY = """\

@@ -121,6 +121,17 @@ object UniqueNative {
         if (loaded) nativeProcViewRewrite(text) ?: text else text
 
     /**
+     * Reads a file with the `/proc` view stepped around, or null.
+     *
+     * There is one caller and one reason. Java file IO now goes through the same
+     * trampolines as native file IO, so a Kotlin read of `/proc/self/maps` is answered by
+     * the view like everyone else's — which is a gain everywhere except in the graft's own
+     * check that the view hides everything. A check that cannot fail is not a check, so it
+     * reads through this instead.
+     */
+    fun readUnviewed(path: String): String? = if (loaded) nativeReadUnviewed(path) else null
+
+    /**
      * Applies the native table to [path], returning null when no rule matched.
      *
      * Used by the on-device consistency suite to assert that the native table agrees
@@ -227,6 +238,7 @@ object UniqueNative {
     @JvmStatic private external fun nativeClearProcView()
     @JvmStatic private external fun nativeProcViewRuleCount(): Int
     @JvmStatic private external fun nativeProcViewRewrite(text: String): String?
+    @JvmStatic private external fun nativeReadUnviewed(path: String): String?
     @JvmStatic private external fun nativeRedirect(path: String): String?
     @JvmStatic private external fun nativeSetRedirectScope(paths: Array<String>)
     @JvmStatic private external fun nativeSetRedirectExclusions(paths: Array<String>)
