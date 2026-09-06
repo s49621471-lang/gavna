@@ -33,19 +33,30 @@ struct HookRequest {
 struct HookReport {
     int libraries_scanned = 0;
     int libraries_matched = 0;
+    int libraries_excluded = 0;
     int slots_patched = 0;
     std::vector<std::string> failures;
     /// Library names seen, filled only when nothing matched. "No library matched" and
     /// "the filter is not the shape dl_iterate_phdr reports" are indistinguishable
     /// without it, and the second is the one that actually happens.
     std::vector<std::string> sample;
+    /// Libraries in scope that an exclusion kept out, so a library that is *not* hooked
+    /// on purpose never looks like one the scan failed to find.
+    std::vector<std::string> excluded;
 };
 
 // Patches every GOT slot in the loaded libraries whose path contains one of
 // `path_filters` (empty means every library) for each requested symbol.
 //
+// A library whose path contains one of `path_excludes` is skipped even when it is in
+// scope, and named in the report. Exclusions exist because a PLT hook is not universally
+// safe: a code-virtualization protector verifies its own GOT and answers a patched slot
+// by jumping into its own generated code with a corrupt dispatch value. See
+// io_redirect::set_exclusions for the run that established this.
+//
 // Idempotent: a slot already pointing at the replacement is left alone and not counted.
 HookReport hook_all(const std::vector<std::string>& path_filters,
+                    const std::vector<std::string>& path_excludes,
                     HookRequest* requests, size_t request_count);
 
 }  // namespace unique::plt

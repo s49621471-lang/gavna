@@ -26,7 +26,10 @@ import com.unique.core.vam.VirtualServiceRouter
 import com.unique.core.vpm.UpdateResult
 import com.unique.core.vpm.InstanceManager
 import com.unique.core.vpm.db.UniqueDatabase
+import com.unique.core.vstorage.GuestAssetImport
 import com.unique.core.vstorage.VirtualStorage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -45,6 +48,7 @@ object UniqueEngine {
     /** Must equal `vappProcessCount` in the root build script. */
     const val SLOT_COUNT = 16
 
+    @Volatile private var appRef: Context? = null
     @Volatile private var database: UniqueDatabase? = null
     @Volatile private var storageRef: VirtualStorage? = null
     @Volatile private var managerRef: InstanceManager? = null
@@ -61,11 +65,15 @@ object UniqueEngine {
             .addMigrations(*UniqueDatabase.MIGRATIONS)
             .build()
         val storage = VirtualStorage(app)
+        appRef = app
         database = db
         storageRef = storage
         managerRef = InstanceManager(app, db, storage)
         launcherRef = VirtualLauncher(app.packageName, SLOT_COUNT, app)
     }
+
+    /** UNIQUE's own application context, held for the work that has no caller to pass one. */
+    private val app: Context get() = requireNotNull(appRef) { "UniqueEngine.init not called" }
 
     val storage: VirtualStorage get() = requireNotNull(storageRef) { "UniqueEngine.init not called" }
     val instances: InstanceManager get() = requireNotNull(managerRef) { "UniqueEngine.init not called" }
@@ -100,7 +108,15 @@ object UniqueEngine {
             DiagChannel.STORAGE, "IMPORT_STARTED",
             mapOf("package" to packageName, "files" to files.size.toString()),
         )
-        return instances.importAndCreate(files)
+        val result = instances.importAndCreate(files)
+        // The installed copy is the one whose expansion files the device already has, so
+        // this is the import where they can be found without asking the user for
+        // anything. A game whose assets are missing looks broken in a way that has
+        // nothing to do with the APK.
+        if (result is CreateResult.Created) {
+            importGuestAssets(result.instance.vuid, result.instance.packageName)
+        }
+        return result
     }
 
     /**
@@ -143,6 +159,62 @@ object UniqueEngine {
      */
     private fun leaseSlotFor(target: VirtualProviderRouter.Target): Int? =
         launcher.acquireSlot(target.vuid, target.packageName, target.processName)
+
+    /**
+     * Delivers a broadcast a guest armed through a `PendingIntent`.
+     *
+     * The receiver class is the guest's own, taken from the intent UNIQUE put on the stub
+     * when the `PendingIntent` was built (`VirtualActivityManagerHook.routeReceiver`); the
+     * rest is looked up here, because a `PendingIntent` fires long after the process that
+     * created it and nothing about that process can be assumed to still exist.
+     *
+     * Delivery is the ordinary cold-broadcast path, which already leases the right slot,
+     * joins a live guest instead of racing a second one, and retries until the guest's
+     * receiver acknowledges.
+     */
+    suspend fun deliverPendingBroadcast(
+        context: Context,
+        vuid: Int,
+        receiverClass: String,
+        broadcast: Intent,
+    ): Boolean {
+        val instance = instances.instance(vuid) ?: run {
+            // An instance the user removed while its PendingIntent was still armed. Not
+            // an error, and not silent: this is what a stale alarm looks like.
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PENDING_BROADCAST_NO_INSTANCE",
+                mapOf("vuid" to vuid.toString(), "receiver" to receiverClass),
+            )
+            return false
+        }
+        val manifest = runCatching { manifestOf(instance) }.getOrNull()
+        val entry = manifest?.components?.firstOrNull { it.className == receiverClass }
+        val started = startForBroadcast(
+            context,
+            ColdBroadcastTarget(
+                vuid = vuid,
+                packageName = instance.packageName,
+                versionCode = instance.versionCode,
+                receiverClass = receiverClass,
+                // The receiver's own `android:process`, so a guest that puts its receivers
+                // in a second process gets one, exactly as it would on a device. Falling
+                // back to the package name is the platform's own default.
+                processName = entry?.processName ?: instance.packageName,
+            ),
+            broadcast,
+        )
+        Diagnostics.info(
+            DiagChannel.PROCESS, "PENDING_BROADCAST_DELIVERED",
+            mapOf(
+                "vuid" to vuid.toString(),
+                "package" to instance.packageName,
+                "receiver" to receiverClass,
+                "action" to (broadcast.action ?: "-"),
+                "started" to started.toString(),
+            ),
+        )
+        return started
+    }
 
     /**
      * Brings a virtual process up and hands it a broadcast.
@@ -191,8 +263,57 @@ object UniqueEngine {
         false
     }
 
-    /** Imports from explicit files: a base APK plus any splits. */
-    suspend fun importFiles(files: List<File>): CreateResult = instances.importAndCreate(files)
+    /**
+     * Imports from explicit files: a base APK, any splits, and any expansion files.
+     *
+     * The `.obb` files are separated out before the bundle reader sees them, because it
+     * would reject the whole selection over one file that is not an APK — and picking the
+     * APK and the OBB together in one go is exactly how a sideloaded game arrives. They
+     * go where the game will look for them: the new instance's own expansion directory.
+     */
+    suspend fun importFiles(files: List<File>): CreateResult {
+        val expansions = files.filter { it.name.endsWith(".obb", ignoreCase = true) }
+        val apks = files - expansions.toSet()
+        val result = instances.importAndCreate(apks)
+        if (result is CreateResult.Created) {
+            importGuestAssets(result.instance.vuid, result.instance.packageName, expansions)
+        }
+        return result
+    }
+
+    /**
+     * Gives an instance the expansion files and external data the device already has.
+     *
+     * Run after every import and clone, and available on demand from the UI, because the
+     * three ways a game's assets can arrive are all real: they were downloaded by the
+     * installed copy of the app, they were picked as files beside the APK, or they were
+     * not obtainable and the user has to be told which.
+     *
+     * A failure never fails the import. An app with no OBB is the common case, and an app
+     * whose OBB could not be read is still an app the user can launch — it is the game
+     * that will say what is missing, and the diagnostic says why.
+     */
+    suspend fun importGuestAssets(
+        vuid: Int,
+        packageName: String,
+        extraFiles: List<File> = emptyList(),
+        includeExternalData: Boolean = false,
+    ): Map<String, String> = withContext(Dispatchers.IO) {
+        val importer = GuestAssetImport(app)
+        val fromDevice = runCatching {
+            importer.importFor(vuid, packageName, includeExternalData)
+        }.getOrElse {
+            Diagnostics.warn(
+                DiagChannel.STORAGE, "GUEST_ASSET_IMPORT_FAILED",
+                mapOf("package" to packageName, "vuid" to vuid.toString(), "error" to it.toString()),
+            )
+            GuestAssetImport.Result(GuestAssetImport.Outcome.SOURCE_UNREADABLE, detail = it.toString())
+        }
+        val fromFiles = if (extraFiles.isEmpty()) null else runCatching {
+            importer.importFiles(vuid, packageName, extraFiles)
+        }.getOrNull()
+        (fromFiles ?: fromDevice).toMap()
+    }
 
     /**
      * Updates an imported package in place, keeping every instance's data.

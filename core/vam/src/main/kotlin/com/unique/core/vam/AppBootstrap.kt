@@ -16,6 +16,7 @@ import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.nativelib.GuestNativeExclusions
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.profile.DeviceProfileCodec
 import com.unique.core.vprofile.DeviceProfileProvider
@@ -525,28 +526,27 @@ object AppBootstrap {
         }
         runCatching { VirtualIdentityHooks.reportAlarmCapability(hostContext) }
 
-        // Providers, once the identity hooks are in and not before.
+        // Everything below installs a hook, and every one of them must be in place
+        // before the first line of *guest* code runs. That line is a provider's
+        // `attachInfo`, not `Application.onCreate`, and the difference cost an app:
         //
-        // They still come before every other *guest* component and before its
-        // `Application.onCreate`, which is the ordering apps rely on. What changed is
-        // that they no longer come before UNIQUE's own plumbing: `ContentProvider.attachInfo`
-        // runs real app code, and `androidx.core.content.FileProvider`'s reads external
-        // storage while parsing its `<paths>`. With the `mount` proxy not yet installed
-        // that call went out under the guest's name and the provider never published:
+        //   14:41:34.450 PROVIDERS_PUBLISHED package=com.a0soft.gphone.acc.free
+        //   14:41:34.459 SERVICE_HOOKED      service=notification
+        //   14:41:34.471 FATAL EXCEPTION: GoogleApiHandler
+        //     java.lang.SecurityException: Package com.a0soft.gphone.acc.free
+        //       is not owned by uid 10303
+        //       at INotificationManager$Stub$Proxy.getNotificationChannel
         //
-        //   PROVIDER_PUBLISH_FAILED provider=androidx.core.content.FileProvider
-        //     error=java.lang.SecurityException: callingPackage does not match UID
+        // Nine milliseconds of unhooked `notification` was all it took: the provider's
+        // `attachInfo` started a thread, the thread asked for a notification channel
+        // under the guest's own name, and `system_server` refused it on a `Handler`
+        // where no app can catch it. The rule that follows is absolute and is the
+        // reason these four calls now come *before* the providers: **a hook installed
+        // after guest code has run is a hook that was not installed.**
         //
-        // FileProvider is how an app shares a file with anything outside itself, so this
-        // was every camera intent, every "share" and every attachment in every app that
-        // uses it.
-        runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
-            Diagnostics.warn(
-                DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
-                mapOf("package" to params.packageName, "error" to it.toString()),
-            )
-        }
-
+        // Nothing here needs a provider. The notification hook needs the guest's
+        // `Context` for its icons, the job hook needs the slot, the receiver registry
+        // needs the guest's `Context`, and all three exist by now.
         runCatching { VirtualJobSchedulerHook.install(ready, hostContext) }.onFailure {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "JOB_HOOK_INSTALL_FAILED",
@@ -565,7 +565,8 @@ object AppBootstrap {
             }
 
         // Registered after the application exists, because the guest's own Context is
-        // what its receivers must run with.
+        // what its receivers must run with. A provider's `attachInfo` may send a
+        // broadcast the guest expects to receive, so this precedes the providers too.
         runCatching { VirtualReceiverRegistry.install(ready) }.onFailure {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "RECEIVER_INSTALL_FAILED",
@@ -574,10 +575,33 @@ object AppBootstrap {
         }
 
         // The window attributes the platform used the stub's copy of. Registered before
-        // `onCreate` because a guest may start its first Activity from there.
+        // any guest code because a guest may start its first Activity from a provider's
+        // `attachInfo` as readily as from `onCreate`.
         runCatching { VirtualActivityLifecycle.install(ready) }.onFailure {
             Diagnostics.warn(
                 DiagChannel.LAUNCH, "ACTIVITY_LIFECYCLE_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
+        // Providers, once every hook is in and not before.
+        //
+        // They still come before every other *guest* component and before its
+        // `Application.onCreate`, which is the ordering apps rely on. What changed is
+        // that they no longer come before UNIQUE's own plumbing: `ContentProvider.attachInfo`
+        // runs real app code, and `androidx.core.content.FileProvider`'s reads external
+        // storage while parsing its `<paths>`. With the `mount` proxy not yet installed
+        // that call went out under the guest's name and the provider never published:
+        //
+        //   PROVIDER_PUBLISH_FAILED provider=androidx.core.content.FileProvider
+        //     error=java.lang.SecurityException: callingPackage does not match UID
+        //
+        // FileProvider is how an app shares a file with anything outside itself, so this
+        // was every camera intent, every "share" and every attachment in every app that
+        // uses it.
+        runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
                 mapOf("package" to params.packageName, "error" to it.toString()),
             )
         }
@@ -786,6 +810,10 @@ object AppBootstrap {
                 appInfo.sourceDir?.substringBeforeLast('/'),
             ).filter { it.isNotBlank() }.flatMap(::pathAliases).distinct()
             UniqueNative.setRedirectScope(scope)
+            // Set before install, never after: install() walks what is loaded now, and an
+            // exclusion that arrives afterwards excludes a library that is already hooked.
+            val exclusions = nativeExclusionsFor(hostContext, params)
+            UniqueNative.setRedirectExclusions(exclusions)
             val status = UniqueNative.installIoRedirect()
             // And keep it current: a library the guest loads later has its own GOT and is
             // not covered by the scan above.
@@ -798,6 +826,10 @@ object AppBootstrap {
                     "rules" to rules.size.toString(),
                     "slots" to UniqueNative.redirectSlotsPatched().toString(),
                     "scope" to scope.joinToString(",").take(200),
+                    // Reported on every launch, not only when it is non-empty: a library
+                    // that is deliberately not hooked and one the scan never found produce
+                    // the same zero slots, and only one of them is a bug.
+                    "excluded" to exclusions.joinToString(",").take(200),
                 ),
             )
         }.onFailure {
@@ -806,6 +838,41 @@ object AppBootstrap {
                 mapOf("package" to params.packageName, "error" to it.toString()),
             )
         }
+    }
+
+    /**
+     * The libraries the redirector must leave alone for this guest.
+     *
+     * The built-in list plus whatever this instance's own override file names, one per
+     * line, `#` starting a comment. The file is the recovery route for a protector
+     * UNIQUE has not met yet: a crash whose only evidence is an unaligned PC inside an
+     * anonymous page can be answered by naming one `.so`, without a new build.
+     *
+     * A failure to read it is a warning and not a launch failure — the built-in list
+     * still applies, and an unreadable override must not be the reason an app does not
+     * start.
+     */
+    private fun nativeExclusionsFor(
+        hostContext: Context,
+        params: VirtualLaunchParams,
+    ): List<String> {
+        val model = VirtualPathModel(
+            (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+        )
+        val file = File(model.nativeExclusionsFile(params.vuid, params.packageName))
+        val extra = runCatching {
+            if (!file.isFile) emptyList()
+            else file.readLines()
+                .map { it.substringBefore('#').trim() }
+                .filter { it.isNotEmpty() }
+        }.getOrElse {
+            Diagnostics.warn(
+                DiagChannel.NATIVE, "NATIVE_EXCLUSIONS_UNREADABLE",
+                mapOf("file" to file.path, "error" to it.toString()),
+            )
+            emptyList()
+        }
+        return GuestNativeExclusions.forGuest(extra)
     }
 
     /**

@@ -117,6 +117,68 @@ object PlatformPermissions {
     )
 
     /**
+     * Permissions UNIQUE answers itself, without asking the host whether it holds them.
+     *
+     * ## The rule this is an exception to, and why the exception is not a hole
+     *
+     * Everywhere else UNIQUE *narrows*: a guest sees `host grant AND instance grant`,
+     * because a local "granted" for something the host lacks is a lie the platform
+     * refuses at the first real call. That reasoning has one premise — that the guest's
+     * call reaches the platform — and for these three permissions the premise is false.
+     * A guest's external storage is not `/storage/emulated/0`; it is a directory inside
+     * UNIQUE's own `filesDir`, put there by `VirtualExternalStorage` before the guest
+     * runs. Reading and writing it needs no permission from anyone, and the "real call"
+     * the intersection was protecting is an `open()` on a path UNIQUE owns.
+     *
+     * ## What the intersection actually did here
+     *
+     * It denied them permanently, to every guest, on every modern phone. From the fifth
+     * physical run, on Android 15:
+     *
+     * ```
+     * HOST_PERMISSION_REFUSED group=FILES
+     *   permissions=android.permission.READ_EXTERNAL_STORAGE,
+     *               android.permission.WRITE_EXTERNAL_STORAGE  permanent=true
+     * PERMISSION_RESULT_RECORDED package=com.axlebolt.standoff2
+     *   permission=android.permission.READ_EXTERNAL_STORAGE granted=false
+     *   blockedByHost=true                                            (x156)
+     * I Unity: No permission to read external storage. Skipping OBB loading.   (x156)
+     * ```
+     *
+     * `permanent=true` is not a phone that needs its settings changed. Since Android 13
+     * the platform *auto-denies* `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` to
+     * any app targeting 33 or later — there is no dialog and no settings toggle — and
+     * UNIQUE targets 36. So the host can never hold them, `blockedByHost` can never
+     * clear, and every Unity game asks 156 times and skips its own assets 156 times.
+     * That single wrong answer is what "the game does not see its OBB" was.
+     *
+     * `MANAGE_EXTERNAL_STORAGE` is here for the same reason and one more: an app that is
+     * told it lacks all-files access sends the user to a Settings screen that is about
+     * UNIQUE and cannot help it. Inside the instance the guest genuinely does have every
+     * file there is — its whole world is one directory UNIQUE owns.
+     *
+     * ## What is deliberately *not* here
+     *
+     * `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO` and
+     * `ACCESS_MEDIA_LOCATION` reach the device's real `MediaStore`, which is the user's
+     * photo library and not the instance's directory. Those stay intersected with the
+     * host's grant, which is the honest answer: UNIQUE cannot show a guest a photo the
+     * user has not let UNIQUE see.
+     */
+    val SELF_SERVED: Set<String> = setOf(
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.MANAGE_EXTERNAL_STORAGE",
+    )
+
+    /**
+     * Whether UNIQUE answers [permission] from the instance alone.
+     *
+     * @see SELF_SERVED
+     */
+    fun isSelfServed(permission: String): Boolean = permission in SELF_SERVED
+
+    /**
      * Whether [permission] is one the user decides at runtime.
      *
      * The answer for a name this does not recognise is `false` — install-time — and that

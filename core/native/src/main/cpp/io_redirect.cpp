@@ -204,6 +204,7 @@ int h_statfs(const char* path, struct statfs* out) {
 }
 
 std::vector<std::string> g_filters;
+std::vector<std::string> g_excludes;
 
 /// Every PLT slot this process has patched, since the process started.
 ///
@@ -272,6 +273,21 @@ void set_scope(const char** paths, int count) {
     g_filters = std::move(filters);
 }
 
+void set_exclusions(const char** paths, int count) {
+    std::vector<std::string> excludes;
+    for (int i = 0; i < count; ++i) {
+        if (paths[i] != nullptr) excludes.emplace_back(paths[i]);
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_excludes = std::move(excludes);
+    ULOGI("io_redirect: %zu exclusion(s) set", g_excludes.size());
+}
+
+int exclusion_count() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return static_cast<int>(g_excludes.size());
+}
+
 int slots_patched() { return g_slots_patched; }
 
 /// Installs the interception into the libraries named by set_scope().
@@ -299,9 +315,11 @@ InstallStatus install_locked() {
     };
 
     std::vector<std::string> filters;
+    std::vector<std::string> excludes;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         filters = g_filters;
+        excludes = g_excludes;
     }
     if (filters.empty()) {
         // Refused rather than applied everywhere. An unscoped hook would patch UNIQUE's
@@ -312,16 +330,19 @@ InstallStatus install_locked() {
         return InstallStatus::kFailed;
     }
 
-    auto report = plt::hook_all(filters, requests,
+    auto report = plt::hook_all(filters, excludes, requests,
                                 sizeof(requests) / sizeof(requests[0]));
     g_slots_patched += report.slots_patched;
     for (const auto& failure : report.failures) {
         ULOGE("io_redirect: %s", failure.c_str());
     }
-    ULOGI("io_redirect installed: %d slot(s) in %d/%d libraries (%d total), %d rule(s), "
-          "page size %ld",
+    for (const auto& name : report.excluded) {
+        ULOGI("io_redirect: excluded (not hooked, on purpose): %s", name.c_str());
+    }
+    ULOGI("io_redirect installed: %d slot(s) in %d/%d libraries (%d excluded, %d total), "
+          "%d rule(s), page size %ld",
           report.slots_patched, report.libraries_matched, report.libraries_scanned,
-          g_slots_patched, rule_count(), sysconf(_SC_PAGESIZE));
+          report.libraries_excluded, g_slots_patched, rule_count(), sysconf(_SC_PAGESIZE));
     if (report.libraries_matched == 0) {
         for (const auto& filter : filters) {
             ULOGW("io_redirect: filter did not match: %s", filter.c_str());
@@ -375,7 +396,11 @@ InstallStatus watch_library_loads() {
     scope.emplace_back("libnativeloader.so");
     scope.emplace_back("libart.so");
 
-    auto report = plt::hook_all(scope, requests, sizeof(requests) / sizeof(requests[0]));
+    // No exclusions here, deliberately: this hooks `dlopen` so that install_locked can
+    // run again afterwards, and install_locked is where the exclusions apply. Excluding a
+    // protector from the *watch* would mean a library it loads is never redirected at
+    // all, which is a different and larger loss than not redirecting the protector.
+    auto report = plt::hook_all(scope, {}, requests, sizeof(requests) / sizeof(requests[0]));
     g_watching = report.slots_patched > 0;
     ULOGI("io_redirect: library-load watch %s (%d slot(s) in %d libraries)",
           g_watching ? "installed" : "found nothing to hook",

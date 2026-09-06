@@ -127,15 +127,39 @@
     <uses-permission android:name="android.permission.BODY_SENSORS" />
 
     <!--
+      All-files access, and the argument that used to be here against it.
+
+      It used to say: "a guest's external storage is redirected into its own instance
+      directory, so the device's real storage is not what it is reading." Every word of
+      that is true about the *guest*, and it answers the wrong question. UNIQUE itself
+      has to read the device's real storage exactly once per import, because that is
+      where the assets a game already downloaded are:
+
+        /storage/emulated/0/Android/obb/com.axlebolt.standoff2/*.obb
+
+      Redirecting the guest at an empty directory and then having no way to fill it is
+      what "the game does not see its OBB" was, and no amount of correct redirection
+      fixes it. Since Android 11 that directory is guarded, and this is the permission
+      the guard asks for.
+
+      Declaring it grants nothing on its own — this is *special access*, and the user
+      must turn it on from a Settings screen, which `SpecialAccess.ALL_FILES` opens.
+      Everything degrades without it: `GuestAssetImport` reports SOURCE_UNREADABLE and
+      the user can still hand UNIQUE the .obb file directly.
+
+      maxSdkVersion is deliberately absent: this permission exists from API 30 on and is
+      the only route on every release UNIQUE supports.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!--
       Deliberately NOT declared, and why - because "declare everything" is the obvious
       answer and it is wrong in four different ways.
 
-      MANAGE_EXTERNAL_STORAGE (7/59 apps), WRITE_SETTINGS (2/59): these are *special
-      access*, not permissions. Declaring one grants nothing; the user must find a
-      separate Settings screen and turn it on.
+      WRITE_SETTINGS (2/59 surveyed apps): special access, and nothing UNIQUE needs. A
+      guest changing the device's brightness or ringtone would be changing the *device's*,
+      which is the one thing instance isolation is for.
 
-      All-files access would also not help: a guest's external storage is redirected into
-      its own instance directory, so the device's real storage is not what it is reading.
       Usage access (PACKAGE_USAGE_STATS) is left out for a different reason — it would
       hand every guest the *host's* usage history, which is the isolation the rest of the
       engine exists to keep.
@@ -316,6 +340,16 @@
             android:authorities="${applicationId}.shared"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!-- Where a guest's broadcast PendingIntent actually lands.
+             In UNIQUE's main process, and that is the whole point: a PendingIntent fires
+             long after the process that built it, so the component it names has to be one
+             that exists whether or not any :vappN is running. The guest's own receiver
+             class travels as an extra and the cold-broadcast router wakes it.
+             Not exported: only UNIQUE's own PendingIntents point here. -->
+        <receiver
+            android:name="com.unique.app.runtime.BroadcastStub"
+            android:exported="false" />
 
         <!-- The VirtualCore server. Single writer for the state database. -->
         <service

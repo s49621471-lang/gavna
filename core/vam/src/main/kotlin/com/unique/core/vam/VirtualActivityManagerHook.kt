@@ -549,9 +549,27 @@ object VirtualActivityManagerHook {
      *    cross-app bind and the platform resolves it correctly. Warning about it filled a
      *    device log with thirty lines that named nothing wrong, while the real failure was
      *    a missing `<uses-permission>`.
-     *  - More than one match is refused rather than guessed. The platform would refuse
-     *    too: `bindService` with an implicit intent that resolves to several services is
-     *    an error, not a choice.
+     *  - Several matches on an intent the caller **scoped to the guest** resolve to the
+     *    best one, because that is what the platform does. `setPackage()` makes an intent
+     *    explicit enough to start, and `PackageManagerService.resolveService` then picks
+     *    the highest-priority filter and, among equals, the first declared. Refusing
+     *    instead was wrong and cost every guest its push notifications:
+     *
+     *    ```
+     *    W PROCESS SERVICE_INTENT_IMPLICIT action=com.google.firebase.MESSAGING_EVENT
+     *        package=com.axlebolt.standoff2 matches=2
+     *    E FirebaseMessaging: Exception while binding the service
+     *      java.lang.SecurityException: Not allowed to bind to service
+     *        Intent { act=com.google.firebase.MESSAGING_EVENT pkg=com.axlebolt.standoff2 }
+     *    ```
+     *
+     *    Two matches is the *normal* shape for FCM — the SDK's own
+     *    `FirebaseMessagingService` and the app's subclass of it — so "more than one is
+     *    an ambiguity" described a configuration almost every app has. Refused here, the
+     *    bind went out to a platform that has never installed the guest, and threw.
+     *  - Several matches on a *bare* implicit intent are still refused. There the
+     *    platform would refuse too: `bindService` with an intent that names neither a
+     *    component nor a package is an error, not a choice.
      *  - No match is reported and left alone, so the start still reaches the platform and
      *    whatever the device would have done, it still does.
      */
@@ -569,21 +587,33 @@ object VirtualActivityManagerHook {
             return null
         }
         val matches = GuestIntentResolution.serviceEntries(ready.manifest, intent, guest)
-        if (matches.size != 1) {
+        if (matches.isEmpty() || (matches.size > 1 && target == null)) {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "SERVICE_INTENT_IMPLICIT",
                 mapOf(
                     "action" to (intent.action ?: "-"),
                     "package" to guest,
                     "matches" to matches.size.toString(),
+                    "detail" to if (matches.isEmpty()) {
+                        "the guest declares no service for this action"
+                    } else {
+                        "several match and the intent names no package, which the " +
+                            "platform refuses too"
+                    },
                 ),
             )
             return null
         }
-        val resolved = ComponentName(guest, matches.single().className)
+        // serviceEntries is ordered best-first, so this is PackageManagerService's own
+        // choice: highest filter priority, then first declared.
+        val resolved = ComponentName(guest, matches.first().className)
         Diagnostics.info(
             DiagChannel.PROCESS, "SERVICE_INTENT_RESOLVED_IN_GUEST",
-            mapOf("action" to (intent.action ?: "-"), "service" to resolved.className),
+            mapOf(
+                "action" to (intent.action ?: "-"),
+                "service" to resolved.className,
+                "matches" to matches.size.toString(),
+            ),
         )
         return resolved
     }
@@ -737,27 +767,79 @@ object VirtualActivityManagerHook {
             ComponentKind.ACTIVITY, ComponentKind.ACTIVITY_ALIAS ->
                 VirtualActivityTaskManagerHook.routeActivity(hostPackage, intent)
             ComponentKind.SERVICE -> routeService(hostPackage, intent)
-            ComponentKind.RECEIVER -> {
-                // A guest's manifest receiver exists only as a *dynamic* registration
-                // inside the live process (§6.3), and a dynamic receiver is matched by
-                // filter, never by component - so an explicit broadcast PendingIntent
-                // aimed at one has nothing to be rewritten onto. It needs a host stub
-                // receiver that re-dispatches, which is the same :server work waking a
-                // dead guest needs. Left untouched and reported rather than pointed at a
-                // component that will fail to resolve when it eventually fires.
-                Diagnostics.warn(
-                    DiagChannel.LAUNCH, "PENDING_INTENT_RECEIVER_UNSUPPORTED",
-                    mapOf(
-                        "receiver" to component.className,
-                        "package" to ready.params.packageName,
-                    ),
-                )
-                intent
-            }
+            ComponentKind.RECEIVER -> routeReceiver(hostPackage, ready, component, intent)
             ComponentKind.PROVIDER -> intent
         }
     }
 
+
+    /**
+     * Points a broadcast `PendingIntent` at UNIQUE's own receiver, carrying the guest's.
+     *
+     * A guest's manifest receiver exists only as a *dynamic* registration inside the live
+     * process (§6.3), and a dynamic receiver is matched by filter, never by component —
+     * so an explicit broadcast aimed at one has nothing in the guest to be rewritten
+     * onto. This used to be reported as unsupported and left pointing at a component the
+     * platform has never installed:
+     *
+     * ```
+     * W LAUNCH PENDING_INTENT_RECEIVER_UNSUPPORTED
+     *     receiver=com.google.android.gms.measurement.AppMeasurementReceiver
+     *     package=com.gordey.standarling                                     (x26)
+     * ```
+     *
+     * Twenty-six in one run, every one of them an SDK re-arming a timer that would never
+     * fire. A `PendingIntent` is precisely the case where "the guest's process will
+     * handle it" is not available, because it fires when there may be no guest process at
+     * all — so it goes to the one component that is always there: a receiver in UNIQUE's
+     * main process, which is where the cold-broadcast router already lives.
+     *
+     * The original intent travels whole, under the same key a cold wake uses, so the
+     * receiver that eventually runs sees the action, data and extras the SDK built.
+     */
+    private fun routeReceiver(
+        hostPackage: String,
+        ready: AppBootstrap.Result.Ready,
+        component: ComponentName,
+        intent: Intent,
+    ): Intent {
+        val stub = Intent().apply {
+            setComponent(ComponentName(hostPackage, StubRouter.stubBroadcastReceiver()))
+            // Action, data and categories are copied rather than dropped, because they
+            // are what `Intent.filterEquals` compares and `PendingIntent` identity is
+            // `filterEquals` plus the request code. Two alarms an SDK arms for two
+            // different actions must stay two `PendingIntent`s.
+            action = intent.action
+            setDataAndType(intent.data, intent.type)
+            intent.categories?.forEach { addCategory(it) }
+            // And the identifier separates what those cannot: every guest receiver now
+            // lands on the *same* host component, so two receivers of one app — or the
+            // same receiver in two instances — would otherwise compare equal and
+            // `FLAG_UPDATE_CURRENT` would silently overwrite one with the other. It is
+            // part of `filterEquals` from API 29 and costs nothing else; the same device
+            // fault it prevents for activity taps is written up on
+            // `VirtualLaunchParams.stampIdentity`.
+            identifier = "u${ready.params.vuid}/${component.className}"
+            putExtra(StubRouter.EXTRA_VUID, ready.params.vuid)
+            putExtra(StubRouter.EXTRA_PACKAGE, ready.params.packageName)
+            putExtra(StubRouter.EXTRA_RECEIVER, component.className)
+            // The guest's intent whole, carried once: its data URI, its categories and
+            // its own extras are all part of what the receiver reads, and an SDK that
+            // finds half of them behaves worse than one that finds none. Extras are not
+            // part of `filterEquals`, so this copy is payload and never identity.
+            putExtra(VirtualLaunchParams.KEY_BROADCAST, Intent(intent))
+        }
+        Diagnostics.info(
+            DiagChannel.LAUNCH, "PENDING_INTENT_RECEIVER_ROUTED",
+            mapOf(
+                "receiver" to component.className,
+                "package" to ready.params.packageName,
+                "vuid" to ready.params.vuid.toString(),
+                "stub" to StubRouter.stubBroadcastReceiver(),
+            ),
+        )
+        return stub
+    }
 
     /**
      * Points an acquisition at the slot that actually publishes the authority.

@@ -110,6 +110,7 @@ bool write_slot(void** slot, void* value, void** previous) {
 
 struct ScanContext {
     const std::vector<std::string>* filters;
+    const std::vector<std::string>* excludes;
     HookRequest* requests;
     size_t request_count;
     HookReport* report;
@@ -120,6 +121,15 @@ bool path_matches(const char* path, const std::vector<std::string>& filters) {
     if (path == nullptr) return false;
     for (const auto& filter : filters) {
         if (strstr(path, filter.c_str()) != nullptr) return true;
+    }
+    return false;
+}
+
+/// True when an exclusion names this library. An empty list excludes nothing.
+bool path_excluded(const char* path, const std::vector<std::string>& excludes) {
+    if (excludes.empty() || path == nullptr) return false;
+    for (const auto& exclude : excludes) {
+        if (strstr(path, exclude.c_str()) != nullptr) return true;
     }
     return false;
 }
@@ -173,6 +183,16 @@ int scan_one(struct dl_phdr_info* info, size_t, void* data) {
         }
         return 0;
     }
+    if (path_excluded(info->dlpi_name, *ctx->excludes)) {
+        // Counted and named, never silent. "This library was deliberately left alone"
+        // and "the scan never saw it" produce the same zero, and only one of them is a
+        // bug — so the report carries both numbers.
+        ctx->report->libraries_excluded++;
+        if (ctx->report->excluded.size() < 16) {
+            ctx->report->excluded.emplace_back(info->dlpi_name);
+        }
+        return 0;
+    }
     ctx->report->libraries_matched++;
 
     for (int i = 0; i < info->dlpi_phnum; ++i) {
@@ -191,10 +211,11 @@ int scan_one(struct dl_phdr_info* info, size_t, void* data) {
 }  // namespace
 
 HookReport hook_all(const std::vector<std::string>& path_filters,
+                    const std::vector<std::string>& path_excludes,
                     HookRequest* requests, size_t request_count) {
     std::lock_guard<std::mutex> lock(g_mutex);
     HookReport report;
-    ScanContext ctx{&path_filters, requests, request_count, &report};
+    ScanContext ctx{&path_filters, &path_excludes, requests, request_count, &report};
     dl_iterate_phdr(scan_one, &ctx);
     return report;
 }

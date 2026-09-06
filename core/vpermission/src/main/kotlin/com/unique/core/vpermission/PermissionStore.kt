@@ -65,6 +65,13 @@ enum class PermissionState { GRANTED, DENIED, ASK }
  * [effectiveState] encodes exactly that, so the UI can show "needs UNIQUE permission"
  * instead of a switch that appears on but does not work.
  *
+ * The one exception is [PlatformPermissions.SELF_SERVED] — the external-storage
+ * permissions — and it is an exception because the limit's premise fails there, not
+ * because it is convenient: a guest's external storage is a directory inside UNIQUE's own
+ * `filesDir`, so no host grant is involved in reading it, and since Android 13 no host
+ * grant is *obtainable* either. Intersecting those with the host denied every guest its
+ * own files forever; the evidence is on `SELF_SERVED`.
+ *
  * ## Undecided does not mean denied
  *
  * Only a *runtime* permission is the user's to decide. Everything else a manifest asks
@@ -115,18 +122,34 @@ class PermissionStore(
      *  1. A permission the guest itself defines is granted, as at install. It is checked
      *     first because the host cannot hold a permission only the guest declares, so any
      *     later check would deny it.
-     *  2. A permission UNIQUE does not hold is denied, and reported as the host's fault.
+     *  2. A permission UNIQUE *serves itself* is the user's to decide but not the host's
+     *     to block, because nothing it does leaves the instance. The stored decision
+     *     still stands, so the user can still deny an instance its files; what changed is
+     *     that "UNIQUE does not hold it" is no longer an answer, since UNIQUE cannot hold
+     *     `READ_EXTERNAL_STORAGE` on any phone from Android 13 on. See
+     *     [PlatformPermissions.SELF_SERVED] for what that cost.
+     *  3. A permission UNIQUE does not hold is denied, and reported as the host's fault.
      *     UNIQUE narrows; it cannot widen.
-     *  3. A decision the user has already made stands.
-     *  4. Otherwise: a runtime permission is still the user's to make, and an install-time
+     *  4. A decision the user has already made stands.
+     *  5. Otherwise: a runtime permission is still the user's to make, and an install-time
      *     permission is granted because the manifest asked for it.
+     *
+     * Self-served permissions default to GRANTED rather than ASK. They are the storage
+     * an app was installed with as far as it can tell, there is no host dialog that could
+     * ever answer them, and an app that is asked and refused simply stops working.
      */
     fun effectiveState(vuid: Int, packageName: String, permission: String): EffectivePermission {
         if (isSelfDefined(permission)) {
             return EffectivePermission(PermissionState.GRANTED, blockedByHost = false)
         }
-        val hostHolds = hostGrants(permission) == PackageManager.PERMISSION_GRANTED
         val stored = stored(vuid, packageName, permission)
+        if (PlatformPermissions.isSelfServed(permission)) {
+            return when (stored) {
+                PermissionState.DENIED -> EffectivePermission(PermissionState.DENIED, false)
+                else -> EffectivePermission(PermissionState.GRANTED, false)
+            }
+        }
+        val hostHolds = hostGrants(permission) == PackageManager.PERMISSION_GRANTED
         return when {
             !hostHolds -> EffectivePermission(PermissionState.DENIED, blockedByHost = true)
             stored == PermissionState.GRANTED -> EffectivePermission(PermissionState.GRANTED, false)

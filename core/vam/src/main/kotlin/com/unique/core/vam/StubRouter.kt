@@ -51,6 +51,28 @@ object StubRouter {
     fun stubJobService(processIndex: Int): String = "com.unique.stub.JobStub_p$processIndex"
 
     /**
+     * The host receiver a guest's broadcast `PendingIntent` is pointed at.
+     *
+     * One, not one per slot, and it lives in UNIQUE's *main* process on purpose. A
+     * `PendingIntent` outlives the process that created it — that is what it is for — so
+     * the thing that fires minutes or days later must be a component that exists whether
+     * or not any `:vappN` is running. UNIQUE's main process is where the broadcast router
+     * already lives and where a dead guest is woken from.
+     *
+     * Before this, an explicit broadcast `PendingIntent` naming a guest receiver was left
+     * pointing at a component the platform has never installed, and reported as
+     * unsupported. It fired 26 times in one device run, all of them Play services'
+     * `AppMeasurementReceiver` re-arming itself, and every one of them reached nothing.
+     */
+    fun stubBroadcastReceiver(): String = "com.unique.app.runtime.BroadcastStub"
+
+    /** The guest's real receiver class, carried on the stub intent. */
+    const val EXTRA_RECEIVER = "_unique_receiver"
+
+    /** The guest's package, carried on the stub intent so the router need not guess. */
+    const val EXTRA_PACKAGE = "_unique_package"
+
+    /**
      * Namespaces a virtual job id into the host's id space.
      *
      * Virtual apps choose their own job ids and two instances of the same app will choose

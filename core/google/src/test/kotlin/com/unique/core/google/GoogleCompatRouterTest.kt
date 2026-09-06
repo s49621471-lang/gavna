@@ -47,9 +47,20 @@ class GoogleCompatRouterTest {
         hostGmsAvailable = true, virtualGmsInstalled = true, customTabsAvailable = true,
     )
 
-    @Test fun `browser OAuth is preferred for sign-in when the app declares a redirect`() {
+    @Test fun `a declared redirect scheme does not make sign-in work`() {
+        // It used to: an app with a redirect scheme was routed PASSTHROUGH and told the
+        // user the browser flow was "the most reliable path". The outbound half is fine
+        // and the return half cannot happen — Chrome resolves `myapp://callback` against
+        // installed packages, and the guest is not one. In-space GMS is what answers
+        // sign-in, with or without a scheme.
         val d = GoogleCompatRouter(fullyCapable).route(manifest(true), neutral, GoogleFlow.SIGN_IN)
-        assertThat(d.mode).isEqualTo(GoogleMode.PASSTHROUGH)
+        assertThat(d.mode).isEqualTo(GoogleMode.VIRTUAL_GMS)
+    }
+
+    @Test fun `sign-in with a redirect scheme and no in-space GMS is refused, not promised`() {
+        val caps = fullyCapable.copy(virtualGmsInstalled = false)
+        val d = GoogleCompatRouter(caps).route(manifest(true), neutral, GoogleFlow.SIGN_IN)
+        assertThat(d.mode).isEqualTo(GoogleMode.UNSUPPORTED)
     }
 
     @Test fun `legacy sign-in falls back to in-space GMS when there is no redirect`() {
@@ -81,9 +92,19 @@ class GoogleCompatRouterTest {
         }
     }
 
-    @Test fun `browser OAuth needs no Google Play services at all`() {
-        val d = GoogleCompatRouter(GoogleCapabilities.NONE).route(manifest(true), neutral, GoogleFlow.OAUTH_WEB)
+    @Test fun `browser OAuth needs no Google Play services when nothing has to come back`() {
+        val d = GoogleCompatRouter(GoogleCapabilities.NONE).route(manifest(false), neutral, GoogleFlow.OAUTH_WEB)
         assertThat(d.mode).isEqualTo(GoogleMode.PASSTHROUGH)
+    }
+
+    @Test fun `browser OAuth is refused when the app expects a redirect back into itself`() {
+        // The scheme is the guest's, the guest is not installed, and an intent filter is
+        // fixed at build time — so nothing on the device resolves the redirect. Naming the
+        // scheme in the rationale is the point: it is what the user would otherwise spend
+        // an evening discovering.
+        val d = GoogleCompatRouter(GoogleCapabilities.NONE).route(manifest(true), neutral, GoogleFlow.OAUTH_WEB)
+        assertThat(d.mode).isEqualTo(GoogleMode.UNSUPPORTED)
+        assertThat(d.rationale).contains("com.example.app://")
     }
 
     @Test fun `an explicit database policy overrides every heuristic`() {

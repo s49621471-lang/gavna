@@ -280,14 +280,39 @@ object SystemServiceHook {
         val cachePatched = patchServiceManagerCache(serviceManager, target.serviceName, binderProxy)
 
         // 2. Singletons that already hold the raw interface.
+        //
+        // A field that is not found is only news when *none* of them were. Several of
+        // these entries are alternative spellings of one singleton — `input_method` has
+        // two because the interface moved package in Android 14 — so exactly one of them
+        // resolving is the healthy outcome, and warning about the other said a hook had
+        // failed when it had worked:
+        //
+        //   W HOOK SINGLETON_PATCH_SKIPPED service=input_method
+        //       field=com.android.internal.inputmethod.IInputMethodManagerGlobalInvoker.sServiceCache
+        //   I HOOK SERVICE_HOOKED    service=input_method  cache=true  singletons=1
+        //
+        // Eight of those in one device log, next to the line saying the keyboard hook was
+        // installed. A warning that is normal is a warning nobody reads.
         var singletons = 0
+        val missed = ArrayList<String>(target.cachedSingletons.size)
         for (ref in target.cachedSingletons) {
             if (patchSingleton(ref, shimmed)) singletons++
-            else Diagnostics.warn(
+            else missed += "${ref.className}.${ref.fieldName}"
+        }
+        if (singletons == 0 && missed.isNotEmpty()) {
+            Diagnostics.warn(
                 DiagChannel.HOOK, "SINGLETON_PATCH_SKIPPED",
-                mapOf("service" to target.serviceName, "field" to "${ref.className}.${ref.fieldName}"),
+                mapOf(
+                    "service" to target.serviceName,
+                    "fields" to missed.joinToString(","),
+                    "detail" to "no spelling of this singleton was found; a caller that " +
+                        "already resolved the service keeps the unhooked interface",
+                ),
             )
         }
+
+        // 3. Managers already built, which no named singleton can reach.
+        val managers = repointCachedManagers(ifaceClass, shimmed)
 
         Diagnostics.info(
             DiagChannel.HOOK, "SERVICE_HOOKED",
@@ -295,6 +320,7 @@ object SystemServiceHook {
                 "service" to target.serviceName,
                 "cache" to cachePatched.toString(),
                 "singletons" to singletons.toString(),
+                "managers" to managers.toString(),
                 "bound" to bindResult.bound.joinToString(","),
                 // Concrete method names, because a shim can bind to a method the platform
                 // has stopped calling and still report itself bound.
@@ -302,6 +328,126 @@ object SystemServiceHook {
             ),
         )
         return InstallReport(target.serviceName, true, null, bindResult, singletons)
+    }
+
+    /**
+     * Re-points every manager object in this process that already holds the raw interface.
+     *
+     * The two steps above cover the two shapes the framework documents: a `ServiceManager`
+     * cache consulted on every later `getService`, and a *named static* field like
+     * `NotificationManager.sService`. There is a third shape and it has no name to give:
+     * a manager object that took the interface in its constructor and keeps it in an
+     * ordinary instance field. `JobSchedulerImpl.mBinder` is the one that mattered:
+     *
+     * ```
+     * HOOK SERVICE_HOOKED service=jobscheduler cache=true singletons=0
+     * …
+     * E WM-SystemJobScheduler: Unable to schedule {WorkSpec: ab7a5b7c-…}
+     *   java.lang.IllegalArgumentException: uid 10303 cannot schedule job in com.openai.chatgpt
+     *     at android.app.job.JobSchedulerImpl.schedule(JobSchedulerImpl.java:87)
+     * ```
+     *
+     * `singletons=0` is the tell. WorkManager and Firebase both initialise from a
+     * `ContentProvider`, so both had already asked for a `JobScheduler` — and the object
+     * they got kept the unhooked binder for the life of the process, while every
+     * UNIQUE diagnostic reported the service as hooked.
+     *
+     * The ordering fix in `AppBootstrap` removes the common cause. This removes the class
+     * of it, including UNIQUE's own code and the framework getting there first, and it is
+     * how a service with no singleton to name gets covered at all.
+     *
+     * Matched by *type*, never by field name: only a field declared to hold this exact
+     * interface is written, so a manager for another service can never be touched. A
+     * field that already holds the shim is left alone, which keeps this idempotent.
+     */
+    private fun repointCachedManagers(ifaceClass: Class<*>, shimmed: Any): Int {
+        var patched = 0
+        for (manager in cachedManagers()) {
+            for (field in manager.javaClass.declaredFields) {
+                if (field.type != ifaceClass) continue
+                runCatching {
+                    field.isAccessible = true
+                    if (field.get(manager) !== shimmed) {
+                        field.set(manager, shimmed)
+                        patched++
+                    }
+                }
+            }
+        }
+        return patched
+    }
+
+    /**
+     * Every system-service manager this process has already built.
+     *
+     * Two places hold them and both are needed. `StaticServiceFetcher` keeps one instance
+     * for the whole process, in a field on the fetcher; `CachedServiceFetcher` keeps one
+     * per `ContextImpl`, in that context's `mServiceCache` array. Which of the two a
+     * given service uses has changed between releases — `JobScheduler` moved from the
+     * first to the second in Android 14 — so neither is assumed.
+     *
+     * Everything here is best-effort by construction: a shape that is not found yields no
+     * managers and the caller reports zero, which is the same answer as "there were none
+     * to re-point".
+     */
+    private fun cachedManagers(): List<Any> {
+        val out = ArrayList<Any>(8)
+
+        // Process-wide: SystemServiceRegistry's fetchers, each of which may hold one.
+        val registry = Reflect.findClass("android.app.SystemServiceRegistry")
+        val fetchers = registry?.let { Reflect.get(it, "SYSTEM_SERVICE_FETCHERS") }
+        if (fetchers is Map<*, *>) {
+            for (fetcher in fetchers.values) {
+                if (fetcher == null) continue
+                for (field in fetcher.javaClass.declaredFields) {
+                    if (field.type.isPrimitive) continue
+                    runCatching {
+                        field.isAccessible = true
+                        field.get(fetcher)?.let(out::add)
+                    }
+                }
+            }
+        }
+
+        // Per-context: the service cache of every ContextImpl this process can name.
+        for (context in knownContextImpls()) {
+            runCatching {
+                val field = Reflect.findField(context.javaClass, "mServiceCache") ?: return@runCatching
+                field.isAccessible = true
+                (field.get(context) as? Array<*>)?.forEach { it?.let(out::add) }
+            }
+        }
+        return out
+    }
+
+    /**
+     * The `ContextImpl`s reachable from `ActivityThread`.
+     *
+     * Not an exhaustive list — an Activity's context is created later and has its own
+     * cache — and it does not need to be. A manager created before the hook is one
+     * created during bootstrap, and bootstrap has only these.
+     */
+    private fun knownContextImpls(): List<Any> {
+        val activityThreadClass = Reflect.findClass("android.app.ActivityThread") ?: return emptyList()
+        val thread = runCatching {
+            Reflect.findMethod(activityThreadClass, "currentActivityThread")?.invoke(null)
+        }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Any>(3)
+        runCatching {
+            (Reflect.get(activityThreadClass, "mInitialApplication", thread)
+                as? android.content.Context)
+                ?.let { app ->
+                    // getBaseContext() is protected on ContextWrapper; the field is not.
+                    Reflect.findField(android.content.ContextWrapper::class.java, "mBase")
+                        ?.also { it.isAccessible = true }
+                        ?.get(app)
+                        ?.let(out::add)
+                }
+        }
+        runCatching {
+            Reflect.get(activityThreadClass, "mSystemContext", thread)?.let(out::add)
+        }
+        return out
     }
 
     /**

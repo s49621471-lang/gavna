@@ -198,6 +198,7 @@ class Run:
     events: List[Event]
     lines: List[LogLine]
     device: Dict[str, str] = field(default_factory=dict)
+    _pid_packages: Optional[Dict[int, str]] = None
 
     def by_code(self, *codes: str) -> List[Event]:
         wanted = set(codes)
@@ -225,6 +226,30 @@ class Run:
             if pid and pid.isdigit():
                 out.add(int(pid))
         return out
+
+    def package_of_pid(self, pid: Optional[int]) -> Optional[str]:
+        """Which guest a process was serving, from what that process said about itself.
+
+        A crash line and a Unity line carry a pid and nothing else, and attributing them
+        needs the mapping. It is built from UNIQUE's own events, which carry both — a
+        `:vappN` names its guest on every line once the graft has bound the diagnostics
+        context — so the answer is what the process reported rather than a guess from a
+        process name that was renamed to the guest's anyway.
+        """
+        if pid is None:
+            return None
+        if self._pid_packages is None:
+            mapping: Dict[int, str] = {}
+            by_lineno = {line.lineno: line for line in self.lines}
+            for event in self.events:
+                line = by_lineno.get(event.lineno)
+                if line is None or line.pid is None:
+                    continue
+                package = event.package or event["package"]
+                if package and package != "com.unique":
+                    mapping[line.pid] = package
+            self._pid_packages = mapping
+        return self._pid_packages.get(pid)
 
     def launches(self) -> List[Launch]:
         """Pairs each `LAUNCH_REQUESTED` with what became of it.
@@ -547,6 +572,31 @@ def check_permissions(run: Run) -> Check:
         denied[name] = denied.get(name, 0) + 1
         if name not in denied:
             continue
+    # A denial the *host* caused is never the user's choice, whatever kind of permission
+    # it is. `blockedByHost=true` means UNIQUE itself does not hold it, and for the
+    # external-storage pair that is permanent: since Android 13 the platform auto-denies
+    # them to any app targeting 33 or later, so no dialog exists and no setting helps.
+    # Filed under "the user may have refused it" they were invisible, which is how a game
+    # spent a whole run reading its own assets as missing.
+    host_blocked: Dict[str, int] = {}
+    for event in run.by_code("PERMISSION_RESULT_RECORDED"):
+        if event["granted"] == "false" and event["blockedByHost"] == "true":
+            name = event["permission"] or "?"
+            host_blocked[name] = host_blocked.get(name, 0) + 1
+    for name, count in sorted(host_blocked.items()):
+        check.fail(
+            f"{name} was refused to the guest {count}x because UNIQUE does not hold it — "
+            f"not a decision any user could have made or can undo",
+            0,
+        )
+    for event in run.by_code("HOST_PERMISSION_REFUSED"):
+        if event["permanent"] == "true":
+            check.fail(
+                f"the platform will not grant {event['permissions']} to UNIQUE and will "
+                f"not ask again; a guest that needs it can never have it",
+                event.lineno,
+            )
+
     for name, count in sorted(denied.items()):
         if name in runtime or name.startswith("android.permission.health."):
             check.note(f"{name} denied {count}x — a runtime permission, so this may be the user's choice")
@@ -788,6 +838,111 @@ def check_orientation(run: Run) -> Check:
     return check
 
 
+def check_storage(run: Run) -> Check:
+    """Could a guest read its own files — its expansion files above all?
+
+    Two halves, and a game needs both. The permission half is UNIQUE's answer to
+    `checkSelfPermission(READ_EXTERNAL_STORAGE)`; the files half is whether the
+    instance's own `Android/obb/<pkg>` has anything in it. Either one missing looks
+    identical from inside the app, and identical to a corrupt download:
+
+        I Unity: No permission to read external storage. Skipping OBB loading.   (x156)
+
+    That line is the app's own and is the strongest evidence there is, so it is read
+    directly rather than inferred from UNIQUE's events.
+    """
+    check = Check("storage", "Could a guest read its own external storage and expansion files?")
+
+    skipped: Dict[str, int] = {}
+    for line in run.lines:
+        if "Skipping OBB loading" not in line.message:
+            continue
+        package = run.package_of_pid(line.pid) or "a guest"
+        skipped[package] = skipped.get(package, 0) + 1
+    for package, count in sorted(skipped.items()):
+        check.fail(
+            f"{package} skipped its own expansion files {count}x for lack of "
+            f"READ_EXTERNAL_STORAGE — the permission is UNIQUE's to answer, and the "
+            f"storage it names is a directory UNIQUE owns",
+            0,
+        )
+
+    for event in run.by_code("GUEST_OBB_IMPORT", "GUEST_EXTERNAL_DATA_IMPORT"):
+        outcome = event["outcome"]
+        if outcome == "SOURCE_UNREADABLE":
+            check.fail(
+                f"{event['package']}: {event['source'] or 'the source directory'} could "
+                f"not be read; grant UNIQUE all-files access or add the files by hand",
+                event.lineno,
+                event["detail"] or "",
+            )
+        elif outcome == "IMPORTED":
+            check.note(f"{event['package']}: imported {event['files']} file(s), {event['bytes']} bytes")
+
+    for event in run.by_code("EXTERNAL_ROOT_UNAVAILABLE", "EXTERNAL_VOLUME_SHAPE_UNKNOWN"):
+        check.fail(
+            f"the instance's external storage was not installed: {event.code}",
+            event.lineno,
+            event["path"] or event["class"] or "",
+        )
+    return check
+
+
+_HOOKED_LIBRARY = re.compile(r"hooked \d+ new slot\(s\) after loading (\S+)")
+
+
+def check_native_hooks(run: Run) -> Check:
+    """Did a native crash follow a library UNIQUE patched?
+
+    The path redirector writes one pointer into each guest library's GOT. That is safe
+    for ordinary code and is not safe for a code-virtualization protector, which checks
+    its own relocations and answers a patched slot by jumping into generated code with a
+    corrupt dispatch value. What comes back is a crash with UNIQUE's name nowhere in it:
+
+        io_redirect: hooked 22 new slot(s) after loading …/libgrave.so (22 total)
+        E CRASH: signal 7 (SIGBUS), code 1 (BUS_ADRALN), fault addr 0x7dd33219f7
+        E CRASH:   #00 pc 00000000000009f7  <anonymous:0000007dd3321000>
+
+    Nobody reading that tombstone would suspect a GOT write, so the pairing is done
+    here: a native fatal signal in a process where a guest library was hooked names the
+    libraries to try excluding, newest first, because the last one hooked is the one the
+    crash followed.
+    """
+    check = Check("native", "Did a native crash follow a library UNIQUE hooked?")
+
+    hooked_by_pid: Dict[int, List[str]] = {}
+    for line in run.lines:
+        if line.tag != "UniqueNative" or line.pid is None:
+            continue
+        m = _HOOKED_LIBRARY.search(line.message)
+        if m:
+            hooked_by_pid.setdefault(line.pid, []).append(m.group(1).rsplit("/", 1)[-1])
+        if "excluded (not hooked, on purpose)" in line.message:
+            check.note(f"left alone on purpose: {line.message.rsplit(':', 1)[-1].strip()}")
+
+    reported: Set[int] = set()
+    for line in run.lines:
+        fatal = (
+            (line.tag in ("CRASH", "DEBUG") and "signal" in line.message)
+            or (line.tag == "libc" and "Fatal signal" in line.message)
+        )
+        if not fatal or line.pid is None or line.pid in reported:
+            continue
+        libraries = hooked_by_pid.get(line.pid)
+        if not libraries:
+            continue
+        reported.add(line.pid)
+        package = run.package_of_pid(line.pid) or "a guest"
+        check.fail(
+            f"{package} died on a native signal after UNIQUE hooked "
+            f"{', '.join(reversed(libraries))} — try the last one first in "
+            f"runtime/native/<vuid>/<package>.exclude",
+            line.lineno,
+            line.message.strip()[:160],
+        )
+    return check
+
+
 CHECKS = (
     check_engine_started,
     check_launches,
@@ -795,6 +950,8 @@ CHECKS = (
     check_crashes,
     check_platform_refusals,
     check_permissions,
+    check_storage,
+    check_native_hooks,
     check_hooks,
     check_providers,
     check_isolation,

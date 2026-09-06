@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.permission.PlatformPermissions
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.vam.VirtualPermissionSync
 import com.unique.core.vpermission.PermissionGroup
@@ -29,6 +30,18 @@ import java.io.File
  * that explains itself, so `blockedByHost` is carried through to the UI.
  */
 object InstancePermissions {
+
+    /**
+     * Whether UNIQUE can answer [permission] for a guest today.
+     *
+     * Either the platform granted it to UNIQUE, or it is one UNIQUE serves out of the
+     * instance's own directory and never needed a host grant for. The second half is not
+     * a shortcut: `READ_EXTERNAL_STORAGE` is auto-denied to every app targeting SDK 33 or
+     * later, so asking the platform about it can only ever return no.
+     */
+    private fun held(context: Context, permission: String): Boolean =
+        PlatformPermissions.isSelfServed(permission) ||
+            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     /** One group as the UI shows it, for one instance. */
     data class Row(
@@ -68,9 +81,13 @@ object InstancePermissions {
             // A group is held by the host if *any* of its permissions is: Location asks
             // for fine and coarse, and holding coarse alone is a real state that must not
             // read as "UNIQUE has nothing".
-            val hostHolds = mine.any {
-                context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
-            }
+            //
+            // A self-served permission counts as held without asking the platform, and
+            // has to: since Android 13 the host is auto-denied READ_EXTERNAL_STORAGE, so
+            // a Unity game that declares only that one produced a Files row reading
+            // "needs UNIQUE permission" with a switch that could never do anything. See
+            // PlatformPermissions.SELF_SERVED.
+            val hostHolds = mine.any { held(context, it) }
             val state = when {
                 mine.any { stored[it] == PermissionState.GRANTED } -> PermissionState.GRANTED
                 mine.all { stored[it] == PermissionState.DENIED } -> PermissionState.DENIED
@@ -81,9 +98,7 @@ object InstancePermissions {
                 permissions = mine,
                 state = if (hostHolds) state else PermissionState.DENIED,
                 blockedByHost = !hostHolds,
-                missingHostPermissions = mine.filter {
-                    context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
-                },
+                missingHostPermissions = mine.filterNot { held(context, it) },
             )
         }
     }

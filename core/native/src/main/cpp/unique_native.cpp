@@ -120,6 +120,33 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeSetRedirectScope(
     unique::io_redirect::set_scope(raw.data(), static_cast<int>(raw.size()));
 }
 
+UNIQUE_EXPORT JNIEXPORT void JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeSetRedirectExclusions(
+        JNIEnv* env, jclass, jobjectArray paths) {
+    const jsize count = paths == nullptr ? 0 : env->GetArrayLength(paths);
+    std::vector<std::string> owned;
+    std::vector<const char*> raw;
+    owned.reserve(static_cast<size_t>(count));
+    raw.reserve(static_cast<size_t>(count));
+    for (jsize i = 0; i < count; ++i) {
+        auto item = reinterpret_cast<jstring>(env->GetObjectArrayElement(paths, i));
+        if (item == nullptr) continue;
+        const char* chars = env->GetStringUTFChars(item, nullptr);
+        if (chars != nullptr) {
+            owned.emplace_back(chars);
+            env->ReleaseStringUTFChars(item, chars);
+        }
+        env->DeleteLocalRef(item);
+    }
+    for (const auto& value : owned) raw.push_back(value.c_str());
+    unique::io_redirect::set_exclusions(raw.data(), static_cast<int>(raw.size()));
+}
+
+UNIQUE_EXPORT JNIEXPORT jint JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeRedirectExclusionCount(JNIEnv*, jclass) {
+    return unique::io_redirect::exclusion_count();
+}
+
 UNIQUE_EXPORT JNIEXPORT jint JNICALL
 Java_com_unique_core_nativebridge_UniqueNative_nativeRedirectSlotsPatched(JNIEnv*, jclass) {
     return unique::io_redirect::slots_patched();

@@ -49,6 +49,22 @@ std::string redirect(const char* path);
 // Must be set before install(), which refuses an empty scope: patching every library in
 // the process would redirect UNIQUE's own file operations too.
 void set_scope(const char** paths, int count);
+// Keeps the interception *out* of libraries whose path contains one of these substrings,
+// even when set_scope() puts them in scope.
+//
+// A PLT hook is safe for ordinary code and is not safe for a library that inspects its
+// own GOT. On a Redmi running Android 15, UNIQUE patched 22 slots in a Unity game's
+// `libgrave.so` — a code-virtualization protector — and the process died six seconds
+// later executing an unaligned address inside an anonymous page it had generated itself:
+//
+//   E CRASH: signal 7 (SIGBUS), code 1 (BUS_ADRALN), fault addr 0x7dd33219f7
+//   E CRASH:   #00 pc 00000000000009f7  <anonymous:0000007dd3321000>
+//
+// The cost of an exclusion is bounded and known: that library's hard-coded
+// `/data/data/<pkg>` paths are not rewritten. The cost of hooking one of these is the
+// whole app.
+void set_exclusions(const char** paths, int count);
+int exclusion_count();
 // Installs the libc interception into the scoped libraries. Idempotent, and meant to be
 // repeated after the guest loads more libraries.
 InstallStatus install();

@@ -123,6 +123,20 @@ class VirtualPathModel(private val hostFilesRoot: String) {
     fun componentStateFile(vuid: Int, packageName: String) =
         "${runtimeDir()}/components/$vuid/$packageName.properties"
 
+    /**
+     * Native libraries the path redirector must not hook for this instance, one per line.
+     *
+     * Per instance rather than per package because it is a *recovery* knob as much as a
+     * configuration one: a game that dies in an anonymous page seconds after
+     * `libgrave.so` was hooked needs that one library left alone, and the user must be
+     * able to get there without a new build. Absent means "the built-in list only",
+     * which is the normal case.
+     *
+     * @see com.unique.core.common.nativelib.GuestNativeExclusions
+     */
+    fun nativeExclusionsFile(vuid: Int, packageName: String) =
+        "${runtimeDir()}/native/$vuid/$packageName.exclude"
+
     /** Directories that must exist before an app is first launched. */
     fun instanceDirectories(vuid: Int, packageName: String): List<String> = listOf(
         dataDir(vuid, packageName),

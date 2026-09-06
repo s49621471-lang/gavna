@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Message
 import com.unique.core.common.diag.DiagChannel
 import com.unique.core.common.diag.DiagLevel
+import com.unique.core.common.permission.PlatformPermissions
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.Reflect
 import java.lang.reflect.Field
@@ -284,8 +285,26 @@ object LaunchInterceptor {
      * only ever turn an instance's DENIED into GRANTED once the platform has already said
      * yes to UNIQUE.
      *
-     * Observed, never rewritten: the result still reaches the guest exactly as the
-     * platform sent it, so `onRequestPermissionsResult` sees the truth.
+     * Observed, and rewritten in exactly one case: a permission UNIQUE serves itself.
+     *
+     * The platform's answer for those is not about the guest and cannot be made to be.
+     * UNIQUE targets SDK 36, and since 33 the platform auto-denies
+     * `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` to any such app — with no
+     * dialog shown, because there is no dialog. The guest asked about *its own* storage,
+     * which is a directory inside UNIQUE's `filesDir` that it can already read, so
+     * handing that denial back is answering a different question:
+     *
+     * ```
+     * PERMISSION_RESULT_RECORDED permission=…READ_EXTERNAL_STORAGE granted=false   (x156)
+     * I Unity: No permission to read external storage. Skipping OBB loading.       (x156)
+     * ```
+     *
+     * 156 is the game asking again every frame, and never getting a different answer.
+     * For those permissions the array is rewritten to GRANTED before the guest sees it,
+     * which is what [PlatformPermissions.SELF_SERVED] already answers to a direct
+     * `checkSelfPermission`; without it the two disagree and an app that trusts its
+     * callback stays broken. Everything else still reaches
+     * `onRequestPermissionsResult` exactly as the platform sent it.
      */
     private fun observePermissionResult(msg: Message) {
         val transaction = msg.obj ?: return
@@ -300,10 +319,28 @@ object LaunchInterceptor {
                 )
                 continue
             }
+            val corrected = ArrayList<String>(1)
             names.forEachIndexed { i, permission ->
-                VirtualPermissions.recordGrant(
-                    permission,
-                    results[i] == android.content.pm.PackageManager.PERMISSION_GRANTED,
+                var granted = results[i] == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (!granted && PlatformPermissions.isSelfServed(permission)) {
+                    results[i] = android.content.pm.PackageManager.PERMISSION_GRANTED
+                    granted = true
+                    corrected += permission
+                }
+                VirtualPermissions.recordGrant(permission, granted)
+            }
+            if (corrected.isNotEmpty()) {
+                // Written back so the guest's own callback sees the corrected array. The
+                // int[] is the same object the Bundle holds, but putExtra is what makes
+                // the change survive a Bundle that has already been unparcelled lazily.
+                intent.putExtra(EXTRA_PERMISSION_RESULTS, results)
+                report(
+                    "PERMISSION_RESULT_SELF_SERVED",
+                    mapOf(
+                        "permissions" to corrected.joinToString(","),
+                        "detail" to "the platform denies these to UNIQUE on API 33+ and " +
+                            "they are about the instance's own directory, not the device's",
+                    ),
                 )
             }
         }

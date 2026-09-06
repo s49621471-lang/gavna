@@ -98,12 +98,20 @@ internal object GuestIntentResolution {
     }
 
     /**
-     * The guest's own service declarations that would serve [intent].
+     * The guest's own service declarations that would serve [intent], **best first**.
      *
      * Exposed because a *start* has the same question as a query: an SDK that binds its
      * own worker by action rather than by class — `new Intent(ACTION_MY_SERVICE)` — is
      * asking the platform to resolve against a package the platform has never installed.
      * See `VirtualActivityManagerHook.routeService`.
+     *
+     * Ordered rather than returned as a set, because more than one match is the normal
+     * case and not an ambiguity. Firebase Cloud Messaging is the example that matters: a
+     * guest declares `com.google.firebase.MESSAGING_EVENT` on the SDK's own
+     * `FirebaseMessagingService` *and* on its subclass, so two services match and
+     * `PackageManagerService` picks the better one exactly as it would for any installed
+     * app. Highest filter priority first, then the manifest's own order — which is the
+     * platform's rule and, for equal priorities, its outcome.
      */
     fun serviceEntries(
         manifest: ApkManifest,
@@ -129,10 +137,17 @@ internal object GuestIntentResolution {
             return manifest.components.filter { it.kind == kind && it.className == explicit.className }
         }
         val scoped = withoutPackage(intent)
-        return manifest.components.filter { entry ->
-            entry.kind == kind && GuestComponentState.isEnabled(entry) &&
-                entry.intentFilters.any { VirtualIntentResolver.matches(it, scoped) }
-        }
+        // Sorted by the highest priority among the filters that actually matched, and
+        // stably — `sortedByDescending` keeps equal elements in manifest order, which is
+        // what "first declared wins" means. Taking the entry's maximum priority across
+        // *all* its filters would rank a component by a filter this intent never matched.
+        return manifest.components.mapNotNull { entry ->
+            if (entry.kind != kind || !GuestComponentState.isEnabled(entry)) return@mapNotNull null
+            val priority = entry.intentFilters
+                .filter { VirtualIntentResolver.matches(it, scoped) }
+                .maxOfOrNull { it.priority } ?: return@mapNotNull null
+            entry to priority
+        }.sortedByDescending { it.second }.map { it.first }
     }
 
     /**

@@ -36,6 +36,8 @@ FIXTURE_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15.device.txt")
 FIXTURE4 = os.path.join(HERE, "fixtures", "redmi-android15-run4.log")
 FIXTURE4_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run4.device.txt")
 FIXTURE5 = os.path.join(HERE, "fixtures", "redmi-android15-run5.log")
+FIXTURE6 = os.path.join(HERE, "fixtures", "redmi-android15-run6.log")
+FIXTURE6_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run6.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -323,6 +325,73 @@ class RedmiRun5Test(unittest.TestCase):
 
     def test_no_guest_was_rendering_in_software(self):
         # The fault the fourth run was full of, fixed before this one and still fixed.
+        self.assertEqual(self.checks["render"].verdict, analyze.PASS)
+
+
+class RedmiRun6Test(unittest.TestCase):
+    """The sixth run: the games launched, and could not find their own assets.
+
+    Seven launches, six of which reached the guest's Activity — and the report was that
+    apps start and then behave as though they had been installed wrong. Every one of the
+    faults below is in this log and none of them is a launch failure, which is why the
+    two checks this run added exist at all: `storage` and `native` ask questions no
+    earlier check asked, and the answers are what the user was actually seeing.
+
+    The assertions are about the analyzer naming each fault. They stay true of this log
+    whatever the engine does next, which is the point of a fixture.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE6, FIXTURE6_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_game_that_could_not_read_its_expansion_files_is_named(self):
+        # `I Unity: No permission to read external storage. Skipping OBB loading.` — the
+        # app's own line, and the strongest evidence there is that a game is running with
+        # none of its assets. It is the app saying what is wrong, so it is read directly
+        # rather than inferred.
+        check = self.checks["storage"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("com.axlebolt.standoff2", findings(check))
+        self.assertIn("READ_EXTERNAL_STORAGE", findings(check))
+
+    def test_a_host_blocked_permission_is_not_excused_as_the_user_s_choice(self):
+        # READ_EXTERNAL_STORAGE is a runtime permission, so the old classification filed
+        # it under "the user may have refused it" and said nothing. `blockedByHost=true`
+        # says otherwise: UNIQUE cannot hold it on any phone from Android 13 on, so no
+        # dialog exists and no setting helps.
+        check = self.checks["permissions"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("because UNIQUE does not hold it", findings(check))
+
+    def test_the_native_crash_is_traced_to_the_library_UNIQUE_hooked(self):
+        # SIGBUS at an unaligned address inside an anonymous page, six seconds after 22
+        # GOT slots were written into a code-virtualization protector. Nothing in the
+        # tombstone names UNIQUE; the pairing is what makes it findable.
+        check = self.checks["native"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("com.gordey.standarling", findings(check))
+        self.assertIn("libgrave.so", findings(check))
+
+    def test_the_fatal_notification_call_is_named_with_its_service(self):
+        # The hook was installed nine milliseconds too late: providers ran first, and a
+        # provider's attachInfo started a thread that asked for a notification channel
+        # under the guest's own name.
+        check = self.checks["platform"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("NotificationManager.getNotificationChannel", findings(check))
+
+    def test_the_packer_still_has_no_application(self):
+        check = self.checks["launch"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("bin.mt.plus", findings(check))
+        self.assertIn("NO_APPLICATION", findings(check))
+
+    def test_the_launches_that_did_work_are_counted(self):
+        self.assertIn("6/7", notes(self.checks["launch"]))
+
+    def test_no_guest_was_rendering_in_software(self):
         self.assertEqual(self.checks["render"].verdict, analyze.PASS)
 
 

@@ -50,11 +50,48 @@ blame.
 | `slots` | Was every `:vappN` slot handed over clean, or did one still hold the last app? |
 | `crash` | Did any guest crash — from UNIQUE's record or the platform's, folded to one per crash? |
 | `platform` | Did a call go out under the guest's name and get refused, and by which service? |
-| `permissions` | Was a permission denied that no user could ever have granted? |
+| `permissions` | Was a permission denied that no user could ever have granted — including one the *host* is blocked from holding? |
+| `storage` | Could a guest read its own external storage, and did its expansion files reach the instance? |
+| `native` | Did a native crash follow a library the path redirector patched? |
 | `hooks` | Did every shim bind to a real method, or did one bind to nothing? |
 | `providers` | Did the guest's ContentProviders publish and resolve? |
 | `ui` | Did UNIQUE's own Flutter interface throw? |
 | `limits` | Which deliberately-unsupported paths did this run reach? (Never a failure.) |
+
+### The two the sixth run added: `storage` and `native`
+
+Both exist because a run came back in which every check passed and the apps were still
+wrong. Six of seven launched, nothing crashed on the main thread, and the games behaved
+as though they had been installed badly.
+
+`storage` reads the app's own line rather than UNIQUE's:
+
+```
+I Unity: No permission to read external storage. Skipping OBB loading.   (x156)
+```
+
+A game that skips its expansion files is a game with no assets, and nothing in UNIQUE's
+own diagnostics said so — `PERMISSION_RESULT_RECORDED … granted=false blockedByHost=true`
+was there 156 times and was classified as "a runtime permission, so this may be the
+user's choice". It was not: since Android 13 the platform auto-denies
+`READ_EXTERNAL_STORAGE` to any app targeting 33 or later, so the host can never hold it
+and no dialog exists to ask. `blockedByHost` now fails the `permissions` check on its
+own, whatever kind of permission it names.
+
+`native` pairs two lines that are six seconds and several hundred lines apart:
+
+```
+io_redirect: hooked 22 new slot(s) after loading …/libgrave.so (22 total)
+E CRASH: signal 7 (SIGBUS), code 1 (BUS_ADRALN), fault addr 0x7dd33219f7
+E CRASH:   #00 pc 00000000000009f7  <anonymous:0000007dd3321000>
+```
+
+A PLT hook is one pointer written into a GOT and is meant to fail as "this library was
+not hooked". A code-virtualization protector checks its own relocations and answers a
+patched slot by jumping into its own generated code with a corrupt dispatch value —
+which lands as an unaligned PC in an anonymous page, in a tombstone that names the
+game's engine and never names UNIQUE. The check names the libraries to exclude, last
+one first.
 
 ### The one worth explaining: `platform`
 
@@ -109,13 +146,18 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-25 tests, under a second, no dependencies. Two halves:
+49 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that
   happened to a real phone, so a check that stops reporting one has regressed. It is the
   full run filtered to the lines that carry evidence (941 of 26,950); the verdicts are
   identical to those from the unfiltered log.
-- **A synthetic healthy run** — every check must pass on it. Without that half the suite
-  would prove only that the tool says FAIL, which a tool that always says FAIL would also
+- **`fixtures/redmi-android15-run4.log`, `-run5.log`, `-run6.log`** — the runs after it,
+  each filtered the same way. Every fault a run found has an assertion here, so a check
+  that stops reporting one is a regression in the tool rather than progress in the
+  engine. The sixth is the run in which six of seven apps launched and the games could
+  not find their own assets; it is what `storage` and `native` were written against.
+- **A synthetic healthy run** — every check must pass on it. Without that the suite would
+  prove only that the tool says FAIL, which a tool that always says FAIL would also
   pass.

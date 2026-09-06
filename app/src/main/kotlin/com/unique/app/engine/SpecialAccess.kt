@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 
@@ -33,9 +34,15 @@ import android.provider.Settings
  *  - **Battery.** An instance killed by background management looks exactly like an app
  *    that crashed, and this is the only switch that changes it.
  *
- * Two are deliberately absent. **All-files access** would not help: a guest's external
- * storage is redirected into its own instance directory, so the device's real storage is
- * not what it is reading. **Usage access** would hand every guest the *host's* usage
+ *  - **All files.** Not for the guest — its external storage is redirected into its own
+ *    instance directory, and the device's real storage is not what it reads. For
+ *    *UNIQUE*, once per import: a game's expansion files live in
+ *    `/storage/emulated/0/Android/obb/<pkg>/`, Android 11 guards that directory, and
+ *    without this UNIQUE can only report `SOURCE_UNREADABLE` and ask the user to hand it
+ *    the `.obb` by hand. This is the switch that makes "import the game and it works"
+ *    the normal case.
+ *
+ * **Usage access** is deliberately absent: it would hand every guest the *host's* usage
  * history, which breaks the isolation the rest of the engine is built on.
  */
 object SpecialAccess {
@@ -44,6 +51,7 @@ object SpecialAccess {
     const val OVERLAY = "overlay"
     const val EXACT_ALARM = "exactAlarm"
     const val BATTERY = "battery"
+    const val ALL_FILES = "allFiles"
 
     data class Access(val id: String, val granted: Boolean)
 
@@ -51,6 +59,7 @@ object SpecialAccess {
         Access(OVERLAY, canDrawOverlays(context)),
         Access(EXACT_ALARM, canScheduleExactAlarms(context)),
         Access(BATTERY, ignoresBatteryOptimizations(context)),
+        Access(ALL_FILES, isExternalStorageManager()),
     )
 
     /**
@@ -75,6 +84,13 @@ object SpecialAccess {
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                 Uri.fromParts("package", context.packageName, null),
             )
+            // The package-scoped action lands on UNIQUE's own row. Some builds do not
+            // have it and answer nothing at all, so the unscoped list is the fallback:
+            // one more tap for the user, and a screen rather than a dead button.
+            ALL_FILES -> Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.fromParts("package", context.packageName, null),
+            )
             else -> null
         } ?: return mapOf(
             "ok" to false, "code" to "NO_SUCH_ACCESS", "message" to "no such access: $id",
@@ -97,6 +113,17 @@ object SpecialAccess {
         val manager = context.getSystemService(AlarmManager::class.java) ?: return false
         return runCatching { manager.canScheduleExactAlarms() }.getOrDefault(false)
     }
+
+    /**
+     * Whether the user has given UNIQUE all-files access.
+     *
+     * Asked of `Environment` in UNIQUE's own process, where the answer is about UNIQUE.
+     * Inside a `:vappN` the same call is answered from the *instance's* permission state,
+     * which is deliberately always yes — see `PlatformPermissions.SELF_SERVED` — and would
+     * make this switch report "granted" on a device where it is off.
+     */
+    private fun isExternalStorageManager(): Boolean =
+        runCatching { Environment.isExternalStorageManager() }.getOrDefault(false)
 
     private fun ignoresBatteryOptimizations(context: Context): Boolean {
         val manager = context.getSystemService(PowerManager::class.java) ?: return false

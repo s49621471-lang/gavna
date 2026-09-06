@@ -35,14 +35,16 @@ never written as `SUPPORTED` because something ought to work.
 
 | | |
 |---|---|
-| **Off-device tests** | 185 JVM tests, 34 native checks, 15 Dart tests, 59 tool tests — all passing |
+| **Off-device tests** | 197 JVM tests, 34 native checks, 15 Dart tests, 66 tool tests — all passing |
 | **On-device suite** | **46 of 46** instrumented tests pass, on an Android 14 x86_64 emulator |
-| **On a real phone** | Five runs. The fifth launched 6 of 8 apps into their own Activity and Play services killed three of them seconds later, with one fatal `SecurityException` UNIQUE was causing and no app could catch. Fifty causes found and fixed across the five runs and the emulator work between them; the last thirty-five are not yet back on hardware |
+| **On a real phone** | Six runs. The sixth launched 6 of 7 apps into their own Activity and none of them died of a launch fault — what broke instead was everything after it: a Unity game skipped its own 3 GB of expansion files 156 times for a permission the platform can never grant UNIQUE, UNIQUE's own PLT hook killed another game's protector, and one app died on a notification call nine milliseconds before the hook that would have prevented it. Fifty-eight causes found and fixed across the six runs and the emulator work between them; the last eight are not yet back on hardware |
 | **Real applications** | Seven from F-Droid — Termux, Fossify Gallery, NewPipe, Shattered Pixel Dungeon, AntennaPod, KeePassDX, Aegis — imported and launched on the emulator. All seven reach their own main activity on the hardware renderer; seven faults were fixed to get there, none of which the probe could have found |
 
 **A virtual app has never yet run to a usable screen on physical hardware.** That is the
 single most important fact about this project's status, and every other claim here is
-subordinate to it. The emulator work is real and it caught real bugs, but three of the
+subordinate to it. The sixth run got closest: six of seven apps reached their own
+Activity and stayed there, and what stopped them being *usable* was their own data —
+a game with no assets and a game whose protector UNIQUE had broken. The emulator work is real and it caught real bugs, but three of the
 things that matter most — ARM64 guest code, a real GPU, and an app that was not written to
 be tested — only a phone can answer.
 
@@ -72,8 +74,10 @@ per-capability matrix.
 
 | Problem | Where it stands |
 |---|---|
-| **Guests crash on a real Android 15 device** | Thirty-four faults across five phone logs. Each run moved the failure further down: the third launched nothing, the fourth launched everything and every guest was rendering in software, and the fifth — the newest — launched 6 of 8 and then **Play services killed three of them**. That one is a single fault with three victims: `GmsClient.getRemoteService` sends the guest's own package name to `com.google.android.gms`, which resolves the calling uid to UNIQUE's and answers `SecurityException: Unknown calling package name` on a `Handler`, where no app can catch it. The Google stack is hidden from a guest now, so an SDK that asks finds none and takes the path it already has for a phone without it. The same log said there had never been a **keyboard** — `EditorInfo.packageName` is checked against the calling uid before an IME is bound, and a mismatch binds nothing, silently — and that a guest's own `FileProvider` never published, because providers were installed before the identity hooks and `attachInfo` runs the app's own code. "The screen does not respond" turned out not to be a touch fault at all: those were the dead windows the three crashes left behind. `docs/STATUS.md` has each fault with its log line. **The last thirty-five fixes are not yet back on hardware**, and two of them — the hiding and the keyboard — cannot be checked on the emulator at all, because it has neither Play services nor an IME. |
-| **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. |
+| **Guests crash on a real Android 15 device** | Forty-two faults across six phone logs. Each run moved the failure further down: the third launched nothing, the fourth launched everything and every guest was rendering in software, the fifth launched 6 of 8 and then **Play services killed three of them**, and the sixth — the newest — launched 6 of 7 with no launch fault at all and found the *next* layer of them: a game with no expansion files, a game killed by UNIQUE's own PLT hook, and an app that died on a notification call nine milliseconds before the hook that covers it was installed. That one is a single fault with three victims: `GmsClient.getRemoteService` sends the guest's own package name to `com.google.android.gms`, which resolves the calling uid to UNIQUE's and answers `SecurityException: Unknown calling package name` on a `Handler`, where no app can catch it. The Google stack is hidden from a guest now, so an SDK that asks finds none and takes the path it already has for a phone without it. The same log said there had never been a **keyboard** — `EditorInfo.packageName` is checked against the calling uid before an IME is bound, and a mismatch binds nothing, silently — and that a guest's own `FileProvider` never published, because providers were installed before the identity hooks and `attachInfo` runs the app's own code. "The screen does not respond" turned out not to be a touch fault at all: those were the dead windows the three crashes left behind. `docs/STATUS.md` has each fault with its log line. **The last eight fixes are not yet back on hardware**, and several of them — the Google hiding, the keyboard, the expansion-file import, the protector exclusion — cannot be checked on the emulator at all, because it has no Play services, no IME, no `Android/obb` and no code-virtualization protector to break. |
+| **No Google flow is implemented** | `core/google` decides and records how each flow *would* be routed and reports `Unsupported` for every one. Sign-In, Credential Manager, Firebase and FCM have interfaces and no bodies. The sixth run settled one of them for good: a browser OAuth redirect **cannot** come back into a guest, because `myapp://callback` is declared by a package the platform has never installed and an intent filter is fixed at build time. `SIGN_IN` and `OAUTH_WEB` say so now instead of reporting `PASSTHROUGH`. |
+| **A game's expansion files are not automatic on every device** | `GuestAssetImport` copies `Android/obb/<pkg>` into the instance, and since Android 11 that directory is guarded: it needs all-files access, which App Details offers and the user grants. Without it the import reports `SOURCE_UNREADABLE` and the `.obb` has to be handed to UNIQUE directly — picked beside the APK, or added to the instance afterwards. |
+| **A native protector may have to be excluded by hand** | UNIQUE's path redirection writes a pointer into each guest library's GOT, and a code-virtualization protector treats that as tampering. `libgrave.so` is excluded by name; one UNIQUE has not met yet is named in `runtime/native/<vuid>/<package>.exclude`, and the log's `native` check says which library to write there. |
 | **Play Integrity, Play Games, Play Billing** | Expected not to work. UNIQUE is not an attestation bypass and will not pretend to be one. |
 | **A broadcast arriving while UNIQUE itself is not running is missed** | The registrations live in UNIQUE's main process. Closing this needs static registrations in the host manifest, which needs the actions known at build time. |
 | **`PendingIntent` broadcast to a guest receiver** | Reported as unsupported rather than silently mis-pointed. Needs a host stub receiver that re-dispatches. |
@@ -182,10 +186,10 @@ Three build types, and the difference matters:
 ## Testing
 
 ```bash
-./gradlew test                    # 185 JVM tests
+./gradlew test                    # 197 JVM tests
 ./tools/native-test/run.sh        # 34 host-side native checks, no device needed
 (cd ui && flutter test)           # 15 Dart tests
-./tools/device-log/self_test.py   # 42 tests for the device-log analyzer, no toolchain
+./tools/device-log/self_test.py   # 49 tests for the device-log analyzer, no toolchain
 ./tools/apk-survey/self_test.py   # 17 tests for the APK survey, no toolchain
 ./tools/check-translations.py     # every engine failure has a sentence in both languages
 ./tools/report-unimplemented.sh   # every deliberately unimplemented surface

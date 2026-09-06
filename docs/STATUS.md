@@ -45,7 +45,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Which packages a guest may see | 6 | The Google stack hidden, `com.android.vending` not, a prefix match not enough, and both shapes intent resolution answers in — the emulator has no Play services, so this is where the decision is pinned |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**185 JVM tests, 15 Dart tests, 34 native checks, 59 off-device tool tests — all passing.**
+**197 JVM tests, 15 Dart tests, 34 native checks, 66 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -746,6 +746,73 @@ what the two spellings are there for. The hiding decision is unit-tested instead
 (`VirtualPackageManagerHookTest`, six tests), and both rows say `NOT_TESTED` on ARM64 in
 `docs/COMPATIBILITY.md` until a phone says otherwise.
 
+### The sixth run: everything launched, and the games had no assets
+
+The log from the phone after that pass is `tools/device-log/fixtures/redmi-android15-run6.log`.
+Seven launches, six of which reached the guest's own Activity, and the report was that
+apps start and then behave as though they had been installed wrong — a game that loads
+into a menu with nothing in it, another that dies a few seconds in.
+
+The analyzer, with the two checks this run added:
+
+```
+[FAIL] launch       6/7 launches reached the guest's Activity
+                    bin.mt.plus u0 -> bin.mt.plus.MainNoBgIcon: NO_APPLICATION
+[FAIL] crash        com.a0soft.gphone.acc.free crashed on GoogleApiHandler:
+                    SecurityException: Package com.a0soft.gphone.acc.free is not owned by uid 10303
+[FAIL] platform     NotificationManager.getNotificationChannel was refused
+[FAIL] permissions  READ_EXTERNAL_STORAGE was refused to the guest 12x because UNIQUE
+                    does not hold it — not a decision any user could have made or can undo
+[FAIL] storage      com.axlebolt.standoff2 skipped its own expansion files for lack of
+                    READ_EXTERNAL_STORAGE
+[FAIL] native       com.gordey.standarling died on a native signal after UNIQUE hooked
+                    libgrave.so
+```
+
+| Found | Fixed by |
+|---|---|
+| **A game cannot see its own OBB.** `HOST_PERMISSION_REFUSED group=FILES permissions=READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE permanent=true`, and then `I Unity: No permission to read external storage. Skipping OBB loading.` 156 times. `permanent=true` is not a phone that needs its settings changed: since Android 13 the platform *auto-denies* both permissions to any app targeting 33 or later — no dialog, no toggle — and UNIQUE targets 36. So `blockedByHost` could never clear, and every Unity game asked once a frame and skipped its own assets every time | `PlatformPermissions.SELF_SERVED`. A guest's external storage is a directory inside UNIQUE's own `filesDir`; reading it needs no permission from anyone, so the host intersection does not apply to `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` or `MANAGE_EXTERNAL_STORAGE`. They answer GRANTED unless the *user* denied this instance its files, and a request the platform refuses is corrected to GRANTED before the guest's callback sees it. Media permissions are deliberately *not* in the set: they reach the device's real `MediaStore`, which is the user's photo library and not the instance's directory |
+| **And then the directory was empty.** The permission was only half of it. `getObbDir()` correctly names `users/<vuid>/sdcard/Android/obb/<pkg>`, and nothing had ever put the game's 3 GB of expansion files there | `GuestAssetImport`, run after every import and clone and available from the UI. `Android/obb/<pkg>` is copied from the device's own external storage; `Android/data/<pkg>` only when asked for, because it is live app state and copying it makes two saves that immediately diverge. `.obb` files picked beside the APK are separated out of the import and go straight to the instance. Every outcome is one of four named results, so "could not read the source" never looks like "there was nothing to copy" — the first is fixable by the user and the second is not a problem. `MANAGE_EXTERNAL_STORAGE` is declared and offered on App Details, because since Android 11 that directory is guarded |
+| **UNIQUE's own PLT hook killed a game.** `io_redirect: hooked 22 new slot(s) after loading …/libgrave.so`, and six seconds later `SIGBUS`, `BUS_ADRALN`, at `pc 0x…9f7` inside an anonymous page — a jump to a value that was never a function. `libgrave.so` is a code-virtualization protector: it checks its own relocations and executes generated code out of anonymous pages. The tombstone names the game's `libunity.so` and never names UNIQUE | `plt::hook_all` takes an exclusion list, `GuestNativeExclusions` holds the built-in one with the run that put each entry there, and `runtime/native/<vuid>/<package>.exclude` lets a protector UNIQUE has not met yet be named without a new build. Every exclusion that applied is printed by the native layer, so "not hooked on purpose" is never confused with "the scan missed it". The cost is stated rather than hidden: an excluded library's hard-coded `/data/data/<pkg>` paths are not rewritten |
+| **A fatal `SecurityException` nine milliseconds after the hook that would have prevented it.** `PROVIDERS_PUBLISHED` at `14:41:34.450`, `SERVICE_HOOKED service=notification` at `.459`, `FATAL EXCEPTION: GoogleApiHandler … Package com.a0soft.gphone.acc.free is not owned by uid 10303 at INotificationManager$Stub$Proxy.getNotificationChannel` at `.471`. A provider's `attachInfo` runs real app code; it started a thread, and the thread asked for a notification channel under the guest's own name | The job, notification, receiver and activity-lifecycle hooks are installed **before** `VirtualProviderRegistry`. The rule the fifth run established — providers after the identity hooks — was right and did not go far enough: the first line of *guest* code is a provider's `attachInfo`, not `Application.onCreate`, and a hook installed after guest code has run is a hook that was not installed |
+| **WorkManager and Play services could not schedule a job.** `IllegalArgumentException: uid 10303 cannot schedule job in com.openai.chatgpt`, from `JobSchedulerImpl.schedule` — with `HOOK SERVICE_HOOKED service=jobscheduler cache=true singletons=0` in the same log. `singletons=0` is the tell: `JobScheduler` keeps its binder in an ordinary *instance* field, so no named static could reach it, and WorkManager and Firebase both initialise from a `ContentProvider` — which then ran before the hook | Ordering, as above, and a third step in `SystemServiceHook`: every manager object this process has already built is re-pointed at the shim, matched by declared field *type* so a manager for another service can never be touched. `StaticServiceFetcher`'s process-wide instance and every `ContextImpl.mServiceCache` are both walked, because which of the two a service uses has changed between releases |
+| **Push notifications could not bind.** `SERVICE_INTENT_IMPLICIT action=com.google.firebase.MESSAGING_EVENT matches=2`, then `SecurityException: Not allowed to bind to service Intent { act=com.google.firebase.MESSAGING_EVENT pkg=com.axlebolt.standoff2 }`. Two matches is the *normal* shape for FCM — the SDK's own service and the app's subclass — and refusing to choose sent the bind out to a platform that has never installed the guest | An intent the caller scoped to the guest with `setPackage()` resolves to the best match, which is what `PackageManagerService.resolveService` does: highest filter priority, then first declared. A *bare* implicit intent with several matches is still refused, because there the platform refuses too |
+| **26 broadcasts that could never arrive.** `PENDING_INTENT_RECEIVER_UNSUPPORTED receiver=com.google.android.gms.measurement.AppMeasurementReceiver`, once for each time an SDK re-armed a timer. A guest's manifest receiver exists only as a dynamic registration inside the live process, and a dynamic receiver is matched by filter, so an explicit broadcast had nothing to be pointed at | `com.unique.app.runtime.BroadcastStub`, in UNIQUE's **main** process — which is the point, because a `PendingIntent` fires when there may be no `:vappN` at all. The guest's receiver class and the whole original intent travel as extras, and delivery is the cold-broadcast path that already leases the right slot and retries until the receiver acknowledges |
+| **All-files access is not offered.** The manifest said it "would not help: a guest's external storage is redirected into its own instance directory". Every word of that is true about the *guest* and it answers the wrong question — UNIQUE itself has to read the device's real storage exactly once per import, because that is where the assets a game already downloaded are | `MANAGE_EXTERNAL_STORAGE` declared and listed on App Details beside overlay, exact alarms and background work, with its real state from `Environment.isExternalStorageManager()` read in UNIQUE's own process. It grants nothing by itself — the user turns it on from a Settings screen — and without it `GuestAssetImport` reports `SOURCE_UNREADABLE` and the `.obb` has to be handed over directly |
+| **A warning that was always wrong.** `SINGLETON_PATCH_SKIPPED service=input_method field=com.android.internal.inputmethod.IInputMethodManagerGlobalInvoker.sServiceCache`, eight times, next to `singletons=1` saying the keyboard hook had worked. The two entries are alternative spellings of one singleton — the interface moved package in Android 14 — so exactly one resolving is the healthy outcome | Warned only when *none* of a target's spellings resolved, which is the case that means something |
+
+Two things this run found are **not** fixed, and are recorded rather than worked around:
+
+- **`bin.mt.plus` still never reaches its `Application`.** `UnsatisfiedLinkError: No
+  implementation found for void l.ۢ.<clinit>()`. Its packer loads `libmtprotect.so`
+  successfully — the load is in the log — and then the natives it should have registered
+  are not there. A commercial packer that decrypts its own classes through native
+  `<clinit>` methods and inspects its environment while doing it is a class of app UNIQUE
+  does not claim, and the analyzer asserts that it keeps being reported as
+  `NO_APPLICATION` rather than passing quietly.
+- **A browser OAuth redirect cannot come back into a guest.** See below.
+
+### What the sixth run settled about Google sign-in
+
+The Google layer used to answer `PASSTHROUGH` for `SIGN_IN` whenever an app declared an
+OAuth redirect scheme, with the rationale *"the browser flow can be used and is the most
+reliable path"*. The outbound half of that is true. The return half cannot happen: the
+redirect is an `ACTION_VIEW` for `myapp://callback`, Chrome hands it to
+`PackageManagerService`, and the activity declaring that scheme belongs to a package the
+platform has never installed. Nothing resolves it, and the user is left on a browser page
+with a sign-in that completed on Google's side and arrived nowhere.
+
+UNIQUE cannot close this. An intent filter is fixed in a manifest at build time, the
+scheme is the *guest's* and is only known at import, and the one runtime lever the
+platform offers — enabling and disabling a pre-declared `<activity-alias>` — still needs
+the scheme to have been declared in advance. The interception UNIQUE has runs inside the
+guest's own process; Chrome's process is not UNIQUE's to hook.
+
+So `SIGN_IN` and `OAUTH_WEB` now report `UNSUPPORTED` with the scheme named in the
+rationale, and in-space Google Play services stays the only route that can answer them —
+because there the whole exchange stays inside the space. A mode that reads as working is
+worth less than a sentence that says what to do instead.
+
 ## Previously blocking, now fixed
 
 Each device run moved the failure further down the launch path. None of these were
@@ -917,13 +984,28 @@ caught `restrictions`, `locale` and `connectivity` before one did.
 
 ## Next steps, in order
 
-1. **The sixth phone run**, which is the only place three of this pass's fixes can be
-   observed at all: the verification emulator has no Play services to refuse a guest's
-   identity and no IME to bind, so neither the hiding nor the keyboard can be reproduced
-   there. What to watch for: a guest with a text field brings up the phone's own keyboard;
-   no `Unknown calling package name` anywhere in the capture; `PROVIDER_PUBLISH_FAILED` gone.
+1. **The seventh phone run**, which is the only place most of this pass's fixes can be
+   observed at all: the verification emulator has no Play services, no IME, no
+   `Android/obb` to import from and no code-virtualization protector to break. What to
+   watch for, in the order the sixth run failed:
+   - `GUEST_OBB_IMPORT outcome=IMPORTED files=… bytes=…` at import, and **no**
+     `Skipping OBB loading` from Unity afterwards. `SOURCE_UNREADABLE` means all-files
+     access has not been granted — App Details → Special access → *Access to all files*.
+   - `IO_REDIRECT_INSTALLED … excluded=libgrave.so,libunique_native.so`, and the Unity
+     game that died of `SIGBUS` staying up. A *different* protector shows as the `native`
+     check naming a library; write it into
+     `runtime/native/<vuid>/<package>.exclude` and launch again.
+   - No `SecurityException` from `getNotificationChannel`, no
+     `cannot schedule job in <guest>`, no `Not allowed to bind to service … MESSAGING_EVENT`.
+   - `PENDING_INTENT_RECEIVER_ROUTED` where `PENDING_INTENT_RECEIVER_UNSUPPORTED` used to
+     be, and `PENDING_BROADCAST_DELIVERED started=true` when one fires.
+   - A guest with a text field brings up the phone's own keyboard, which no run has yet
+     shown either way.
+
    `docs/PHYSICAL_DEVICE_TEST.md` is the sequence — start a log recorder, work the twelve
-   steps, send the capture.
+   steps, send the capture. `tools/device-log/analyze.py` reads it with no toolchain at
+   all, and the two checks added for the sixth run mean an asset or protector fault names
+   itself now instead of looking like the app's own bug.
 2. ARM64 native code, a real GPU driver, a hardware Vulkan ICD, WebView rendering and a
    real engine app — five things only a phone can answer, and every one of them is
    `NOT_TESTED` until it does.

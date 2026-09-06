@@ -19,6 +19,9 @@ class PermissionStoreTest {
         const val CAMERA = "android.permission.CAMERA"
         const val INTERNET = "android.permission.INTERNET"
         const val OWN = "com.example.app.permission.C2D_MESSAGE"
+        const val READ_EXTERNAL = "android.permission.READ_EXTERNAL_STORAGE"
+        const val WRITE_EXTERNAL = "android.permission.WRITE_EXTERNAL_STORAGE"
+        const val MANAGE_EXTERNAL = "android.permission.MANAGE_EXTERNAL_STORAGE"
         const val PKG = "com.example.app"
     }
 
@@ -109,6 +112,52 @@ class PermissionStoreTest {
         // UNIQUE genuinely does not hold it, and saying so is the honest answer.
         val store = store(hostHolds = emptySet())
         val effective = store.effectiveState(0, PKG, "com.other.app.PERMISSION")
+        assertThat(effective.state).isEqualTo(PermissionState.DENIED)
+        assertThat(effective.blockedByHost).isTrue()
+    }
+
+    // -----------------------------------------------------------------------------
+    // Storage: the permissions UNIQUE serves itself
+    // -----------------------------------------------------------------------------
+
+    @Test fun `external storage is granted even though the host can never hold it`() {
+        // The whole point. UNIQUE targets SDK 36, and since 33 the platform auto-denies
+        // READ_EXTERNAL_STORAGE to any such app: no dialog, no settings toggle, nothing
+        // the user could do. Intersecting with the host therefore denied it forever, and
+        // a Unity game read that as "storage is unavailable" and skipped its own OBB.
+        val store = store(hostHolds = emptySet())
+        val effective = store.effectiveState(0, PKG, READ_EXTERNAL)
+        assertThat(effective.state).isEqualTo(PermissionState.GRANTED)
+        assertThat(effective.blockedByHost).isFalse()
+        assertThat(store.granted(WRITE_EXTERNAL)).isTrue()
+        assertThat(store.granted(MANAGE_EXTERNAL)).isTrue()
+    }
+
+    @Test fun `external storage is granted before anyone is asked`() {
+        // GRANTED, not ASK: there is no host dialog that could ever answer it, so ASK
+        // would mean "denied until a question nobody can put to the user is answered".
+        val store = store(hostHolds = emptySet())
+        assertThat(store.stored(0, PKG, READ_EXTERNAL)).isEqualTo(PermissionState.ASK)
+        assertThat(store.state(READ_EXTERNAL)).isEqualTo(PermissionState.GRANTED)
+    }
+
+    @Test fun `the user can still deny an instance its files`() {
+        // Self-served widens what the *host* can block, not what the user decides. An
+        // instance the user switched Files off for still sees denied.
+        val store = store(hostHolds = emptySet())
+        store.set(0, PKG, READ_EXTERNAL, PermissionState.DENIED)
+        val effective = store.effectiveState(0, PKG, READ_EXTERNAL)
+        assertThat(effective.state).isEqualTo(PermissionState.DENIED)
+        assertThat(effective.blockedByHost).isFalse()
+    }
+
+    @Test fun `media permissions are not self-served`() {
+        // READ_MEDIA_IMAGES reaches the device's real MediaStore, which is the user's
+        // photo library and not the instance's directory. UNIQUE cannot show a guest a
+        // photo the user has not let UNIQUE see, and saying otherwise would be the lie
+        // the narrowing rule exists to prevent.
+        val store = store(hostHolds = emptySet())
+        val effective = store.effectiveState(0, PKG, "android.permission.READ_MEDIA_IMAGES")
         assertThat(effective.state).isEqualTo(PermissionState.DENIED)
         assertThat(effective.blockedByHost).isTrue()
     }

@@ -106,6 +106,29 @@ object UniqueNative {
         if (loaded) nativeSetRedirectScope(paths.toTypedArray())
     }
 
+    /**
+     * Keeps the interception *out* of libraries whose path contains one of [paths].
+     *
+     * Applies on top of [setRedirectScope], and exists because a PLT hook is safe for
+     * ordinary code and unsafe for a library that inspects its own GOT. A
+     * code-virtualization protector does exactly that, and answers a patched slot by
+     * jumping into its own generated code with a corrupt dispatch value — which is not a
+     * crash in the hooked library but one in an anonymous page, several frames and
+     * several seconds away from anything that names UNIQUE. See
+     * `GuestNativeExclusions` for the run that established this and the list it produced.
+     *
+     * The cost is bounded and stated: an excluded library's hard-coded
+     * `/data/data/<pkg>` paths are not rewritten. Every exclusion that actually applied
+     * is named in logcat by the native layer, so "not hooked on purpose" is never
+     * confused with "the scan missed it".
+     */
+    fun setRedirectExclusions(paths: List<String>) {
+        if (loaded) nativeSetRedirectExclusions(paths.toTypedArray())
+    }
+
+    /** How many exclusions the native layer is holding. */
+    fun redirectExclusionCount(): Int = if (loaded) nativeRedirectExclusionCount() else 0
+
     /** GOT entries patched by the last [installIoRedirect]. Zero means nothing was hooked. */
     fun redirectSlotsPatched(): Int = if (loaded) nativeRedirectSlotsPatched() else 0
 
@@ -168,6 +191,8 @@ object UniqueNative {
     @JvmStatic private external fun nativeRedirectRuleCount(): Int
     @JvmStatic private external fun nativeRedirect(path: String): String?
     @JvmStatic private external fun nativeSetRedirectScope(paths: Array<String>)
+    @JvmStatic private external fun nativeSetRedirectExclusions(paths: Array<String>)
+    @JvmStatic private external fun nativeRedirectExclusionCount(): Int
     @JvmStatic private external fun nativeRedirectSlotsPatched(): Int
     @JvmStatic private external fun nativeWatchLibraryLoads(): Int
     @JvmStatic private external fun nativeInstallIoRedirect(): Int

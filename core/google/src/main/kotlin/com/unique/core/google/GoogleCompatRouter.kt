@@ -89,9 +89,6 @@ class GoogleCompatRouter(
             // bridge would return a token for the wrong OAuth client, which fails
             // server-side in a way the app developer cannot debug.
             GoogleFlow.SIGN_IN -> when {
-                manifest.deepLinkSchemes.isNotEmpty() && capabilities.customTabsAvailable ->
-                    RoutingDecision(flow, GoogleMode.PASSTHROUGH,
-                        "The app declares an OAuth redirect scheme, so the browser flow can be used and is the most reliable path.")
                 capabilities.virtualGmsInstalled ->
                     RoutingDecision(flow, GoogleMode.VIRTUAL_GMS,
                         "Legacy Google Sign-In checks the app's package and signing certificate, which only in-space Google Play services can satisfy.")
@@ -121,9 +118,6 @@ class GoogleCompatRouter(
 
             // Follows whichever flow produced the token it consumes.
             GoogleFlow.FIREBASE_AUTH -> when {
-                manifest.deepLinkSchemes.isNotEmpty() ->
-                    RoutingDecision(flow, GoogleMode.PASSTHROUGH,
-                        "Firebase Auth consumes a token from another flow; the app's browser redirect can supply it.")
                 capabilities.hostGmsAvailable ->
                     RoutingDecision(flow, GoogleMode.HOST_BRIDGE,
                         "Firebase Auth consumes a token from Sign in with Google, which the host bridge can provide.")
@@ -131,8 +125,43 @@ class GoogleCompatRouter(
                     RoutingDecision(flow, GoogleMode.UNSUPPORTED, "No usable token source.")
             }
 
-            GoogleFlow.OAUTH_WEB -> RoutingDecision(flow, GoogleMode.PASSTHROUGH,
-                "Browser-based OAuth needs no Google Play services, only a working redirect back into this instance.")
+            // The browser round trip: correct about the outbound half, wrong about the
+            // return, and it took a physical run to see which half was being claimed.
+            //
+            // This used to answer PASSTHROUGH whenever the app declared a redirect scheme
+            // and the device had Custom Tabs — "the most reliable path", in the decision
+            // the UI showed the user. Sending the user to the browser works. Getting them
+            // back does not: the redirect is an `ACTION_VIEW` for `myapp://callback`,
+            // Chrome hands it to `PackageManagerService`, and the activity that declares
+            // that scheme belongs to a package the platform has never installed. Nothing
+            // resolves, and the user is left on a browser page with a sign-in that
+            // completed on Google's side and arrived nowhere.
+            //
+            // UNIQUE cannot close this. An intent filter is fixed in a manifest at build
+            // time, the scheme is the *guest's* and is only known at import, and the one
+            // runtime lever the platform offers — enabling and disabling a pre-declared
+            // `<activity-alias>` — still needs the scheme to have been declared in
+            // advance. The interception UNIQUE does have runs inside the guest's own
+            // process; Chrome's process is not UNIQUE's to hook.
+            //
+            // So it is reported as unsupported, with the reason, which is worth more than
+            // a mode that reads as working. In-space Google Play services remains the
+            // path that can answer this, because there the whole exchange stays inside
+            // the space.
+            GoogleFlow.OAUTH_WEB -> if (manifest.deepLinkSchemes.isEmpty()) {
+                // No declared scheme means the app is not expecting a redirect back into
+                // itself at all — it reads the result some other way, and the browser is
+                // just a browser. Nothing here needs Google Play services.
+                RoutingDecision(flow, GoogleMode.PASSTHROUGH,
+                    "The app declares no redirect scheme, so nothing has to come back into this instance.")
+            } else {
+                RoutingDecision(flow, GoogleMode.UNSUPPORTED,
+                    "The browser can be opened, but the redirect back to " +
+                        "${manifest.deepLinkSchemes.first()}:// cannot arrive: that scheme " +
+                        "is declared by a package the device has not installed, so nothing " +
+                        "resolves it. Use in-space Google Play services, or a sign-in the " +
+                        "app can complete without leaving itself.")
+            }
 
             GoogleFlow.FCM -> if (capabilities.hostGmsAvailable) {
                 RoutingDecision(flow, GoogleMode.HOST_BRIDGE,

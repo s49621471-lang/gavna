@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.permission.PlatformPermissions
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.nativebridge.UniqueNative
@@ -133,6 +134,7 @@ object UniqueBridge {
             "importApk" -> importApk((a["paths"] as List<*>).map { File(it as String) })
             "importApkFromPicker" -> importApkFromPicker(context)
             "cloneInstance" -> cloneInstance(a["package"] as String)
+            "importGuestAssets" -> importGuestAssets(a)
             "launchInstance" -> launchInstance(context, (a["vuid"] as Number).toInt())
             "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
             "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)
@@ -367,8 +369,43 @@ object UniqueBridge {
     @Volatile
     var picker: ApkPicker? = null
 
-    private suspend fun cloneInstance(packageName: String): Map<String, Any?> =
-        UniqueEngine.instances.createInstance(packageName).toMap()
+    private suspend fun cloneInstance(packageName: String): Map<String, Any?> {
+        val result = UniqueEngine.instances.createInstance(packageName)
+        // A clone starts with an empty instance directory, expansion files included. A
+        // second copy of a game that cannot find its assets is not a second copy of the
+        // game, so the same import the first copy got runs here too.
+        if (result is CreateResult.Created) {
+            runCatching {
+                UniqueEngine.importGuestAssets(result.instance.vuid, result.instance.packageName)
+            }
+        }
+        return result.toMap()
+    }
+
+    /**
+     * Gives one instance the game assets the device has, or the ones the user picked.
+     *
+     * Exposed on the bridge and not only run at import, because the case it exists for is
+     * the one where the automatic attempt could not read the source: since Android 11 the
+     * platform guards `Android/obb` and `Android/data`, and what is left is for the user
+     * to hand UNIQUE the files. `paths` is that route.
+     */
+    private suspend fun importGuestAssets(a: Map<String, Any?>): Map<String, Any?> {
+        val vuid = (a["vuid"] as Number).toInt()
+        val instance = UniqueEngine.instances.instance(vuid)
+            ?: return mapOf(
+                "ok" to false, "code" to "NO_SUCH_INSTANCE",
+                "message" to "Instance $vuid does not exist.",
+            )
+        val files = (a["paths"] as? List<*>).orEmpty().map { File(it as String) }
+        val report = UniqueEngine.importGuestAssets(
+            vuid = vuid,
+            packageName = instance.packageName,
+            extraFiles = files,
+            includeExternalData = a["includeExternalData"] as? Boolean ?: false,
+        )
+        return mapOf("ok" to (report["outcome"] != "SOURCE_UNREADABLE")) + report
+    }
 
     private suspend fun launchInstance(context: Context, vuid: Int): Map<String, Any?> =
         when (val r = UniqueEngine.launch(context, vuid)) {
@@ -441,8 +478,14 @@ object UniqueBridge {
         val granted = a["granted"] as? Boolean ?: false
 
         if (granted) {
+            // Self-served permissions are left out of the ask. The platform auto-denies
+            // READ_EXTERNAL_STORAGE and WRITE_EXTERNAL_STORAGE to UNIQUE and shows no
+            // dialog for them, so including them made every Files request come back
+            // "refused permanently" even when the media permissions beside them were
+            // granted — and sent the user to a settings page with no such switch on it.
             val missing = group.permissions.filter {
-                context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                !PlatformPermissions.isSelfServed(it) &&
+                    context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
             }
             if (missing.isNotEmpty()) {
                 val requester = hostPermissions

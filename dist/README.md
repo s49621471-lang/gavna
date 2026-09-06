@@ -4,10 +4,17 @@ Two APKs, both **arm64-v8a only**, both signed with the same key — so either c
 installed over the other. Android 12 or newer (`minSdk 31`), no root, no unlocked
 bootloader.
 
+> **Uninstall any earlier UNIQUE first.** These are signed with a *test* key, and the
+> build machine generates a new one each time — so a build from a different session will
+> not install over an older one, and Android's error for that is the unhelpful
+> `App not installed`. Uninstalling removes the instances and their data with it; that is
+> the cost of a test-signed pre-release, and it is stated here rather than discovered.
+> `SHA256SUMS` says which artifact this is.
+
 | File | Size | What it is |
 |---|---|---|
-| `unique-arm64-v8a.apk` | ~25 MB | **Install this one.** The engine exactly as the acceptance suite runs it — no R8, so no keep rule can be wrong — with Flutter's UI built ahead of time so the artifact is a quarter the size of a debug build |
-| `unique-arm64-v8a-minified.apk` | ~18 MB | The same thing with R8 on. **Not device-verified** — see below |
+| `unique-arm64-v8a.apk` | ~27 MB | **Install this one.** The engine exactly as the acceptance suite runs it — no R8, so no keep rule can be wrong — with Flutter's UI built ahead of time so the artifact is a quarter the size of a debug build |
+| `unique-arm64-v8a-minified.apk` | ~19 MB | The same thing with R8 on. **Not device-verified** — see below |
 
 Direct links, which work in a phone browser:
 
