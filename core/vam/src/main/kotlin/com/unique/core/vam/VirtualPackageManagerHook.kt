@@ -434,20 +434,15 @@ object VirtualPackageManagerHook {
     /**
      * Whether *this* guest is told the Google stack is absent.
      *
-     * Hidden until the guest's own `com.google.android.gms.version` has been resolved,
-     * which is the safe direction: the decision needs that number, the guest's resources
-     * are what resolve it, and they do not exist until its `Application` does. The window
-     * is the few milliseconds between the `LoadedApk` and `makeApplication`, and nothing
-     * a Play services SDK does happens in it — those initialise from a provider or from
-     * `Application.onCreate`, both of which come later.
+     * Visible until an instance's own record says otherwise, which is the answer for
+     * every guest that has not yet proved it cannot use Play services. `bindGoogleVisibility`
+     * replaces it during the graft, before `Application.onCreate` and before the
+     * providers — which is before any Play services SDK initialises.
      *
      * @see GoogleStackVisibility
      */
     @Volatile private var visibility: GoogleStackVisibility.Decision =
-        GoogleStackVisibility.decide(declaredVersion = null).copy(
-            hidden = true,
-            detail = "hidden until the guest's own com.google.android.gms.version is resolved",
-        )
+        GoogleStackVisibility.decide(override = null)
 
     /**
      * Settles the question for this process, once the guest's resources can answer it.

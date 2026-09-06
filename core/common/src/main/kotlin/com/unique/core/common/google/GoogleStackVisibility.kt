@@ -1,169 +1,156 @@
 package com.unique.core.common.google
 
 /**
- * Whether a guest should be told that Google Play services is on this device.
+ * Whether a guest is told the device has Google Play services.
  *
- * ## Why this is a decision and not a constant
+ * ## Visible, until this instance proves it cannot be
  *
- * It was a constant — hidden, always — and that constant is the reason a user reported
- * *"UNIQUE asks me to install Google services, and they are already installed."* Every
- * guest, on a phone with a full Google stack, was answered:
+ * Hiding it was unconditional once, and that is why a user with a fully Googled phone
+ * was told, by every app, to install Google Play services:
  *
  * ```
+ * GOOGLE_ENVIRONMENT gmsPresent=true gmsEnabled=true gmsVersionCode=263234035
  * W GooglePlayServicesUtil: com.axlebolt.standoff2 requires Google Play services,
  *     but they are missing.
- * E GooglePlayServicesUtil: GooglePlayServices not available due to error 1
  * ```
  *
- * That is a lie about the device, and it costs more than a message. `DynamiteModule`
- * loads Google's own code from the Play services APK through a provider; `AdvertisingIdClient`
- * binds a service that does *not* check the caller's package; `emoji2` looks the package
- * up and disables itself when it is absent. None of those need a virtual app's identity
- * to be accepted, and all of them were switched off by the hiding.
+ * It costs more than a message. `DynamiteModule` loads Google's own code from the Play
+ * services APK through a provider; `AdvertisingIdClient` binds a service that never
+ * checks the caller's package; `emoji2` looks the package up and switches itself off when
+ * it is absent. None of those need a virtual app's identity to be accepted, and all of
+ * them were off.
  *
- * ## What the hiding was actually protecting against, exactly
+ * ## What hiding was protecting against, and why it cannot be predicted
  *
  * One call: `GmsClient.getRemoteService`. It sends `context.getPackageName()` to
  * `com.google.android.gms`, which resolves the *calling uid* to UNIQUE's packages, does
- * not find the guest among them, and refuses:
+ * not find the guest among them, and refuses. Where that lands decides everything:
  *
  * ```
- * SecurityException: Unknown calling package name 'com.gordey.standarling'.
+ * (fatal)     at …c.getRemoteService (play-services-basement@@17.4.0:25)
+ *             at …c$g.handleMessage · Looper.loop        <- the app's MAIN looper
+ *             FATAL EXCEPTION: main
+ *
+ * (survived)  at …e.getRemoteService
+ *             at …api.internal.zabm.run
+ *             E GoogleApiManager: Failed to get service from broker.
  * ```
  *
- * UNIQUE cannot prevent that — what Play services sees for UNIQUE's uid is decided inside
- * Play services' own process, by the real `PackageManager`. What it *can* do is tell which
- * apps survive it, and two phone logs say so precisely. The same refusal, two apps:
+ * An earlier version of this file tried to predict which of the two an app would do,
+ * from the `com.google.android.gms.version` meta-data every Play services client
+ * declares. **That was wrong, and the log said so immediately:**
  *
  * ```
- * (run 5, fatal)  at com.google.android.gms.common.internal.c.getRemoteService
- *                   (play-services-basement@@17.4.0:25)
- *                 at …c$g.handleMessage · Looper.loop        <- the app's MAIN looper
- *                 FATAL EXCEPTION: main
- *
- * (run 7, survived) at com.google.android.gms.common.internal.e.getRemoteService
- *                 at com.google.android.gms.common.api.internal.zabm.run
- *                 E GoogleApiManager: Failed to get service from broker.
+ * GOOGLE_STACK_HIDDEN reason=SDK_TOO_OLD gmsVersion=12451000   (x3)
  * ```
  *
- * The second app kept running. Play services' own client library learned to catch this:
- * from 18.x, `zabm.run` wraps `getRemoteService`, logs *"Failed to get service from
- * broker"* and reports a `ConnectionResult` — which is the same path the SDK takes on a
- * phone with no Google stack at all. Before that, the exception went to the caller's
- * looper and killed the app.
+ * — the same number for three unrelated apps, one of them ChatGPT, which certainly does
+ * not ship a 2018 client library. `google_play_services_version` is the *minimum GmsCore
+ * version the client requires*, not the client's own version, and Google stopped moving
+ * it years ago. It cannot tell two client libraries apart, so nothing built on it could
+ * have worked. The mistake is written down here because the number looks exactly like a
+ * version, and the next person to reach for it deserves to be stopped.
  *
- * So the question "should this guest see Play services" has an answer that depends on the
- * *guest*, and the guest states it in its own manifest.
+ * ## So the answer is measured instead of guessed
  *
- * ## The number the manifest states
+ * Play services is visible to every guest. If a guest dies of that specific refusal, the
+ * crash handler writes `hide` into this instance's own file before the process goes, and
+ * the next launch hides the stack — which is where that app stays, taking the same
+ * no-Google-services path it took before, while every other app keeps the truth.
  *
- * Every app that links the Play services client library must declare:
- *
- * ```xml
- * <meta-data android:name="com.google.android.gms.version"
- *            android:value="@integer/google_play_services_version" />
- * ```
- *
- * The library defines that integer and its value is the library's own release: 12451000
- * through the 15.x–17.x line, and a nine-digit `2xxxxxxxx` from 18.0.0 onward — which is
- * exactly the boundary at which the refusal became survivable. An app that declares no
- * such meta-data does not link the library at all and has nothing that could crash.
- *
- * Pure JVM, so the rule is unit-tested against the versions the logs actually carried
- * rather than against a device that happens to have one of them.
+ * The cost is one crash, once, for an app whose client library is old enough to die of
+ * it. The alternative was every app being lied to forever, and the log above is what that
+ * looked like from the user's side.
  */
 object GoogleStackVisibility {
 
     /**
-     * The first `google_play_services_version` whose client library catches a refused
-     * broker instead of letting it reach the caller's looper.
+     * The refusal that kills an old Play services client, as it appears in the message.
      *
-     * Play services 18.0.0 is `203390000`; everything before it is eight digits. The
-     * threshold is written as the round nine-digit boundary rather than that exact
-     * release because the change is a property of the whole 2xxxxxxxx line, and picking
-     * a precise release would claim a sharper measurement than two logs support.
+     * Matched on text because that is all a `SecurityException` from another process
+     * carries — the class is `java.lang.SecurityException` and the sentence is what
+     * identifies it. Play services has phrased it this way for as long as the logs in
+     * this repository go back.
      */
-    const val FIRST_VERSION_THAT_SURVIVES_A_REFUSED_BROKER = 200_000_000
-
-    /**
-     * Resource ids start at `0x7f000000`. A `com.google.android.gms.version` in that range
-     * is a *reference the guest's resources have not resolved yet*, not a version — and it
-     * is a large number, so reading it as one would call every such app modern.
-     */
-    private const val FIRST_RESOURCE_ID = 0x7f000000
+    const val REFUSED_CALLING_PACKAGE = "Unknown calling package name"
 
     enum class Reason {
-        /** The guest does not link the Play services client library. */
-        NO_GMS_SDK,
+        /** Nothing says this guest cannot see it, so it does. */
+        VISIBLE_BY_DEFAULT,
 
-        /** Its client library catches a refused broker and degrades. */
-        SDK_HANDLES_REFUSAL,
+        /** This instance died of the refusal once, and the crash recorded it. */
+        AUTO_HIDDEN_AFTER_CRASH,
 
-        /** Its client library lets the refusal reach the caller's looper, and dies. */
-        SDK_TOO_OLD,
-
-        /** The declared version is a resource reference nothing has resolved yet. */
-        VERSION_UNRESOLVED,
-
-        /** The user or the compatibility database said so for this instance. */
+        /** The user, or a support session, wrote the answer into the instance's file. */
         OVERRIDDEN,
     }
 
     data class Decision(
         val hidden: Boolean,
         val reason: Reason,
-        val declaredVersion: Int?,
         val detail: String,
     ) {
         fun toMap(): Map<String, String> = mapOf(
             "hidden" to hidden.toString(),
             "reason" to reason.name,
-            "gmsVersion" to (declaredVersion?.toString() ?: "-"),
             "detail" to detail,
         )
     }
 
+    /** What the instance's own file says, when it says anything. */
+    enum class Override { HIDE, SHOW, AUTO_HIDE }
+
     /**
-     * @param declaredVersion the resolved value of the guest's own
-     *   `com.google.android.gms.version`, or null when it declares none.
-     * @param override `true` to force hiding, `false` to force showing, null to decide.
-     *   The escape hatch for an app whose behaviour contradicts the rule; it exists so a
-     *   wrong guess costs a line in a file rather than a build.
+     * Reads the one word an instance's visibility file may contain.
+     *
+     * Unrecognised text is `null` rather than an error: this file is meant to be edited
+     * by hand, and a typo should leave the default in place rather than decide anything.
      */
-    fun decide(declaredVersion: Int?, override: Boolean? = null): Decision {
-        if (override != null) {
-            return Decision(
-                override, Reason.OVERRIDDEN, declaredVersion,
-                if (override) "hidden for this instance by an override"
-                else "shown for this instance by an override",
-            )
-        }
-        if (declaredVersion == null) {
-            return Decision(
-                false, Reason.NO_GMS_SDK, null,
-                "the guest declares no com.google.android.gms.version, so it does not " +
-                    "link the client library and has nothing a refused broker could kill",
-            )
-        }
-        if (declaredVersion >= FIRST_RESOURCE_ID) {
-            return Decision(
-                true, Reason.VERSION_UNRESOLVED, declaredVersion,
-                "com.google.android.gms.version is still a resource reference; hidden " +
-                    "until it resolves, because an unresolved id reads as a large version",
-            )
-        }
-        if (declaredVersion >= FIRST_VERSION_THAT_SURVIVES_A_REFUSED_BROKER) {
-            return Decision(
-                false, Reason.SDK_HANDLES_REFUSAL, declaredVersion,
-                "Play services client 18 or newer: a refused broker is caught, logged as " +
-                    "\"Failed to get service from broker\" and reported as a ConnectionResult",
-            )
-        }
-        return Decision(
-            true, Reason.SDK_TOO_OLD, declaredVersion,
-            "Play services client older than 18: a refused broker reaches the caller's " +
-                "looper and kills the app, so the stack is hidden and the SDK takes its " +
-                "own no-Google-services path",
+    fun parseOverride(text: String?): Override? = when (text?.trim()?.lowercase()) {
+        "hide", "hidden" -> Override.HIDE
+        "show", "visible" -> Override.SHOW
+        "auto-hide", "auto_hide", "autohide" -> Override.AUTO_HIDE
+        else -> null
+    }
+
+    /** The word [decide] will read back for an automatic hide. */
+    const val AUTO_HIDE_MARKER = "auto-hide"
+
+    fun decide(override: Override?): Decision = when (override) {
+        Override.HIDE -> Decision(
+            true, Reason.OVERRIDDEN,
+            "hidden for this instance by an override",
         )
+        Override.SHOW -> Decision(
+            false, Reason.OVERRIDDEN,
+            "shown for this instance by an override, even if it crashed before",
+        )
+        Override.AUTO_HIDE -> Decision(
+            true, Reason.AUTO_HIDDEN_AFTER_CRASH,
+            "this instance died of \"$REFUSED_CALLING_PACKAGE\" once; Play services is " +
+                "hidden from it so its SDK takes the path it has for a phone without one",
+        )
+        null -> Decision(
+            false, Reason.VISIBLE_BY_DEFAULT,
+            "the device has Play services and this instance has not shown it cannot use it",
+        )
+    }
+
+    /**
+     * Whether this crash is the one that should hide the stack from this instance.
+     *
+     * The whole chain is searched, not just the outermost throwable: the platform wraps
+     * the refusal in whatever was on the stack above it, and the sentence that identifies
+     * it can be several `Caused by` deep.
+     */
+    fun isRefusedCallingPackage(error: Throwable?): Boolean {
+        var current = error
+        var guard = 0
+        while (current != null && guard++ < 16) {
+            if (current.message?.contains(REFUSED_CALLING_PACKAGE) == true) return true
+            if (current.cause === current) return false
+            current = current.cause
+        }
+        return false
     }
 }

@@ -6,70 +6,89 @@ import org.junit.Test
 /**
  * Which guests are told the device has Google Play services.
  *
- * The rule generalises from two physical runs and the numbers below are theirs, not
- * invented: `com.gordey.standarling` linked `play-services-basement@@17.4.0` and died on
- * its main looper when the broker refused it; an app on the 18.x line took the same
- * refusal, logged *"Failed to get service from broker"* and carried on. Everything here
- * is about not generalising further than that evidence allows.
+ * The first version of this test asserted a rule read off
+ * `com.google.android.gms.version`, and the rule was wrong: that number is the *minimum
+ * GmsCore version the client requires*, frozen at 12451000 for years, and three
+ * unrelated apps in one device log all declared it. Nothing built on it could work, so
+ * the answer is measured now — visible until an instance dies of the one refusal that
+ * kills an old client — and what is tested is that measurement, not a guess.
  */
 class GoogleStackVisibilityTest {
 
-    private fun decide(version: Int?, override: Boolean? = null) =
-        GoogleStackVisibility.decide(version, override)
-
-    @Test fun `an app that does not link the client library is shown the stack`() {
-        // Nothing in it can be killed by a refused broker, and hiding cost it every
-        // Google package lookup it might make for another reason.
-        val d = decide(null)
+    @Test fun `a guest that has proved nothing sees Play services`() {
+        // The default, and the whole point of the change: a phone with Play services
+        // installed should not have every app told it is missing.
+        val d = GoogleStackVisibility.decide(null)
         assertThat(d.hidden).isFalse()
-        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.NO_GMS_SDK)
+        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.VISIBLE_BY_DEFAULT)
     }
 
-    @Test fun `a modern client library is shown the stack`() {
-        // 203390000 is play-services 18.0.0, the first line whose zabm.run catches the
-        // refusal. This is the case that stops apps saying "install Google services".
-        val d = decide(203_390_000)
-        assertThat(d.hidden).isFalse()
-        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.SDK_HANDLES_REFUSAL)
-    }
-
-    @Test fun `the client library that died on a phone is hidden from`() {
-        // 12451000 is the constant the 15.x–17.x line declares, which is what
-        // play-services-basement 17.4.0 carried into the fatal run.
-        val d = decide(12_451_000)
+    @Test fun `an instance that died of the refusal is hidden from it afterwards`() {
+        val d = GoogleStackVisibility.decide(GoogleStackVisibility.Override.AUTO_HIDE)
         assertThat(d.hidden).isTrue()
-        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.SDK_TOO_OLD)
-        assertThat(d.detail).contains("kills the app")
+        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.AUTO_HIDDEN_AFTER_CRASH)
+        assertThat(d.detail).contains(GoogleStackVisibility.REFUSED_CALLING_PACKAGE)
     }
 
-    @Test fun `an unresolved resource reference is hidden from, not read as a version`() {
-        // 0x7f0c000b is 2130771979 — larger than any real version, so reading it as one
-        // would call every app with an unresolved reference modern. That id is from a
-        // real log line: META_DATA_NOT_RESOLVED name=com.google.android.gms.version.
-        val d = decide(0x7f0c000b)
-        assertThat(d.hidden).isTrue()
-        assertThat(d.reason).isEqualTo(GoogleStackVisibility.Reason.VERSION_UNRESOLVED)
-    }
-
-    @Test fun `the boundary itself counts as modern`() {
-        assertThat(decide(GoogleStackVisibility.FIRST_VERSION_THAT_SURVIVES_A_REFUSED_BROKER).hidden)
-            .isFalse()
-        assertThat(decide(GoogleStackVisibility.FIRST_VERSION_THAT_SURVIVES_A_REFUSED_BROKER - 1).hidden)
+    @Test fun `an override wins, both ways`() {
+        assertThat(GoogleStackVisibility.decide(GoogleStackVisibility.Override.HIDE).hidden)
             .isTrue()
+        // SHOW has to beat a recorded crash, or an instance could never be tried again.
+        assertThat(GoogleStackVisibility.decide(GoogleStackVisibility.Override.SHOW).hidden)
+            .isFalse()
     }
 
-    @Test fun `an override wins over the rule, both ways`() {
-        assertThat(decide(203_390_000, override = true).hidden).isTrue()
-        assertThat(decide(12_451_000, override = false).hidden).isFalse()
-        assertThat(decide(null, override = true).reason)
-            .isEqualTo(GoogleStackVisibility.Reason.OVERRIDDEN)
+    @Test fun `the marker the crash writes is the one a launch reads back`() {
+        // These two are the ends of a round trip through a file, in two different
+        // processes, and a typo in either would silently switch the recovery off.
+        assertThat(GoogleStackVisibility.parseOverride(GoogleStackVisibility.AUTO_HIDE_MARKER))
+            .isEqualTo(GoogleStackVisibility.Override.AUTO_HIDE)
     }
 
-    @Test fun `every decision carries the version it was made from`() {
-        // The log has to be able to say *why*, not only *what*: a wrong answer here looks
-        // exactly like an app that genuinely has no Google integration.
-        assertThat(decide(12_451_000).toMap()["gmsVersion"]).isEqualTo("12451000")
-        assertThat(decide(null).toMap()["gmsVersion"]).isEqualTo("-")
-        assertThat(decide(203_390_000).toMap()["hidden"]).isEqualTo("false")
+    @Test fun `a hand-edited file is read the way a person would write it`() {
+        for (word in listOf("hide", "HIDE", " hidden ", "Hidden\n")) {
+            assertThat(GoogleStackVisibility.parseOverride(word))
+                .isEqualTo(GoogleStackVisibility.Override.HIDE)
+        }
+        for (word in listOf("show", "visible", " SHOW\n")) {
+            assertThat(GoogleStackVisibility.parseOverride(word))
+                .isEqualTo(GoogleStackVisibility.Override.SHOW)
+        }
+    }
+
+    @Test fun `a typo leaves the default alone rather than deciding anything`() {
+        assertThat(GoogleStackVisibility.parseOverride("hied")).isNull()
+        assertThat(GoogleStackVisibility.parseOverride("")).isNull()
+        assertThat(GoogleStackVisibility.parseOverride(null)).isNull()
+    }
+
+    @Test fun `the refusal is recognised however deep it is wrapped`() {
+        // The platform wraps it in whatever was on the stack above, so the message that
+        // identifies it is often several `Caused by` down.
+        val refusal = SecurityException("Unknown calling package name 'com.example.app'.")
+        assertThat(GoogleStackVisibility.isRefusedCallingPackage(refusal)).isTrue()
+        assertThat(
+            GoogleStackVisibility.isRefusedCallingPackage(
+                RuntimeException("Unable to start activity", IllegalStateException(refusal)),
+            )
+        ).isTrue()
+    }
+
+    @Test fun `an ordinary crash does not hide Play services`() {
+        // Writing the marker for every crash would switch Play services off for an app
+        // that died of its own bug, and nothing would ever say why.
+        assertThat(GoogleStackVisibility.isRefusedCallingPackage(NullPointerException()))
+            .isFalse()
+        assertThat(GoogleStackVisibility.isRefusedCallingPackage(null)).isFalse()
+    }
+
+    @Test fun `a cyclic cause chain terminates`() {
+        // `initCause` refuses self-causation, so the cycle is built through two — which
+        // is the shape a chain can actually take. Without the bound in the walk this
+        // hangs the crash handler of a process that is already dying.
+        val outer = RuntimeException("outer")
+        val inner = RuntimeException("inner", outer)
+        outer.initCause(inner)
+        assertThat(GoogleStackVisibility.isRefusedCallingPackage(outer)).isFalse()
     }
 }

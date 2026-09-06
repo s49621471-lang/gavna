@@ -5,6 +5,7 @@ import android.content.pm.ProviderInfo
 import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
 import com.google.common.truth.Truth.assertThat
+import com.unique.core.common.google.GoogleStackVisibility
 import org.junit.Test
 
 /**
@@ -16,14 +17,37 @@ import org.junit.Test
  * The decision is therefore pinned here instead, where it is a pure function over a name
  * and a `ResolveInfo`.
  *
- * What it is protecting: `GmsClient.getRemoteService` sends `context.getPackageName()` to
- * `com.google.android.gms`, which resolves the *calling* uid to UNIQUE's own packages and
- * answers `SecurityException: Unknown calling package name`. It arrives on a `Handler`, so
- * it is fatal — three guests in one phone log died that way, seconds after launch.
+ * What hiding is protecting against: `GmsClient.getRemoteService` sends
+ * `context.getPackageName()` to `com.google.android.gms`, which resolves the *calling*
+ * uid to UNIQUE's own packages and answers `SecurityException: Unknown calling package
+ * name`. On an old client library it arrives on the app's own looper and is fatal.
+ *
+ * Which is why it is no longer done to everyone. Hiding it unconditionally told every
+ * app on a fully Googled phone to install Google Play services; the state is per
+ * instance now, and these tests fix both ends of it — what happens when the decision
+ * says hide, and that nothing is hidden until it does.
  */
 class VirtualPackageManagerHookTest {
 
+    private fun hideTheGoogleStack() = VirtualPackageManagerHook.bindGoogleVisibility(
+        GoogleStackVisibility.decide(GoogleStackVisibility.Override.HIDE),
+    )
+
+    private fun showTheGoogleStack() = VirtualPackageManagerHook.bindGoogleVisibility(
+        GoogleStackVisibility.decide(GoogleStackVisibility.Override.SHOW),
+    )
+
+    @Test fun `nothing is hidden until an instance has shown it must be`() {
+        // The default, and the whole reason the unconditional hiding went: a phone that
+        // has Play services should not have every app told it does not.
+        showTheGoogleStack()
+        for (name in listOf("com.google.android.gms", "com.google.android.gsf")) {
+            assertThat(VirtualPackageManagerHook.isHiddenFromGuest(name)).isFalse()
+        }
+    }
+
     @Test fun `the two packages that kill guests are hidden and nothing else is`() {
+        hideTheGoogleStack()
         assertThat(VirtualPackageManagerHook.isHiddenFromGuest("com.google.android.gms")).isTrue()
         assertThat(VirtualPackageManagerHook.isHiddenFromGuest("com.google.android.gsf")).isTrue()
 
@@ -43,6 +67,7 @@ class VirtualPackageManagerHookTest {
     }
 
     @Test fun `a resolution naming a hidden package is dropped, whichever half names it`() {
+        hideTheGoogleStack()
         // Intent resolution answers with whichever of these three is set, and an SDK
         // reaches GMS through all three: an activity for sign-in, a service for the API
         // client, a provider for DynamiteModule.
@@ -60,6 +85,7 @@ class VirtualPackageManagerHookTest {
     }
 
     @Test fun `a list keeps everything that is not hidden, in order`() {
+        hideTheGoogleStack()
         val mine = resolveInfo(activity = "com.unique.probe")
         val store = resolveInfo(activity = "com.android.vending")
         val answer = listOf(

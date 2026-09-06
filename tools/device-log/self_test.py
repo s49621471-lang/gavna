@@ -40,6 +40,8 @@ FIXTURE6 = os.path.join(HERE, "fixtures", "redmi-android15-run6.log")
 FIXTURE6_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run6.device.txt")
 FIXTURE7 = os.path.join(HERE, "fixtures", "redmi-android15-run7.log")
 FIXTURE7_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run7.device.txt")
+FIXTURE8 = os.path.join(HERE, "fixtures", "redmi-android15-run8.log")
+FIXTURE8_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run8.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -451,6 +453,60 @@ class RedmiRun7Test(unittest.TestCase):
         self.assertNotIn("after UNIQUE hooked", detail)
 
 
+class RedmiRun8Test(unittest.TestCase):
+    """The eighth run: the run that disproved a rule this repository had just shipped.
+
+    The pass before it decided Google Play services visibility per app, from the
+    `com.google.android.gms.version` meta-data. This log killed that idea in one line:
+
+        GOOGLE_STACK_HIDDEN hidden=true reason=SDK_TOO_OLD gmsVersion=12451000   (x3)
+
+    — the same number for 1Tap Cleaner, ChatGPT and a Unity game, on a phone carrying
+    GmsCore 26.32.34. It is the *minimum* version a client accepts, not the client's own,
+    and Google froze it in 2018. So every guest was told a fully Googled phone has no
+    Play services, and the user was shown "Установите сервисы Google Play" by an app
+    running on a device that has it.
+
+    These assertions are the reason a rule of that shape cannot come back quietly: the
+    `google` check pairs "the phone has it" with "a guest was told it does not", and this
+    fixture is a real log in which that pairing is true.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE8, FIXTURE8_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_the_phone_had_play_services_and_the_guests_were_told_otherwise(self):
+        check = self.checks["google"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("26.32.34", notes(check))
+        self.assertIn("SDK_TOO_OLD", findings(check))
+
+    def test_the_app_s_own_complaint_is_read_not_just_unique_s_event(self):
+        # `GooglePlayServicesUtil: … requires Google Play services, but they are missing`
+        # is the app speaking. A build could stop logging GOOGLE_STACK_HIDDEN and this
+        # would still catch it, which is the point of reading both.
+        self.assertIn("com.openai.chatgpt", findings(self.checks["google"]))
+
+    def test_a_launch_still_reached_every_guest(self):
+        # Worth stating: the Google fault is not a launch fault. All three apps started;
+        # what was broken was what they were told once they were running.
+        self.assertEqual(self.checks["launch"].verdict, analyze.PASS)
+        self.assertIn("3/3", notes(self.checks["launch"]))
+
+    def test_the_expansion_files_were_still_unreadable(self):
+        # Unchanged from run 7, and it is the user's grant to give: `Android/obb` stays
+        # closed until all-files access is allowed. The import now runs at every launch,
+        # so the finding appears once per launch rather than once per import.
+        check = self.checks["storage"]
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("all-files access", findings(check))
+
+    def test_the_protector_is_still_left_alone_on_purpose(self):
+        self.assertIn("libgrave.so", notes(self.checks["native"]))
+
+
 HEALTHY = """\
 2026-01-01 10:00:00.000 I PROCESS PROCESS_START process=com.unique kind=CORE sdk=35 abi=arm64-v8a
 2026-01-01 10:00:00.010 I NATIVE NATIVE_LOADED pageSize=4096
@@ -523,6 +579,42 @@ class BrokenRunTest(unittest.TestCase):
             return next(c for c in analyze.run_checks(parsed) if c.name == name)
         finally:
             os.unlink(path)
+
+    def test_hiding_play_services_from_a_guest_on_a_googled_phone_fails(self):
+        # The synthetic half of the run-8 finding. Without this, the check could pass by
+        # never firing, and the fixture alone would not say which half of the pairing it
+        # needs.
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 I LAUNCH u0 com.example.app GOOGLE_ENVIRONMENT "
+            "gmsPresent=true gmsEnabled=true gmsVersionCode=263234035 gmsVersionName=26.32.34\n"
+            "2026-01-01 10:00:04.100 I LAUNCH u0 com.example.app GOOGLE_STACK_HIDDEN "
+            "hidden=true reason=SDK_TOO_OLD gmsVersion=12451000\n",
+            "google",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+
+    def test_hiding_it_from_a_guest_that_died_of_the_refusal_is_not_a_failure(self):
+        # The one legitimate hide. An instance that crashed on "Unknown calling package
+        # name" is better off being told there is no Play services, and a check that
+        # failed on that would push the engine back to lying to everyone.
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 I LAUNCH u0 com.example.app GOOGLE_ENVIRONMENT "
+            "gmsPresent=true gmsEnabled=true gmsVersionCode=263234035 gmsVersionName=26.32.34\n"
+            "2026-01-01 10:00:04.100 I LAUNCH u0 com.example.app GOOGLE_STACK_HIDDEN "
+            "hidden=true reason=AUTO_HIDDEN_AFTER_CRASH\n",
+            "google",
+        )
+        self.assertEqual(check.verdict, analyze.PASS)
+
+    def test_a_phone_without_play_services_is_not_unique_s_fault(self):
+        # Same complaint from the app, opposite cause. Reporting it as a failure would
+        # send someone looking for a bug in the engine on a de-Googled phone.
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 I LAUNCH u0 com.example.app GOOGLE_ENVIRONMENT "
+            "gmsPresent=false gmsEnabled=false\n",
+            "google",
+        )
+        self.assertEqual(check.verdict, analyze.PASS)
 
     def test_a_hook_that_binds_to_nothing_fails(self):
         check = self.check_for(

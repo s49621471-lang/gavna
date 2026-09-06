@@ -327,6 +327,19 @@ object UniqueEngine {
     }
 
     /**
+     * Whether an instance's expansion files are in place, asked without copying.
+     *
+     * For App Details, which has to be able to say that a game will start without its
+     * assets *before* the user starts it and sees an empty menu.
+     */
+    suspend fun guestAssetStatus(vuid: Int): Map<String, String> = withContext(Dispatchers.IO) {
+        val instance = instances.instance(vuid) ?: return@withContext emptyMap()
+        runCatching {
+            GuestAssetImport(app).status(vuid, instance.packageName).toMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    /**
      * Updates an imported package in place, keeping every instance's data.
      *
      * Running instances are stopped first, which is what the platform does when it

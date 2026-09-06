@@ -806,9 +806,9 @@ Every one of those is in the log, and three of the four are one decision.
 
 | Found | Fixed by |
 |---|---|
-| **"UNIQUE asks me to install Google services."** `GOOGLE_STACK_HIDDEN` four times, then `W GooglePlayServicesUtil: com.axlebolt.standoff2 requires Google Play services, but they are missing` — on a phone with Play services 26.32.34 installed and enabled, which UNIQUE's own `GOOGLE_ENVIRONMENT` line records two seconds earlier. The hiding was unconditional, and it is a lie about the device that costs more than a message: `DynamiteModule` loads Google's own code through a provider, `AdvertisingIdClient` binds a service that never checks the caller, and `emoji2` disables itself when the package is absent | The hiding is decided per guest, from the guest's own manifest. What it was protecting against is one call — `GmsClient.getRemoteService` — and two logs say exactly who survives it. `play-services-basement 17.4.0` let the refusal reach the app's main looper and died; the 18.x line catches it, logs `Failed to get service from broker` and reports a `ConnectionResult`, which is the same path the SDK takes on a phone with no Google stack. An app states which it links, in `com.google.android.gms.version`, so that is what decides. `GoogleStackVisibility`, seven tests |
+| **"UNIQUE asks me to install Google services."** `GOOGLE_STACK_HIDDEN` four times, then `W GooglePlayServicesUtil: com.axlebolt.standoff2 requires Google Play services, but they are missing` — on a phone with Play services 26.32.34 installed and enabled, which UNIQUE's own `GOOGLE_ENVIRONMENT` line records two seconds earlier. The hiding was unconditional, and it is a lie about the device that costs more than a message: `DynamiteModule` loads Google's own code through a provider, `AdvertisingIdClient` binds a service that never checks the caller, and `emoji2` disables itself when the package is absent | The hiding is decided per guest, from the guest's own manifest. What it was protecting against is one call — `GmsClient.getRemoteService` — and two logs say exactly who survives it. `play-services-basement 17.4.0` let the refusal reach the app's main looper and died; the 18.x line catches it, logs `Failed to get service from broker` and reports a `ConnectionResult`, which is the same path the SDK takes on a phone with no Google stack. The first attempt read which one an app links from its `com.google.android.gms.version` meta-data — **and that was wrong; the eighth run below is the log that says so.** What replaced it is measured rather than guessed: visible to everyone, hidden from an instance only after that instance has died of the refusal. `GoogleStackVisibility`, nine tests |
 | **The refusal was never prevented by hiding anyway.** With Play services hidden, `E GoogleApiManager: Unknown calling package name 'com.axlebolt.standoff2'` still appears: the SDK binds by explicit intent and never asks the package manager first. So the hiding bought silence, not safety | Nothing to fix — recorded because it is the fact that makes the row above safe. Hiding changes what an app is *told*, not what it does |
-| **"The games still do not see their resources."** `GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE … /storage/emulated/0/Android/obb is not readable by UNIQUE`, for all three apps. The import worked and the directory is guarded: since Android 11 `Android/obb` needs all-files access, which had not been granted — and nothing had asked for it, because the import only ran at *import* time and its failure went to a log file | The import runs on every launch, and it is cheap to repeat: a file whose name and length already match is skipped. A launch that starts an app without its expansion files now says so, in the language the user reads, with the switch that fixes it one tap away in the snackbar. Instances created by an earlier build get their assets on their next launch instead of needing to be deleted and re-imported |
+| **"The games still do not see their resources."** `GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE … /storage/emulated/0/Android/obb is not readable by UNIQUE`, for all three apps. The import worked and the directory is guarded: since Android 11 `Android/obb` needs all-files access, which had not been granted — and nothing had asked for it, because the import only ran at *import* time and its failure went to a log file | The import runs on every launch, and it is cheap to repeat: a file whose name and length already match is skipped. A launch that starts an app without its expansion files now says so, in the language the user reads, with the switch that fixes it one tap away — on the app's own details screen, since the eighth run showed a snackbar is the wrong instrument for a thing that stays true. Instances created by an earlier build get their assets on their next launch instead of needing to be deleted and re-imported |
 | **Signing into ChatGPT with Google.** The log shows what happened: `SERVICE_INTENT_CROSS_APP action=android.support.customtabs.action.CustomTabsService`, then `ACTIVITY_IMPLICIT_LEFT_GUEST action=VIEW data=https handledByHost=com.android.chrome`. Play services was hidden, so ChatGPT fell back to the browser — and the account picker the user saw was Google's *web* chooser in Chrome. The redirect back cannot arrive, for the reason the sixth run settled | Partly. With Play services visible ChatGPT takes its native path instead of the browser, which is the flow the user asked for. What that path returns is a separate and unsolved thing: Play services resolves the caller to UNIQUE, so a token comes back for UNIQUE's identity and not the app's. Only Play services *inside the space* can answer that, and this build does not have it |
 
 And one correction, which matters more than any of the rows above.
@@ -841,6 +841,56 @@ Two things came out of taking that seriously:
 - The analyzer reports a wild jump as itself instead of attributing it to whichever
   library loaded last, because that attribution sent one investigation the wrong way and
   would have sent the next one the same way.
+
+### The eighth run: the version rule was wrong, and the log said so at once
+
+`tools/device-log/fixtures/redmi-android15-run8.log`. The user's whole report was two
+words — *"nothing changed"* — with a screenshot of a notification:
+
+> **Установите сервисы Google Play** — Чтобы и дальше пользоваться приложением
+> «1Tap Cleaner», установите сервисы Google Play
+
+The build was installed and running; the new code was in the log. It was simply wrong:
+
+```
+GOOGLE_ENVIRONMENT gmsPresent=true gmsEnabled=true gmsVersionCode=263234035
+                   gmsVersionName=26.32.34
+GOOGLE_STACK_HIDDEN hidden=true reason=SDK_TOO_OLD gmsVersion=12451000     (x3)
+W GooglePlayServicesUtil: com.openai.chatgpt requires Google Play services, but they
+    are missing.
+```
+
+`12451000`, three times, for 1Tap Cleaner, ChatGPT and a Unity game. Three unrelated apps
+with three unrelated release cadences do not ship the same client library, and ChatGPT
+certainly does not ship a 2018 one. `com.google.android.gms.version` is the **minimum
+GmsCore version the client requires**, not the version of the client — Google stopped
+moving it years ago, so it is the same constant in nearly every APK on the phone. Nothing
+built on it could ever have distinguished a 17.x client from an 18.x one, and the rule I
+shipped therefore hid Play services from *every* guest. The previous build hid it from
+every guest unconditionally; this one hid it from every guest with a reason attached. From
+the user's side those are the same build, which is exactly what they said.
+
+**What replaced it: measure instead of predict.**
+
+Play services is visible to every guest. There is one call that kills an old client —
+`GmsClient.getRemoteService`, refused with `Unknown calling package name` — and if a guest
+dies of it, `CrashGuard`'s observer writes one word into that instance's own file before
+the process goes, and the next launch of *that instance* hides the stack. The cost is one
+crash, once, for an app whose client library is old enough to die of it. The alternative,
+which is what shipped, was every app on a fully Googled phone being told the phone has no
+Google.
+
+| Found | Fixed by |
+|---|---|
+| **Play services hidden from all three guests on a phone running GmsCore 26.32.34.** The rule read a constant and treated it as a version | Visible by default; hidden per instance only after that instance has died of the refusal, recorded by the crash handler because a dying process is the last thing that can write the file. `HIDE`/`SHOW` in `runtime/google/<vuid>/<pkg>.visibility` override both, so an instance can always be tried again. `GoogleStackVisibility`, nine tests |
+| **Nothing in sixteen checks noticed a build that lied to every app about the device.** Every launch passed; the fault was in what the apps were told afterwards | A `google` check that pairs `gmsPresent=true` with a guest being told otherwise — and reads the app's own `requires Google Play services, but they are missing` as well as UNIQUE's event, so a build that stops logging the event is still caught. Asserted against this fixture and against three synthetic runs, including the two hides that are *legitimate* |
+| **The expansion files were still unreadable**, for the third run running: `GUEST_OBB_IMPORT outcome=SOURCE_UNREADABLE` at every launch. The import runs, the directory is closed. All-files access had still not been granted, and the request for it was a snackbar on a screen the user had already left | A `NoticeBanner` on the app's own details screen, present for as long as the condition is, with an **Allow** button that opens the all-files settings page directly. A snackbar is for something that just happened; this is a thing that stays true until someone acts on it |
+
+Worth stating plainly, because it is the second correction in three runs: both wrong
+answers had the same shape. A number that looked like a version, and a library that
+loaded just before a crash — each was a plausible story told from one coincidence, and
+each survived until a physical device contradicted it. The analyzer now has a check for
+both, which is the only part of this that generalises.
 
 ### What the sixth run settled about Google sign-in
 

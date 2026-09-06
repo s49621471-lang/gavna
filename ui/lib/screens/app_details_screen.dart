@@ -36,6 +36,13 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
   List<GoogleRoute>? _routes;
   String? _busyGroup;
 
+  /// Whether this instance's expansion files are in place, and why not when they are not.
+  ///
+  /// Read on every visit rather than cached with the instance: the answer changes the
+  /// moment the user grants all-files access, and coming back to this screen is exactly
+  /// what they do next.
+  String? _assetOutcome;
+
   @override
   void initState() {
     super.initState();
@@ -47,12 +54,14 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
     final permissions = await state.instancePermissions(app.vuid);
     final google = await state.googleStatus();
     final routes = await state.googleRouting(app.vuid);
+    final assets = await state.guestAssetStatus(app.vuid);
     if (!mounted) return;
     setState(() {
       _permissions = permissions;
       _special = special;
       _google = google;
       _routes = routes;
+      _assetOutcome = assets['outcome'];
     });
   }
 
@@ -149,6 +158,25 @@ class _AppDetailsScreenState extends State<AppDetailsScreen> {
                     tone: NoticeTone.warning,
                     title: s.t('details.launchUnavailable'),
                     message: s.t('engine.degraded.body'),
+                  ),
+                ],
+                // Stated before the launch, not after it. A game whose expansion files
+                // are not there starts and shows an empty menu, and nothing about that
+                // points at a Settings switch two screens away — so the switch is here,
+                // on the screen with the Launch button, for as long as it is needed.
+                if (_assetOutcome == 'SOURCE_UNREADABLE') ...[
+                  const SizedBox(height: UniqueSpace.md),
+                  NoticeBanner(
+                    tone: NoticeTone.warning,
+                    title: s.t('details.assetsBlocked'),
+                    message: s.t('details.assetsBlockedBody'),
+                    action: TextButton(
+                      onPressed: () async {
+                        await state.openSpecialAccess('allFiles');
+                        await _load();
+                      },
+                      child: Text(s.t('launch.grantAllFiles')),
+                    ),
                   ),
                 ],
 

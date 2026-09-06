@@ -51,6 +51,34 @@ release, and an app signed with a real key later will not install over them.
 
 ## What changed since the last phone run
 
+The last log was answered with two words — *"nothing changed"* — and a screenshot of a
+notification asking to install Google Play services. That was fair. The build was
+installed and its new code was running; the code was wrong.
+
+- **Google Play services is visible to guests again.** The previous build decided
+  visibility per app, from the `com.google.android.gms.version` number an app declares.
+  That number is the *minimum* GmsCore version the app accepts, not the version of
+  anything it ships — Google froze it years ago, and the log had it identical for 1Tap
+  Cleaner, ChatGPT and a Unity game. So the rule hid Play services from everyone, on a
+  phone carrying GmsCore 26.32.34, and every app that looked said it was missing. It is
+  visible now. It is hidden from a single instance only after *that instance* has died of
+  the one refusal an old client cannot survive, which the crash handler records before the
+  process goes; the next launch of that one app takes the path its SDK has for a phone
+  with no Google, and nothing else is affected.
+- **The all-files request is on the app's own screen now, not in a snackbar.** Expansion
+  files (`Android/obb`) have needed all-files access since Android 11, and a game without
+  them looks like a broken download. The previous build said so in a message that
+  disappears; this one puts a banner on the app's details screen that stays until the
+  access is granted, with an **Allow** button that opens the right settings page. Until it
+  is granted the games will keep starting without their assets — there is no way around
+  the grant, only around missing it.
+- **The device-log analyzer has a check for exactly this mistake.** It pairs "the phone
+  has Play services" with "a guest was told it does not" and fails the run. Sixteen checks
+  passed on the log that produced that notification; this is the seventeenth, and it is
+  asserted against that same log so the rule cannot come back quietly.
+
+## What changed three runs ago
+
 Six apps launched in that run and three of them died seconds later, all of the same thing.
 This build answers everything that log reported.
 
@@ -58,11 +86,13 @@ This build answers everything that log reported.
   package name to `com.google.android.gms`, which resolves the *calling* uid — UNIQUE's —
   and answers `SecurityException: Unknown calling package name`. It arrives on a `Handler`,
   so it is fatal and no app can catch it: three of the six guests in that log died this way
-  within seconds of reaching their own screen. The Google stack is now hidden from a guest
-  entirely — `getPackageInfo`, the uid lookup, provider resolution, the installed list and
-  both intent resolvers — so an SDK that asks finds nothing and takes the path it already
-  has for a phone without Play services. `com.android.vending` stays visible, because Play's
-  licence check is an ordinary bind that works and a protected app exits without it.
+  within seconds of reaching their own screen. That build hid the Google stack from every
+  guest entirely — `getPackageInfo`, the uid lookup, provider resolution, the installed
+  list and both intent resolvers — so an SDK that asked found nothing and took the path it
+  has for a phone without Play services. **Two runs later that turned out to be the worse
+  fault of the two**, and the section above is what replaced it. `com.android.vending` was
+  never hidden, because Play's licence check is an ordinary bind that works and a protected
+  app exits without it.
 - **There was no keyboard.** `EditorInfo.packageName` carries the app's own name into
   `startInputOrWindowGainedFocus`, and the input-method service checks it against the
   calling uid: a mismatch is `INVALID_PACKAGE_NAME` and *no keyboard is ever bound*. The

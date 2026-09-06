@@ -21,6 +21,7 @@ import com.unique.core.common.nativelib.GuestNativeExclusions
 import com.unique.core.common.path.VirtualPathModel
 import com.unique.core.common.profile.DeviceProfileCodec
 import com.unique.core.vprofile.DeviceProfileProvider
+import com.unique.core.diagnostics.CrashGuard
 import com.unique.core.diagnostics.Diagnostics
 import com.unique.core.hook.HiddenApi
 import com.unique.core.hook.Reflect
@@ -440,22 +441,24 @@ object AppBootstrap {
             ?: guestResources
         appInfo.metaData = GuestMetaData.bundle(manifest.applicationMetaDataEntries, guestResources)
 
-        // Whether this guest is told the device has Google Play services, decided from
-        // the version of the client library it links — which is the number that just
-        // became readable, because resolving `@integer/google_play_services_version`
-        // needs the guest's own resources.
+        // Whether this guest is told the device has Google Play services.
         //
-        // Here rather than at hook install for exactly that reason, and before
-        // `Application.onCreate` and the providers because that is where a Play services
-        // SDK initialises. See GoogleStackVisibility for the two device logs behind the
-        // rule and what the previous unconditional hiding cost.
+        // Visible unless *this instance* has already died of the one refusal that kills
+        // an old Play services client — which the crash handler below records, because a
+        // crash is the last moment anything in the process can write a file. Before
+        // `Application.onCreate` and the providers, because that is where a Play services
+        // SDK initialises. See GoogleStackVisibility, including the rule this replaced
+        // and why the version number it read cannot say what it looked like it said.
+        val visibilityFile = File(
+            VirtualPathModel(
+                (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
+            ).googleVisibilityFile(params.vuid, params.packageName),
+        )
         runCatching {
             VirtualPackageManagerHook.bindGoogleVisibility(
-                GoogleStackVisibility.decide(
-                    declaredVersion = declaredGmsVersion(appInfo),
-                    override = googleVisibilityOverride(hostContext, effective),
-                ),
+                GoogleStackVisibility.decide(readVisibilityOverride(visibilityFile)),
             )
+            installGoogleCrashObserver(visibilityFile, params)
         }.onFailure {
             Diagnostics.warn(
                 DiagChannel.LAUNCH, "GOOGLE_VISIBILITY_UNDECIDED",
@@ -864,46 +867,44 @@ object AppBootstrap {
         }
     }
 
-    /**
-     * The Play services client version the guest's own manifest declares, or null.
-     *
-     * Read from the resolved `metaData` rather than from the manifest's raw entry,
-     * because `android:value="@integer/google_play_services_version"` compiles to a
-     * reference and only the guest's `Resources` turn it into the number.
-     */
-    private fun declaredGmsVersion(appInfo: ApplicationInfo): Int? {
-        val meta = appInfo.metaData ?: return null
-        if (!meta.containsKey(GMS_VERSION_META_DATA)) return null
-        return runCatching { meta.getInt(GMS_VERSION_META_DATA) }.getOrNull()
-    }
+    /** The one word this instance's visibility file holds, or null when it holds none. */
+    private fun readVisibilityOverride(file: File): GoogleStackVisibility.Override? =
+        runCatching {
+            GoogleStackVisibility.parseOverride(if (file.isFile) file.readText() else null)
+        }.getOrNull()
 
     /**
-     * A per-instance answer that overrides the rule, or null when there is none.
+     * Records, at the moment of the crash, that this instance cannot see Play services.
      *
-     * One word — `show` or `hide` — in a file under `runtime/google/`. It exists because
-     * the rule is a generalisation from two device logs: an app whose behaviour
-     * contradicts it should cost a line in a file rather than a build, and a support
-     * session should be able to settle "is this the Google hiding?" in one launch.
+     * The refusal is fatal precisely because it arrives on the app's own looper, so there
+     * is no catching it and no asking afterwards — the process is gone. What *can* be
+     * done is leave a mark the next launch reads, which turns "this app is broken forever
+     * with Play services visible" into "this app crashed once and then behaved".
+     *
+     * A crash that is anything else is left alone. Writing the mark for every crash would
+     * quietly disable Play services for an app that died of its own bug, and nothing
+     * would ever say why.
      */
-    private fun googleVisibilityOverride(
-        hostContext: Context,
-        params: VirtualLaunchParams,
-    ): Boolean? {
-        val model = VirtualPathModel(
-            (hostContext.applicationContext ?: hostContext).filesDir.absolutePath,
-        )
-        val file = File(model.googleVisibilityFile(params.vuid, params.packageName))
-        val word = runCatching {
-            if (file.isFile) file.readText().trim().lowercase() else ""
-        }.getOrDefault("")
-        return when (word) {
-            "hide", "hidden" -> true
-            "show", "visible" -> false
-            else -> null
+    private fun installGoogleCrashObserver(file: File, params: VirtualLaunchParams) {
+        CrashGuard.observer = observer@{ error ->
+            if (!GoogleStackVisibility.isRefusedCallingPackage(error)) return@observer
+            val written = runCatching {
+                file.parentFile?.mkdirs()
+                file.writeText(GoogleStackVisibility.AUTO_HIDE_MARKER)
+                true
+            }.getOrDefault(false)
+            Diagnostics.error(
+                DiagChannel.LAUNCH, "GOOGLE_STACK_AUTO_HIDDEN",
+                mapOf(
+                    "package" to params.packageName,
+                    "vuid" to params.vuid.toString(),
+                    "recorded" to written.toString(),
+                    "detail" to "Play services refused this guest's identity on its own " +
+                        "looper; hidden from this instance from the next launch on",
+                ),
+            )
         }
     }
-
-    private const val GMS_VERSION_META_DATA = "com.google.android.gms.version"
 
     /**
      * The libraries the redirector must leave alone for this guest.

@@ -135,6 +135,7 @@ object UniqueBridge {
             "importApkFromPicker" -> importApkFromPicker(context)
             "cloneInstance" -> cloneInstance(a["package"] as String)
             "importGuestAssets" -> importGuestAssets(a)
+            "guestAssetStatus" -> UniqueEngine.guestAssetStatus((a["vuid"] as Number).toInt())
             "launchInstance" -> launchInstance(context, (a["vuid"] as Number).toInt())
             "removeInstance" -> removeInstance((a["vuid"] as Number).toInt())
             "clearCache" -> clearStorage((a["vuid"] as Number).toInt(), dataToo = false)

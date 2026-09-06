@@ -229,6 +229,11 @@ class Strings {
         'Started, but this app\u2019s downloaded game files could not be copied in \u2014 '
         'Android keeps Android/obb closed unless UNIQUE has access to all files.',
     'launch.grantAllFiles': 'Allow',
+    'details.assetsBlocked': 'Game files are out of reach',
+    'details.assetsBlockedBody':
+        'This app has downloaded game files on the device, and Android keeps '
+        'Android/obb closed until UNIQUE has access to all files. Without it the app '
+        'starts with none of them.',
     'details.storage': 'Storage',
     'details.data': 'Data',
     'details.cache': 'Cache',
@@ -449,6 +454,11 @@ class Strings {
         'Запущено, но скачанные файлы игры скопировать не удалось \u2014 Android '
         'закрывает Android/obb, пока у UNIQUE нет доступа ко всем файлам.',
     'launch.grantAllFiles': 'Разрешить',
+    'details.assetsBlocked': 'Файлы игры недоступны',
+    'details.assetsBlockedBody':
+        'У этого приложения на устройстве есть скачанные файлы игры, а Android '
+        'закрывает Android/obb, пока у UNIQUE нет доступа ко всем файлам. Без него '
+        'приложение запустится вообще без них.',
     'details.storage': 'Хранилище',
     'details.data': 'Данные',
     'details.cache': 'Кэш',

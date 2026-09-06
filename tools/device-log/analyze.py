@@ -890,6 +890,75 @@ def check_storage(run: Run) -> Check:
     return check
 
 
+def check_google_stack(run: Run) -> Check:
+    """Was a guest told the device has no Play services when it has?
+
+    This check exists because a build shipped that told every app exactly that, and
+    nothing in the previous fifteen checks noticed:
+
+        GOOGLE_ENVIRONMENT gmsPresent=true gmsVersionCode=263234035
+        GOOGLE_STACK_HIDDEN hidden=true reason=SDK_TOO_OLD gmsVersion=12451000   (x3)
+        W GooglePlayServicesUtil: com.openai.chatgpt requires Google Play services,
+            but they are missing.
+
+    The phone had GmsCore 26.32.34 installed. `gmsVersion=12451000` is the guest's
+    `com.google.android.gms.version` meta-data — the *minimum* GmsCore version the client
+    accepts, frozen by Google for years — and three unrelated apps declared the same
+    number, which is what gives it away as a constant rather than a version. Hiding is
+    legitimate for a guest that has proved it cannot use the real stack; hiding it from a
+    guest that has proved nothing is a lie the user reads as "install Play services".
+
+    So the pairing is: the device has Play services, and a guest was told it does not.
+    Which is asserted against this run, so a rule of that shape cannot come back quietly.
+    """
+    check = Check("google", "Was a guest told Play services is missing when the phone has it?")
+
+    present = None
+    for event in run.by_code("GOOGLE_ENVIRONMENT"):
+        if event["gmsPresent"] is not None:
+            present = event["gmsPresent"] == "true"
+            check.note(
+                f"the phone has Play services {event['gmsVersionName'] or event['gmsVersionCode'] or ''}".strip()
+                if present else "the phone has no Play services"
+            )
+            break
+
+    hidden: Dict[str, "Event"] = {}
+    for event in run.by_code("GOOGLE_STACK_HIDDEN"):
+        if event["hidden"] == "false":
+            continue
+        hidden[event["reason"] or "?"] = event
+
+    for reason, event in sorted(hidden.items()):
+        if reason in ("AUTO_HIDDEN_AFTER_CRASH", "OVERRIDDEN"):
+            # Earned: this instance died of the refusal, or a person asked for it.
+            check.note(f"hidden from an instance that earned it ({reason})")
+            continue
+        if present:
+            check.fail(
+                f"Play services is installed on this phone and a guest was told it is "
+                f"not, on the strength of {reason} — an app that believes that shows "
+                f"\"install Google Play services\" and stops",
+                event.lineno,
+                event["detail"] or "",
+            )
+
+    missing = sorted({
+        line.message.split(" requires", 1)[0].strip()
+        for line in run.lines
+        if line.tag == "GooglePlayServicesUtil" and "but they are missing" in line.message
+    })
+    for package in missing:
+        if present:
+            check.fail(
+                f"{package} looked for Play services inside its instance and did not "
+                f"find it, on a phone that has it",
+                0,
+            )
+        else:
+            check.note(f"{package} wants Play services, which this phone does not have")
+    return check
+
 _HOOKED_LIBRARY = re.compile(r"hooked \d+ new slot\(s\) after loading (\S+)")
 
 
@@ -1008,6 +1077,7 @@ CHECKS = (
     check_platform_refusals,
     check_permissions,
     check_storage,
+    check_google_stack,
     check_native_hooks,
     check_hooks,
     check_providers,

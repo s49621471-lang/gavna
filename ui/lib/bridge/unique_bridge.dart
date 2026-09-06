@@ -61,6 +61,16 @@ class UniqueBridgeClient {
   Future<EngineOutcome> launchInstance(int vuid) async =>
       _outcome('launchInstance', {'vuid': vuid});
 
+  /// Whether an instance's expansion files are in place. Empty when the engine cannot say.
+  Future<Map<String, String>> guestAssetStatus(int vuid) async {
+    final result = await _method
+        .invokeMapMethod<Object?, Object?>('guestAssetStatus', {'vuid': vuid});
+    return {
+      for (final entry in (result ?? const {}).entries)
+        '${entry.key}': '${entry.value}',
+    };
+  }
+
   Future<EngineOutcome> removeInstance(int vuid) async =>
       _outcome('removeInstance', {'vuid': vuid});
 

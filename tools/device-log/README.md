@@ -52,6 +52,7 @@ blame.
 | `platform` | Did a call go out under the guest's name and get refused, and by which service? |
 | `permissions` | Was a permission denied that no user could ever have granted — including one the *host* is blocked from holding? |
 | `storage` | Could a guest read its own external storage, and did its expansion files reach the instance? |
+| `google` | Was a guest told the phone has no Play services when it has? |
 | `native` | Did a native crash follow a library the path redirector patched? |
 | `hooks` | Did every shim bind to a real method, or did one bind to nothing? |
 | `providers` | Did the guest's ContentProviders publish and resolve? |
@@ -92,6 +93,31 @@ patched slot by jumping into its own generated code with a corrupt dispatch valu
 which lands as an unaligned PC in an anonymous page, in a tombstone that names the
 game's engine and never names UNIQUE. The check names the libraries to exclude, last
 one first.
+
+### The one the eighth run added: `google`
+
+This one exists because a build shipped a wrong answer and the sixteen checks above all
+said the run was fine. The pass before it had decided Play services visibility per app,
+from the version meta-data every Play services client declares:
+
+```
+GOOGLE_ENVIRONMENT gmsPresent=true gmsVersionCode=263234035 gmsVersionName=26.32.34
+GOOGLE_STACK_HIDDEN hidden=true reason=SDK_TOO_OLD gmsVersion=12451000   (x3)
+W GooglePlayServicesUtil: com.openai.chatgpt requires Google Play services, but they
+    are missing.
+```
+
+`12451000` — the same number for 1Tap Cleaner, ChatGPT and a Unity game. It is
+`com.google.android.gms.version`, the *minimum* GmsCore version the client accepts, which
+Google froze years ago; it cannot tell two client libraries apart, so a rule built on it
+told every guest that a phone carrying GmsCore 26.32.34 has no Play services. What the
+user saw was a notification asking them to install something they already had.
+
+So the check pairs two facts that are individually unremarkable: **the device has Play
+services**, and **a guest was told it does not**. Hiding it from an instance that died of
+`Unknown calling package name` is not a failure — that instance earned it. Hiding it from
+one that has proved nothing is, and so is the app's own
+`requires Google Play services, but they are missing` on a phone that has them.
 
 ### The one worth explaining: `platform`
 
@@ -146,21 +172,24 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-54 tests, under a second, no dependencies. Three kinds:
+62 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that
   happened to a real phone, so a check that stops reporting one has regressed. It is the
   full run filtered to the lines that carry evidence (941 of 26,950); the verdicts are
   identical to those from the unfiltered log.
-- **`fixtures/redmi-android15-run4.log` … `-run7.log`** — the runs after it,
+- **`fixtures/redmi-android15-run4.log` … `-run8.log`** — the runs after it,
   each filtered the same way. Every fault a run found has an assertion here, so a check
   that stops reporting one is a regression in the tool rather than progress in the
   engine. The sixth is the run in which six of seven apps launched and the games could
   not find their own assets; it is what `storage` and `native` were written against. The
   seventh is the one that disproved the sixth's native finding — the same crash with the
   library UNIQUE had hooked excluded — and the assertion that used to say "traced to the
-  library UNIQUE hooked" now says what both logs actually support.
+  library UNIQUE hooked" now says what both logs actually support. The eighth disproved a
+  rule shipped one pass earlier: three unrelated apps, one of them ChatGPT, all declaring
+  `gmsVersion=12451000` on a phone running GmsCore 26.32.34, which is what `google` was
+  written against.
 - **A synthetic healthy run** — every check must pass on it. Without that the suite would
   prove only that the tool says FAIL, which a tool that always says FAIL would also
   pass.

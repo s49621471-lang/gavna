@@ -128,6 +128,42 @@ class GuestAssetImport(context: Context) {
     }
 
     /**
+     * The same question as [importFor], asked without copying anything.
+     *
+     * For a screen that has to say *before* the user launches a game that its assets are
+     * not going to be there. Copying to find out would take a minute and gigabytes; the
+     * only thing this needs is whether the source can be read at all, which is two
+     * `File` calls.
+     */
+    fun status(vuid: Int, packageName: String): Result {
+        val source = File(externalRoot(), "Android/obb/$packageName")
+        val target = File(model.obbDir(vuid, packageName))
+        if (source.exists() && source.canRead()) {
+            val present = target.walkTopDown().any { it.isFile }
+            return Result(
+                if (present) Outcome.ALREADY_PRESENT else Outcome.NOTHING_TO_IMPORT,
+                source = source.path,
+            )
+        }
+        val parent = source.parentFile
+        if (parent != null && parent.exists() && !parent.canRead()) {
+            return Result(
+                Outcome.SOURCE_UNREADABLE, source = source.path,
+                detail = "${parent.path} is not readable by UNIQUE; grant all-files " +
+                    "access, or add the files by hand",
+            )
+        }
+        // Nothing on the device to copy. Whether the instance already has files of its
+        // own is what separates "this game has no expansion files" from "this game has
+        // them and they came from somewhere else", and both are fine.
+        val present = target.walkTopDown().any { it.isFile }
+        return Result(
+            if (present) Outcome.ALREADY_PRESENT else Outcome.NOTHING_TO_IMPORT,
+            source = source.path,
+        )
+    }
+
+    /**
      * Copies files the user chose — an `.obb` picked beside the APK, most often — into
      * the instance's expansion directory.
      *

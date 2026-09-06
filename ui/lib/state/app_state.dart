@@ -172,6 +172,9 @@ class AppState extends ChangeNotifier {
 
   Future<EngineOutcome> openSpecialAccess(String id) => _bridge.openSpecialAccess(id);
 
+  Future<Map<String, String>> guestAssetStatus(int vuid) =>
+      _bridge.guestAssetStatus(vuid);
+
   Future<List<InstalledApp>> installedApps({bool includeSystem = false}) =>
       _bridge.listInstalledApps(includeSystem: includeSystem);
 
