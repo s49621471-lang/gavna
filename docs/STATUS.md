@@ -671,14 +671,18 @@ report a person reads:
 
 ```
 == real-app smoke ==
+  PASS  com.beemdevelopment.aegis                  ACTIVITY_HARDWARE_ACCELERATED … applied=true
+  PASS  com.kunzisoft.keepass.libre                ACTIVITY_HARDWARE_ACCELERATED … applied=true
+  PASS  com.shatteredpixel.shatteredpixeldungeon   ACTIVITY_HARDWARE_ACCELERATED … applied=true
   PASS  com.termux                                 ACTIVITY_HARDWARE_ACCELERATED … applied=true
-  PASS  org.fossify.gallery
-  PASS  org.schabi.newpipe
-  PASS  com.shatteredpixel.shatteredpixeldungeon
-  PASS  de.danoeh.antennapod
-  PASS  com.kunzisoft.keepass.libre
-  PASS  com.beemdevelopment.aegis
+  PASS  de.danoeh.antennapod                       ACTIVITY_HARDWARE_ACCELERATED … applied=true
+  PASS  org.fossify.gallery                        ACTIVITY_HARDWARE_ACCELERATED … applied=true
+  PASS  org.schabi.newpipe                         ACTIVITY_HARDWARE_ACCELERATED … applied=true
 ```
+
+Re-run against everything in this pass — the hidden Google stack, the `input_method` hook
+and the provider reordering included — and all seven still reach their own main activity on
+the hardware renderer.
 
 What it does *not* say is that the apps are usable: nothing here looks at the screen, and
 "reached its own main activity and stayed up for five minutes" is the whole claim.

@@ -142,9 +142,10 @@ and all seven now reach their own main screen:
   refused rather than fixed: it now gets the "not accepted" answer the API already defines,
   and shortcuts from a virtual app stay a thing UNIQUE does not do.
 
-The on-device suite is **47 of 47** on an Android 14 x86_64 emulator. None of it has been
-back on a phone; `docs/COMPATIBILITY.md` says so per row. And nothing here looks at the
-screen: "the app reached its own main activity and stayed up" is the whole claim.
+The on-device suite is **46 of 46** on an Android 14 x86_64 emulator, and all seven of
+those applications still pass against everything in this build. None of it has been back on
+a phone; `docs/COMPATIBILITY.md` says so per row. And nothing here looks at the screen:
+"the app reached its own main activity and stayed up" is the whole claim.
 
 ## What changed since the first phone run
 
