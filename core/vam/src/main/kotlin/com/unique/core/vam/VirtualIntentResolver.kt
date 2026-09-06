@@ -68,7 +68,9 @@ object VirtualIntentResolver {
             if (entry.kind != ComponentKind.ACTIVITY && entry.kind != ComponentKind.ACTIVITY_ALIAS) {
                 continue
             }
-            if (!entry.enabled) continue
+            // The app's own setting first: an `<activity-alias>` disabled at runtime is
+            // how a launcher icon is changed, and it must stop matching (GuestComponentState).
+            if (!GuestComponentState.isEnabled(entry)) continue
             for (filterEntry in entry.intentFilters) {
                 val filter = build(filterEntry) ?: continue
                 val result = filter.match(action, type, data?.scheme, data, categories, TAG)

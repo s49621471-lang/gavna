@@ -130,7 +130,7 @@ internal object GuestIntentResolution {
         }
         val scoped = withoutPackage(intent)
         return manifest.components.filter { entry ->
-            entry.kind == kind && entry.enabled &&
+            entry.kind == kind && GuestComponentState.isEnabled(entry) &&
                 entry.intentFilters.any { VirtualIntentResolver.matches(it, scoped) }
         }
     }

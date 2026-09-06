@@ -49,6 +49,17 @@ public class ProbeActivity extends Activity {
         view.setPadding(32, 96, 32, 32);
         setContentView(view);
 
+        // Before `collect`, deliberately: the point is to read back what the app itself
+        // just set. An app turning one of its own components on or off is ordinary — an
+        // <activity-alias> swapped for its sibling is how a launcher icon changes, and a
+        // keyboard or a share target is enabled once the user opts in — and the platform
+        // refuses it for a package it never installed, so UNIQUE has to keep the answer.
+        Intent launchIntent = getIntent();
+        if (launchIntent != null && launchIntent.getStringExtra("probe.componentState") != null) {
+            setOwnComponentState(
+                    "enable".equals(launchIntent.getStringExtra("probe.componentState")));
+        }
+
         Map<String, String> out = new LinkedHashMap<String, String>();
         try {
             collect(out);
@@ -236,6 +247,17 @@ public class ProbeActivity extends Activity {
             out.put("launchIntentForSelf", "error: " + t);
         }
         try {
+            ComponentName deepLink = new ComponentName(this, ProbeDeepLinkActivity.class);
+            out.put("deepLinkEnabledSetting",
+                    String.valueOf(pm.getComponentEnabledSetting(deepLink)));
+            // And what the app's own state actually *does*: a disabled component must stop
+            // matching, or the setting is a number nobody acts on.
+            Intent open = new Intent("com.unique.probe.CUSTOM_OPEN").setPackage(getPackageName());
+            out.put("deepLinkQueryCount", String.valueOf(pm.queryIntentActivities(open, 0).size()));
+        } catch (Throwable t) {
+            out.put("deepLinkEnabledSetting", "error: " + t);
+        }
+        try {
             // Analytics and update SDKs ask this on nearly every launch. For a package
             // the platform never installed it threw `IllegalArgumentException: Unknown
             // package`, which is unchecked and takes the app with it.
@@ -368,6 +390,20 @@ public class ProbeActivity extends Activity {
                             .putExtra("probe.newIntentExtra", "carried-to-new-intent"));
                 }
             });
+        }
+    }
+
+    /** Turns ProbeDeepLinkActivity on or off, the way an app switches its own icon. */
+    private void setOwnComponentState(boolean enable) {
+        try {
+            getPackageManager().setComponentEnabledSetting(
+                    new ComponentName(this, ProbeDeepLinkActivity.class),
+                    enable ? android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                           : android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP);
+            Log.i(TAG, "component state set: enable=" + enable);
+        } catch (Throwable t) {
+            Log.e(TAG, "could not set its own component state", t);
         }
     }
 

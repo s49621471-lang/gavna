@@ -2824,4 +2824,43 @@ class VirtualLaunchTest {
         assertThat(service["startAction"]).isEqualTo("com.unique.probe.START_BY_ACTION")
         assertThat(service["filesDir"]).isEqualTo(model.filesDir(instance.vuid, probePackage))
     }
+
+    /**
+     * The guest turns one of its own components off, and on again.
+     *
+     * Ordinary application code, and it was fatal: `PackageManagerService` checks the
+     * component against the calling uid, and the guest's package is not one it has
+     * installed at all —
+     *
+     * ```
+     * SecurityException: Attempt to change component state; pid=…, uid=10108,
+     *   component=ComponentInfo{com.kunzisoft.keepass.libre/…}
+     *     at com.kunzisoft.keepass.activities.FileDatabaseSelectActivity.onCreate
+     * ```
+     *
+     * An `<activity-alias>` enabled and its sibling disabled is *the* way an app changes
+     * its launcher icon; a keyboard or a share target is enabled once the user opts in.
+     *
+     * The setting is asserted **and so is what it does**: a disabled component must stop
+     * matching intents, or the number is one nobody acts on. `ProbeDeepLinkActivity` is
+     * the one with filters, so it is the one that can be observed both ways.
+     */
+    @Test
+    fun t47_theGuestEnablesAndDisablesItsOwnComponents() = runBlocking {
+        val instance = requireInstance()
+
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.componentState", "disable") }
+        val off = awaitResult(instance)
+        // COMPONENT_ENABLED_STATE_DISABLED
+        assertThat(off["deepLinkEnabledSetting"]).isEqualTo("2")
+        assertThat(off["deepLinkQueryCount"]).isEqualTo("0")
+
+        clearResult(instance)
+        launchProbeWith(instance) { it.putExtra("probe.componentState", "enable") }
+        val on = awaitResult(instance)
+        // COMPONENT_ENABLED_STATE_ENABLED
+        assertThat(on["deepLinkEnabledSetting"]).isEqualTo("1")
+        assertThat(on["deepLinkQueryCount"]!!.toInt()).isAtLeast(1)
+    }
 }

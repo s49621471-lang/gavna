@@ -1008,11 +1008,19 @@ cameraViaPm=DENIED    …                       cameraViaPmAfter=DENIED
 — and no `PERMISSION_CHECK` event for either "after", because the shim was never reached.
 That absence is what identified it.
 
-UNIQUE calls the platform's own per-process cache disables (`disablePermissionCache`,
-`disablePackageNamePermissionCache`) at bind, and reports which ones existed:
+UNIQUE calls the platform's own per-process cache disables at bind. The *classes* that
+hold them are named — `PermissionManager`, `ActivityManager`, `PackageManager`,
+`ApplicationPackageManager` — and every static no-argument `disable…Cache()` on each is
+discovered and called, because naming the methods is how the list went stale:
+`disablePackageManagerCache` and `disableAppOpCache` were on it and on no release this has
+run on, while `ApplicationPackageManager`'s caches, which nothing knew about, were
+answering `getComponentEnabledSetting` and `getPackageInfo` from the process. Calling one
+UNIQUE has not heard of is safe by construction — disabling a cache costs a Binder call
+and cannot change an answer. What was found is reported:
 
 ```
-PERMISSION_CACHE_DISABLED disabled=disablePermissionCache,disablePackageNamePermissionCache
+PERMISSION_CACHE_DISABLED disabled=disablePackageNamePermissionCache,disablePermissionCache,
+  disableApplicationInfoCache,disablePackageInfoCache,disableGetPackagesForUidCache
 ```
 
 If none can be disabled, that is an error-level event rather than a silent regression to

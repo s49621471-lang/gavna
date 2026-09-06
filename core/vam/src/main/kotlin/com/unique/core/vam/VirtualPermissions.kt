@@ -199,17 +199,27 @@ object VirtualPermissions {
      * call per check, which is what an unhooked app pays anyway on a cache miss.
      */
     private fun disableClientSideCaches() {
-        val disabled = ArrayList<String>(2)
+        val disabled = ArrayList<String>(4)
         val failed = ArrayList<String>(2)
-        for (name in CACHE_DISABLERS) {
-            val (owner, method) = name.substringBeforeLast('.') to name.substringAfterLast('.')
-            val result = runCatching {
-                val clazz = Reflect.findClass(owner) ?: error("no $owner")
-                val m = Reflect.findMethodByName(clazz, method) ?: error("no $method")
-                m.isAccessible = true
-                m.invoke(null)
+        for (owner in CACHE_OWNERS) {
+            val clazz = Reflect.findClass(owner)
+            if (clazz == null) {
+                failed += "$owner: not on this release"
+                continue
             }
-            if (result.isSuccess) disabled += method else failed += "$method: ${result.exceptionOrNull()}"
+            val disablers = runCatching {
+                clazz.declaredMethods.filter {
+                    java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        it.parameterCount == 0 &&
+                        it.name.startsWith("disable") && it.name.endsWith("Cache")
+                }
+            }.getOrDefault(emptyList())
+            if (disablers.isEmpty()) failed += "$owner: no disable*Cache()"
+            for (m in disablers) {
+                val result = runCatching { m.isAccessible = true; m.invoke(null) }
+                if (result.isSuccess) disabled += m.name
+                else failed += "${m.name}: ${result.exceptionOrNull()}"
+            }
         }
         Diagnostics.info(
             DiagChannel.PROCESS, "PERMISSION_CACHE_DISABLED",
@@ -235,11 +245,32 @@ object VirtualPermissions {
      * shape; a name that disappears is reported, and the fallback is the platform's
      * unvirtualized behaviour rather than a wrong answer.
      */
-    private val CACHE_DISABLERS = listOf(
-        "android.permission.PermissionManager.disablePermissionCache",
-        "android.permission.PermissionManager.disablePackageNamePermissionCache",
-        "android.app.ActivityManager.disableAppOpCache",
-        "android.content.pm.PackageManager.disablePackageManagerCache",
+    /**
+     * The classes that hold a per-process cache in front of a call UNIQUE answers.
+     *
+     * The *classes* are named and the *methods* are discovered: every static no-argument
+     * `disable…Cache()` on each is called. Naming the methods was how this went stale —
+     * `disablePackageManagerCache` and `disableAppOpCache` were on the list and on no
+     * release this has run on:
+     *
+     * ```
+     * PERMISSION_CACHE_DISABLED disabled=disablePermissionCache,disablePackageNamePermissionCache
+     *   failed=disableAppOpCache: no disableAppOpCache;disablePackageManagerCache: …
+     * ```
+     *
+     * — while `ApplicationPackageManager`'s component-enabled cache, which nothing here
+     * knew about, answered `getComponentEnabledSetting` from the process and never let
+     * UNIQUE's shim see it.
+     *
+     * Calling one UNIQUE has not heard of is safe by construction: disabling a cache costs
+     * a Binder call and cannot change an answer. The names that were found are reported,
+     * so "the cache was disabled" stays a fact rather than an assumption.
+     */
+    private val CACHE_OWNERS = listOf(
+        "android.permission.PermissionManager",
+        "android.app.ActivityManager",
+        "android.content.pm.PackageManager",
+        "android.app.ApplicationPackageManager",
     )
 
     /**

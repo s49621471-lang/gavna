@@ -297,6 +297,53 @@ object VirtualIdentityHooks {
         // The answer the guest then gets is an empty array, which is the truth: its widget
         // provider is not a component the device has installed, so no home screen can be
         // showing one. Crashing in `onCreate` was not.
+        // `shortcut` refuses anything a guest tries to *publish*.
+        //
+        // The caller-package rewrite is not enough here: a `ShortcutInfo` carries its own
+        // package name, and `ShortcutService` checks each one against the caller —
+        //
+        //   SecurityException: Shortcut package name mismatch
+        //     at IShortcutService$Stub$Proxy.setDynamicShortcuts
+        //     at com.beemdevelopment.aegis …Application.onCreate   <- the graft died here
+        //
+        // Rewriting the package would then fail the next check, which is that the
+        // shortcut's activity is a *main* activity of that package: UNIQUE's stubs are
+        // not exported and declare no launcher filter, and pointing it at UNIQUE's own
+        // launcher activity would put a shortcut on the home screen that opens the wrong
+        // thing. Making them work means routing each shortcut's intents onto stubs the
+        // way `PendingIntent`s are, and surviving UNIQUE's own updates; until that exists,
+        // the refusal is the honest answer.
+        //
+        // `false` is a value the API already defines — `setDynamicShortcuts` returns it
+        // when the caller is rate-limited — so an app sees a documented outcome rather
+        // than an exception. Reading shortcuts is left alone: it answers with UNIQUE's
+        // own, which is an empty list, and that is true.
+        "shortcut" -> listOf(
+            shim("shortcutPublish") {
+                matchMethods { method ->
+                    method.name == "setDynamicShortcuts" ||
+                        method.name == "addDynamicShortcuts" ||
+                        method.name == "updateShortcuts" ||
+                        method.name == "pushDynamicShortcut" ||
+                        method.name == "requestPinShortcut" ||
+                        method.name == "createShortcutResultIntent"
+                }
+                replaceWith { call ->
+                    Diagnostics.warn(
+                        DiagChannel.HOOK, "SHORTCUT_PUBLISH_UNSUPPORTED",
+                        mapOf(
+                            "method" to call.method.name,
+                            "package" to virtualPackage,
+                            "detail" to "a ShortcutInfo carries its own package name and " +
+                                "the platform checks it against the caller; UNIQUE cannot " +
+                                "yet route a published shortcut back into the guest",
+                        ),
+                    )
+                    if (call.method.returnType == java.lang.Boolean.TYPE) false else null
+                }
+            },
+        )
+
         "appwidget" -> listOf(
             shim("appWidgetIdentity") {
                 matchMethods { method ->

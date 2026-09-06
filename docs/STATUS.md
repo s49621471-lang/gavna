@@ -70,11 +70,11 @@ Every device claim below names the environment. Nothing is marked working on rea
 
 ## On device (EMU34): the acceptance suite
 
-Android 14 x86_64, probe **not installed on the device**. The suite is **46 tests**, and
-the newest run — `RUN_ID=final`, the `debug` build — passes all of them.
+Android 14 x86_64, probe **not installed on the device**. The suite is **47 tests**, and
+the newest run — `RUN_ID=final4`, the `debug` build — passes all of them.
 
 The last run of the `verify` build a tester is actually handed, `20260905-125829-4200`,
-was **38 of 38** against the suite as it stood then; `t39`–`t46` were added after it and
+was **38 of 38** against the suite as it stood then; `t39`–`t47` were added after it and
 have only been run on `debug`. Full output of that run in
 `docs/evidence/phase3-4-instrumentation.txt`.
 
@@ -126,6 +126,7 @@ have only been run on `debug`. Full output of that run in
 | `t44` the guest's external storage is its own, and can be written to | **PASS** |
 | `t45` a launch redelivered to a running activity arrives as the guest's own intent | **PASS** |
 | `t46` the guest starts its own service by action, with no class named | **PASS** |
+| `t47` the guest turns one of its own components off, and it stops matching intents | **PASS** |
 
 ### What it costs, on this emulator
 
@@ -634,7 +635,7 @@ seconds. One run cost 45 process starts and four tests timed out waiting for an 
 was simply not being scheduled. `tools/verify-device.sh` now turns Bluetooth off **on an
 emulator only** — a physical device's is the owner's to decide.
 
-### Three real applications, and the four faults only they could find
+### Seven real applications, and the seven faults only they could find
 
 Everything above was found with `tools/testapp`, which is deliberately ordinary and
 deliberately *cooperative*: it writes down what it observed, so every assertion about it is
@@ -642,10 +643,13 @@ a fact the app itself reported. That is what makes those tests precise, and it i
 their limit — the probe was written after the engine, and it only does what the engine
 already supports.
 
-Three apps from F-Droid were then imported and launched with nothing written for them:
+Seven apps from F-Droid were then imported and launched with nothing written for them:
 **Termux** (0.119.0-beta.3, 115 MB, native, a foreground service), **Fossify Gallery**
-(1.13.1, twelve native libraries, a home-screen widget) and **NewPipe** (0.29.1). All three
-failed, each in a different way, and none of the four causes was reachable from the probe:
+(1.13.1, twelve native libraries, a home-screen widget), **NewPipe** (0.29.1),
+**Shattered Pixel Dungeon** (3.3.8, a real game), **AntennaPod** (3.12.0), **KeePassDX**
+(4.5.2, native crypto and its own keyboard) and **Aegis** (3.4.2). Four of the seven
+failed, each in a different way, and none of the seven causes was reachable from the
+probe:
 
 | Found | Fixed by |
 |---|---|
@@ -653,8 +657,11 @@ failed, each in a different way, and none of the four causes was reachable from 
 | **Fossify Gallery died in `MainActivity.onCreate`**: `SecurityException: Package org.fossify.gallery does not belong to 10108`, from `AppWidgetManager.getAppWidgetIds`. `appwidget` was not proxied — and proxying it alone changed nothing, because the package it checks is inside a **`ComponentName`**, which the generic caller rewrite does not touch | `appwidget` added to the proxied services, with a guard that rewrites `ComponentName` packages as well as strings. The guest then gets an empty array, which is the truth: its widget provider is not installed, so no home screen can be showing one |
 | **Termux died again, deeper**: `IllegalArgumentException: com.termux: Targeting S+ … requires that one of FLAG_IMMUTABLE or FLAG_MUTABLE be specified`. Same shape, different enforcement: this one is checked **inside the app's own process**, by the compat config `ActivityThread` installs at bind time — which is UNIQUE's, because the process was bound as UNIQUE | `GuestCompatChanges` disables, for that process, the changes the guest's own target SDK predates. The change *ids* are read from the platform classes that declare them rather than transcribed; what UNIQUE states is the SDK each is gated at, which `@EnabledAfter` does not keep at runtime |
 | **Termux died a third time**: `SecurityException: Starting FGS with type microphone`. `startForeground(id, notification)` — every app written before Android 10 — sends `FOREGROUND_SERVICE_TYPE_MANIFEST`, meaning "the type on this service's manifest entry". The entry `ActivityManagerService` reads is the **stub's**, which declares every type UNIQUE can host, so the two-argument call asked for all of them at once: `requested=0xffffffff … granted=0x400008ff` | The manifest type is resolved against the *guest's* own entry for the service that is starting. A guest that declares none — an app older than the attribute — gets `specialUse`, which is the type that exists for work the taxonomy does not name and the one the host manifest already carries a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` for |
+| **KeePassDX died in `FileDatabaseSelectActivity.onCreate`**: `SecurityException: Attempt to change component state`, from `setComponentEnabledSetting` on its own keyboard service. An app turning one of *its own* components on or off is ordinary — an `<activity-alias>` enabled and its sibling disabled is how a launcher icon is changed — and `PackageManagerService` checks the component against the calling uid, so there was nothing for it to store and no way for it to agree | `GuestComponentState`, a properties file beside the instance's permission record. `get*EnabledSetting` answers from it, `ComponentInfo.enabled` carries it, and both intent resolvers filter on it — so a disabled alias really does stop matching |
+| **Aegis's graft failed with `message=java.lang.reflect.InvocationTargetException`** and nothing else. The guest's `Application.onCreate` is called reflectively, so anything it throws arrives wrapped, and that one line ended the investigation instead of starting it | The chain is unwrapped to its root and the first frames carried, and the stack goes to `logcat` under the same tag a device capture is filtered on. The next run said `SecurityException: Shortcut package name mismatch` and named the call |
+| **Which was the real fault**: `ShortcutInfo` carries its own package name and `ShortcutService` checks each one against the caller, so the caller-package rewrite was not enough. Rewriting it would then fail the next check — the shortcut's activity must be a *main* activity of that package, and UNIQUE's stubs are neither exported nor launcher-filtered | Publishing is refused, with `false` — a value `setDynamicShortcuts` already returns when the caller is rate-limited, so the app sees a documented outcome rather than an exception. Reading is left alone and answers with UNIQUE's own, which is empty and true. Making them work means routing each shortcut's intents onto stubs the way `PendingIntent`s are; that is a feature, not a fix |
 
-After those four, **all three run**: each reaches its own `MainActivity`, on the hardware
+After those seven, **all seven run**: each reaches its own main activity, on the hardware
 renderer, and stays up. `tools/real-app-smoke.sh` is what does this, and it is deliberately
 *not* part of the acceptance suite — an APK downloaded at run time can change under the
 test, and a failure would then be a fact about F-Droid rather than about UNIQUE. It is a
@@ -662,14 +669,17 @@ report a person reads:
 
 ```
 == real-app smoke ==
-  PASS  com.termux  (com.termux_1022.apk)
-          ACTIVITY_HARDWARE_ACCELERATED activity=com.termux.app.TermuxActivity applied=true
-  PASS  org.fossify.gallery  (org.fossify.gallery_28.apk)
-  PASS  org.schabi.newpipe  (org.schabi.newpipe_1015.apk)
+  PASS  com.termux                                 ACTIVITY_HARDWARE_ACCELERATED … applied=true
+  PASS  org.fossify.gallery
+  PASS  org.schabi.newpipe
+  PASS  com.shatteredpixel.shatteredpixeldungeon
+  PASS  de.danoeh.antennapod
+  PASS  com.kunzisoft.keepass.libre
+  PASS  com.beemdevelopment.aegis
 ```
 
 What it does *not* say is that the apps are usable: nothing here looks at the screen, and
-"reached its `MainActivity` and stayed up for five minutes" is the whole claim.
+"reached its own main activity and stayed up for five minutes" is the whole claim.
 
 ## Previously blocking, now fixed
 
@@ -734,6 +744,10 @@ visible to unit tests:
 | A guest was held to **UNIQUE's** target SDK by two different mechanisms: `ActivityManagerService` compat checks against the calling uid, and the compat config `ActivityThread` installs in the process at bind time. An app built against Android 9 threw on `registerReceiver` and on `PendingIntent` | fixed (the export flag is supplied at its call site; `GuestCompatChanges` disables in-process changes the guest's target SDK predates, with the ids read from the platform) |
 | `startForeground(id, notification)` asked for **every** foreground-service type UNIQUE declares, because `FOREGROUND_SERVICE_TYPE_MANIFEST` resolves against the stub's manifest entry | fixed (resolved against the guest's own entry; a guest that declares none gets `specialUse`) |
 | `AppWidgetManager.getAppWidgetIds` was refused: `appwidget` was unproxied, and the package it checks is inside a `ComponentName` rather than a string | fixed (proxied, with a `ComponentName` rewrite in the guard) |
+| An app enabling or disabling one of its *own* components — how a launcher icon is changed, and how a keyboard is turned on — was refused with `Attempt to change component state`, because the component belongs to a package the platform never installed | fixed (`GuestComponentState`, per instance and on disk; both intent resolvers and `ComponentInfo.enabled` read it) |
+| A failed graft reported `message=java.lang.reflect.InvocationTargetException` and nothing else, which names UNIQUE's calling convention and nothing about the app | fixed (the chain is unwrapped to its root with the first frames, and the stack goes to `logcat` under the tag a device capture is filtered on) |
+| A guest publishing a shortcut killed its own `Application.onCreate`: a `ShortcutInfo` carries its own package name and the platform checks each against the caller | refused honestly, not fixed (`SHORTCUT_PUBLISH_UNSUPPORTED`, returning the `false` the API already defines for a rate-limited caller). Routing a published shortcut back into the guest is a feature and is listed as not implemented |
+| Three of the four client-side framework caches UNIQUE thought it was disabling did not exist under those names, and the one that mattered was not on the list at all — `ApplicationPackageManager` answers `getComponentEnabledSetting`, `getPackageInfo` and `getApplicationInfo` from the process, where no Binder shim can see them | fixed (the *classes* are named and every static no-argument `disable…Cache()` on each is discovered and called; three more were found this way, and the list can no longer go stale when a release renames one) |
 
 **Caveat on rendering.** The suite asserts the activity ran and produced its observations;
 it does not look at the screen. Confirming that pixels appear is a two-minute manual step
@@ -748,6 +762,7 @@ in `docs/PHYSICAL_DEVICE_TEST.md`.
 | Hidden-API native fallback | 3 | `HiddenApi.nativeFallbackAvailable` is a constant `false` |
 | Native property virtualization | 6/7 | `InstallStatus.NOT_IMPLEMENTED` |
 | Every Google bridge body | 6 | Interfaces, routing and host-environment detection exist and are tested; no bridge has an implementation. `docs/GOOGLE_DEVICE_TEST.md` is the procedure that would settle each flow |
+| Publishing a shortcut from a guest | 10 | A `ShortcutInfo` carries its own package name and the platform checks it against the caller; rewriting it fails the next check, which is that the shortcut's activity is a *main* activity of that package. Making them work means routing each shortcut's intents onto stubs, the way `PendingIntent`s are, and surviving UNIQUE's own updates. Refused with `false` — which `setDynamicShortcuts` already returns for a rate-limited caller — and reported as `SHORTCUT_PUBLISH_UNSUPPORTED` |
 | Device profile regenerate | 7 | UI row says it is not available yet |
 | WebView rendering on this environment | 6 | A WebView is created correctly in the guest with the instance's own data directory, but Chromium's renderer crashes on this emulator *outside* virtualization too, so rendering is `NOT_TESTED` rather than attributed to UNIQUE (`t30`) |
 | URI permission grants between virtual processes | 3 | `grantUriPermission` across `:vappN` is not implemented |
@@ -845,7 +860,7 @@ caught `restrictions`, `locale` and `connectivity` before one did.
    procedure, in the order that makes one failure explain the next.
 4. A real engine sample (Unity/Unreal). None is available in this environment, and no
    claim will be made without one.
-5. **Re-running the `verify` build.** Eight tests (`t39`–`t46`) have only been run on
+5. **Re-running the `verify` build.** Nine tests (`t39`–`t47`) have only been run on
    `debug`, and the `verify` build is what a tester installs — the difference is not
    cosmetic: it is unminified but non-debuggable, so ActivityManager holds it to the
    ordinary ten-second process-start budget.

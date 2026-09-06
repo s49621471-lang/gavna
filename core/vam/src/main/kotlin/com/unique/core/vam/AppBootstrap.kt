@@ -111,7 +111,48 @@ object AppBootstrap {
             }
             result
         } catch (t: Throwable) {
-            Result.Failed("BOOTSTRAP_FAILED", t.toString(), t)
+            // The stack as well as the line. `Diagnostics` writes one line per event,
+            // which is right for events and useless for this one: the tag is the same
+            // "Unique" the device capture is filtered on, so the frames travel with it.
+            android.util.Log.e("Unique", "BOOTSTRAP_FAILED ${params.packageName}", t)
+            Result.Failed("BOOTSTRAP_FAILED", describeFailure(t), t)
+        }
+    }
+
+    /**
+     * What actually went wrong, rather than what was holding it.
+     *
+     * The guest's `Application.onCreate` is called reflectively, so anything it throws
+     * arrives wrapped. `Throwable.toString()` on the wrapper says only:
+     *
+     * ```
+     * BOOTSTRAP_FAILED package=com.beemdevelopment.aegis code=BOOTSTRAP_FAILED
+     *   message=java.lang.reflect.InvocationTargetException
+     * ```
+     *
+     * — which names UNIQUE's calling convention and nothing about the app. A real device
+     * log is often all there is, and that line ends the investigation instead of starting
+     * it. The chain is unwrapped to its root, the wrappers are named in passing, and the
+     * first frames of the root are carried so the line says *where*.
+     */
+    internal fun describeFailure(t: Throwable): String {
+        val chain = ArrayList<Throwable>(4)
+        var current: Throwable? = t
+        while (current != null && chain.size < 8 && chain.none { it === current }) {
+            chain += current
+            current = current.cause
+        }
+        val root = chain.lastOrNull() ?: return t.toString()
+        val where = root.stackTrace.take(4)
+            .joinToString(" <- ") { "${it.className}.${it.methodName}:${it.lineNumber}" }
+        return buildString {
+            append(root.toString())
+            if (chain.size > 1) {
+                append(" (through ")
+                append(chain.dropLast(1).joinToString("/") { it.javaClass.simpleName })
+                append(')')
+            }
+            if (where.isNotEmpty()) append(" at ").append(where)
         }
     }
 
@@ -445,6 +486,18 @@ object AppBootstrap {
         runCatching { VirtualProviderRegistry.install(ready) }.onFailure {
             Diagnostics.warn(
                 DiagChannel.PROCESS, "PROVIDER_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+
+        // Which of the guest's own components it has turned off, from an earlier session.
+        // Bound before the hooks below because `getComponentEnabledSetting` is answered
+        // from it, and an app asks that in `Application.onCreate`.
+        runCatching {
+            GuestComponentState.bind(params.vuid, params.packageName, hostContext)
+        }.onFailure {
+            Diagnostics.warn(
+                DiagChannel.PROCESS, "COMPONENT_STATE_BIND_FAILED",
                 mapOf("package" to params.packageName, "error" to it.toString()),
             )
         }
@@ -1275,7 +1328,7 @@ object AppBootstrap {
             configChanges = entry.configChanges
             screenOrientation = entry.screenOrientation
             exported = entry.exported
-            enabled = entry.enabled
+            enabled = GuestComponentState.isEnabled(entry)
             permission = entry.permission
             labelRes = entry.labelResId
             if (entry.labelResId == 0 && entry.labelText != null) nonLocalizedLabel = entry.labelText
@@ -1413,7 +1466,7 @@ object AppBootstrap {
             processName = params.processName
             applicationInfo = appInfo
             exported = entry.exported
-            enabled = entry.enabled
+            enabled = GuestComponentState.isEnabled(entry)
             permission = entry.permission
             labelRes = entry.labelResId
             if (entry.labelResId == 0 && entry.labelText != null) nonLocalizedLabel = entry.labelText
@@ -1501,7 +1554,7 @@ object AppBootstrap {
         applicationInfo = appInfo
         authority = entry.authorities.joinToString(";")
         exported = entry.exported
-        enabled = entry.enabled
+        enabled = GuestComponentState.isEnabled(entry)
         grantUriPermissions = entry.grantUriPermissions
         readPermission = entry.readPermission
         writePermission = entry.writePermission

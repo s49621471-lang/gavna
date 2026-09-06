@@ -111,6 +111,18 @@ class VirtualPathModel(private val hostFilesRoot: String) {
     fun permissionsFile(vuid: Int, packageName: String) =
         "${runtimeDir()}/permissions/$vuid/$packageName.properties"
 
+    /**
+     * The enabled state of the guest's own components, per instance.
+     *
+     * `PackageManagerService` cannot hold this: the components belong to a package it has
+     * never installed, so it refuses the call rather than storing anything. An app
+     * enabling or disabling its own alias — the usual way of changing a launcher icon —
+     * expects the change to survive a restart, so UNIQUE keeps it beside the permission
+     * record, in the one form a `:vappN` process can read.
+     */
+    fun componentStateFile(vuid: Int, packageName: String) =
+        "${runtimeDir()}/components/$vuid/$packageName.properties"
+
     /** Directories that must exist before an app is first launched. */
     fun instanceDirectories(vuid: Int, packageName: String): List<String> = listOf(
         dataDir(vuid, packageName),

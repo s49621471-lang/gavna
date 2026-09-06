@@ -266,6 +266,57 @@ object VirtualPackageManagerHook {
             }
         },
 
+        // An app turning one of its own components on or off.
+        //
+        // `PackageManagerService` refuses outright — `Attempt to change component state`,
+        // checked against the calling uid — because the component belongs to a package it
+        // has never installed. There is nothing for it to store and no way for it to
+        // agree, so the state lives in `GuestComponentState` and these four answer from
+        // there. Anything naming another package still goes to the platform.
+        shim("componentEnabledSetting") {
+            matchMethods { method ->
+                method.name == "setComponentEnabledSetting" ||
+                    method.name == "getComponentEnabledSetting"
+            }
+            replaceWith { call ->
+                val component = call.firstArgOf<ComponentName>()
+                if (!GuestComponentState.owns(component)) call.proceed()
+                else if (call.method.name == "getComponentEnabledSetting") {
+                    GuestComponentState.settingFor(component!!.className)
+                } else {
+                    // `(componentName, newState, flags, userId, callingPackage)`: the new
+                    // state is the first int, ahead of flags and the user id.
+                    val newState = call.args.filterIsInstance<Int>().firstOrNull()
+                    if (newState == null) {
+                        Diagnostics.warn(
+                            DiagChannel.PROCESS, "COMPONENT_STATE_SHAPE_UNKNOWN",
+                            mapOf("method" to call.method.name),
+                        )
+                    } else {
+                        GuestComponentState.set(component!!.className, newState)
+                    }
+                    null
+                }
+            }
+        },
+
+        shim("applicationEnabledSetting") {
+            matchMethods { method ->
+                method.name == "setApplicationEnabledSetting" ||
+                    method.name == "getApplicationEnabledSetting"
+            }
+            replaceWith { call ->
+                if (!GuestComponentState.owns(call.firstArgOf<String>())) call.proceed()
+                else if (call.method.name == "getApplicationEnabledSetting") {
+                    GuestComponentState.applicationSetting()
+                } else {
+                    call.args.filterIsInstance<Int>().firstOrNull()
+                        ?.let { GuestComponentState.setApplication(it) }
+                    null
+                }
+            }
+        },
+
         // Who installed this app.
         //
         // `IPackageManager.getInstallerPackageName` throws for a package it does not know:

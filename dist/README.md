@@ -84,9 +84,10 @@ Conscrypt closing a TLS socket, and pinning and cleartext rules were the host's 
 way), and a `<provider>` with no `android:name` no longer produces six
 `ClassNotFoundException`s per launch.
 
-Three real applications from F-Droid were then imported and launched with nothing written
-for them — **Termux**, **Fossify Gallery** and **NewPipe**. All three failed, in three
-different ways, and all three now reach their own main screen:
+Seven real applications from F-Droid were then imported and launched with nothing written
+for them — **Termux**, **Fossify Gallery**, **NewPipe**, **Shattered Pixel Dungeon**,
+**AntennaPod**, **KeePassDX** and **Aegis**. Four of the seven failed, each differently,
+and all seven now reach their own main screen:
 
 - a guest was held to **UNIQUE's** target SDK rather than its own, by two separate compat
   mechanisms, so an app built against Android 9 threw on `registerReceiver` and again on
@@ -95,9 +96,15 @@ different ways, and all three now reach their own main screen:
   *every* foreground-service type UNIQUE declares at once, and was refused for the first
   one whose permission the phone had not granted;
 - an app asking about its own home-screen widget died in `onCreate`, because the service
-  that answers that names the caller in a `ComponentName` and nothing was rewriting it.
+  that answers that names the caller in a `ComponentName` and nothing was rewriting it;
+- an app enabling *its own* component — which is how a launcher icon is changed and how a
+  keyboard is switched on — was refused by the platform, because the component belongs to a
+  package it has never installed; UNIQUE keeps that state per instance now;
+- and an app publishing a shortcut killed itself in `Application.onCreate`. That one is
+  refused rather than fixed: it now gets the "not accepted" answer the API already defines,
+  and shortcuts from a virtual app stay a thing UNIQUE does not do.
 
-The on-device suite is **46 of 46** on an Android 14 x86_64 emulator. None of it has been
+The on-device suite is **47 of 47** on an Android 14 x86_64 emulator. None of it has been
 back on a phone; `docs/COMPATIBILITY.md` says so per row. And nothing here looks at the
 screen: "the app reached its own main activity and stayed up" is the whole claim.
 
