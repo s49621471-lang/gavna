@@ -25,7 +25,7 @@ There is still an automated suite that needs a PC. It is at the end, and it is o
 
 One APK, in `dist/`, downloadable straight to the phone:
 
-https://github.com/s49621471-lang/gavna/raw/claude/unique-app-virtualization-bn35b2/dist/unique-arm64-v8a.apk
+https://github.com/erundltd/gavna/raw/claude/unique-app-virtualization-bn35b2/dist/unique-arm64-v8a.apk
 
 `arm64-v8a` only, `minSdk 31`, signed with Android's debug key. `dist/README.md` has the
 checksums and says what the second APK there is.
