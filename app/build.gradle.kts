@@ -238,13 +238,21 @@ android {
     }
 
     signingConfigs {
-        // A release build that cannot be installed is not a deliverable. Android's own
-        // debug keystore is used unless a real one is supplied, so `assembleRelease`
-        // always produces something a tester can put on a phone.
+        // A release build that cannot be installed is not a deliverable, and one that
+        // cannot install *over the last one* costs the tester every instance they had.
         //
-        // This is a *test-signing* arrangement and is marked as such: an APK signed this
-        // way must not be distributed, and an app signed with a different key later will
-        // not install over it. Supply UNIQUE_KEYSTORE and friends for a real release.
+        // This used to fall back to Android's own `~/.android/debug.keystore`, which each
+        // machine generates for itself. Two builds made in two sessions therefore had two
+        // different keys, and Android's error for that is the unhelpful `App not
+        // installed`. The only way through it is to uninstall — which deletes the
+        // instances, their data, and any expansion file the tester spent an evening
+        // importing. That is a large price for a build-machine detail.
+        //
+        // So the key lives in the repository. It is a *test* key and is marked as one in
+        // its own subject line: an APK signed this way must not be distributed, its
+        // password is written here in the open, and anyone who has the repository can
+        // produce a build that installs over this one. That is exactly what it is for.
+        // Supply `uniqueKeystore` and friends for a real release.
         create("testSigned") {
             val supplied = providers.gradleProperty("uniqueKeystore").orNull
             if (supplied != null) {
@@ -253,7 +261,7 @@ android {
                 keyAlias = providers.gradleProperty("uniqueKeyAlias").orNull
                 keyPassword = providers.gradleProperty("uniqueKeyPassword").orNull
             } else {
-                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+                storeFile = file("debug.keystore")
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"

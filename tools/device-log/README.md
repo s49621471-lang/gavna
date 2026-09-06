@@ -54,6 +54,7 @@ blame.
 | `storage` | Could a guest read its own external storage, and did its expansion files reach the instance? |
 | `google` | Was a guest told the phone has no Play services when it has, and did its requests reach Google under a name Google accepts? |
 | `native` | Did a native crash follow a library the path redirector patched? |
+| `detection` | Could a guest read UNIQUE out of its own `/proc/self/maps`? |
 | `hooks` | Did every shim bind to a real method, or did one bind to nothing? |
 | `providers` | Did the guest's ContentProviders publish and resolve? |
 | `ui` | Did UNIQUE's own Flutter interface throw? |
@@ -93,6 +94,38 @@ patched slot by jumping into its own generated code with a corrupt dispatch valu
 which lands as an unaligned PC in an anonymous page, in a tombstone that names the
 game's engine and never names UNIQUE. The check names the libraries to exclude, last
 one first.
+
+### The one the eleventh run added: `detection`
+
+Every other check here asks whether something worked. This one asks whether it is
+*visible* — which, for a game that refuses to run in a virtual space, is the same
+question. Such a game does not have to defeat anything. It reads its own
+`/proc/self/maps`, which lists every file the process has mapped, and inside a `:vappN`
+that list is a complete description of the engine:
+
+```
+… r--p … /data/app/~~eOlB8_…/com.unique-LcSgGP…/base.apk
+… r-xp … /data/user/0/com.unique/files/virtual/apk/com.axlebolt.standoff2/…/libunity.so
+```
+
+An installed app's maps names its own package and nothing else. Reading it costs one
+`fopen` and no permission at all, and every native crash handler does it anyway — so the
+code that would find those two lines is already in most apps, for an innocent reason.
+
+The engine answers that file from a rewritten view, and then checks its own work:
+
+```
+IO_REDIRECT_ARMED   package=com.axlebolt.standoff2 rules=13 procView=6 watch=OK
+PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 rules=6 named=17 leaked=0 first=-
+```
+
+`named` is how many mappings would have named UNIQUE; `leaked` is how many still do
+after the view is applied. Zero is the answer, and anything else names the directory the
+missing rule is for — which is the whole diagnosis. `procView=0` fails on its own: a
+guest grafted with no view is one whose own libraries can read all of it.
+
+The check is written so that a log from a build without the view says so rather than
+passing by silence.
 
 ### The one the eighth run added: `google`
 
@@ -172,14 +205,14 @@ only affects the header line.
 tools/device-log/self_test.py
 ```
 
-74 tests, under a second, no dependencies. Three kinds:
+82 tests, under a second, no dependencies. Three kinds:
 
 - **`fixtures/redmi-android15.log`** — a real run on a Redmi Note 12, Android 15, ARM64:
   the run in which no app launched. Every finding asserted against it is something that
   happened to a real phone, so a check that stops reporting one has regressed. It is the
   full run filtered to the lines that carry evidence (941 of 26,950); the verdicts are
   identical to those from the unfiltered log.
-- **`fixtures/redmi-android15-run4.log` … `-run10.log`** — the runs after it,
+- **`fixtures/redmi-android15-run4.log` … `-run11.log`** — the runs after it,
   each filtered the same way. Every fault a run found has an assertion here, so a check
   that stops reporting one is a regression in the tool rather than progress in the
   engine. The sixth is the run in which six of seven apps launched and the games could
@@ -196,7 +229,11 @@ tools/device-log/self_test.py
   Google requests reach Play services under a name it accepts, and it is kept for what
   that uncovered: a second Google route the rewrite did not cover, a sign-in flow that
   died in UNIQUE's own plumbing rather than at Google, and an app told there was no Play
-  services by a mark left over from an older build.
+  services by a mark left over from an older build. The eleventh is the first in which a
+  game is *used* — Standoff 2 to its own login screen, on the hardware renderer, taking a
+  touch — and is kept for what was underneath: a job for that game grafted itself into a
+  process another app had failed to start in, and the game ran under the other app's
+  `ANDROID_ID`. One line said so, `PROFILE_REBIND_IGNORED`, and no check read it.
 - **A synthetic healthy run** — every check must pass on it. Without that the suite would
   prove only that the tool says FAIL, which a tool that always says FAIL would also
   pass.

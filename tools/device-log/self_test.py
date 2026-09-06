@@ -46,6 +46,8 @@ FIXTURE9 = os.path.join(HERE, "fixtures", "redmi-android15-run9.log")
 FIXTURE9_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run9.device.txt")
 FIXTURE10 = os.path.join(HERE, "fixtures", "redmi-android15-run10.log")
 FIXTURE10_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run10.device.txt")
+FIXTURE11 = os.path.join(HERE, "fixtures", "redmi-android15-run11.log")
+FIXTURE11_DEVICE = os.path.join(HERE, "fixtures", "redmi-android15-run11.device.txt")
 
 
 def findings(check: analyze.Check) -> str:
@@ -658,6 +660,62 @@ class RedmiRun10Test(unittest.TestCase):
         self.assertIn("com.axlebolt.standoff2", findings(self.checks["google"]))
 
 
+class RedmiRun11Test(unittest.TestCase):
+    """The eleventh run: a game reached its own login screen, and a slot was stolen.
+
+    The first log in which Standoff 2 runs. Unity comes up on the hardware renderer, the
+    expansion file loads out of the instance's own storage, FMOD, Firebase and AppMetrica
+    all initialise, and the game draws its login screen — everything up to the point where
+    the user taps *Sign in with Google*, which is where the tenth run's class-loader fault
+    was already fixed and is not in this build.
+
+    What is new here, and worse, is underneath. `bin.mt.plus` failed to construct its
+    `Application` — a packed app whose protector loaded and then declined to register its
+    natives — and the engine recorded nothing about the process, because what it recorded
+    was the *result* of a graft and there was none. Sixteen seconds later a job for
+    Standoff 2 fired into that same process:
+
+        BOOTSTRAP_FAILED  package=bin.mt.plus code=NO_APPLICATION
+        CREATE_SERVICE_UNMAPPED stub=com.unique.stub.JobStub_p0
+        PROCESS_RENAMED   argv0=com.axlebolt.standoff2
+        PROFILE_REBIND_IGNORED current=028dca45-… requested=6c904a63-…
+
+    That last line is a game running under a file manager's `ANDROID_ID`. Separate
+    identity per instance is the one promise this engine makes, and no check in this tool
+    would have said a word about it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = analyze.load(FIXTURE11, FIXTURE11_DEVICE)
+        cls.checks = {c.name: c for c in analyze.run_checks(cls.parsed)}
+
+    def test_a_stolen_slot_is_reported_as_the_identity_fault_it_is(self):
+        detail = findings(self.checks["slots"])
+        self.assertIn("running under the first one's identity", detail)
+
+    def test_the_packed_app_is_still_reported_as_unlaunchable(self):
+        # bin.mt.plus is the app that produced the stolen slot by failing first. It is
+        # not claimed to work, and the log has to keep saying so.
+        self.assertIn("NO_APPLICATION", findings(self.checks["launch"]))
+
+    def test_the_game_launched(self):
+        # Two launches of com.axlebolt.standoff2 reached its own Activity. The check
+        # counts them, and this is the run that first had any to count.
+        self.assertIn("reached the guest's Activity", notes(self.checks["launch"]))
+
+    def test_an_install_time_permission_no_dialog_can_grant_is_named(self):
+        # ACCESS_ADSERVICES_ATTRIBUTION, denied twice. There is no screen anywhere on the
+        # device that could have granted it: UNIQUE has to declare it or nothing can.
+        self.assertIn("ACCESS_ADSERVICES_ATTRIBUTION", findings(self.checks["permissions"]))
+
+    def test_this_build_published_no_proc_view_and_the_check_says_so(self):
+        # The run predates the view, so the check must be silent about it rather than
+        # inventing a pass. A build that publishes one and leaks is a different report.
+        self.assertEqual(self.checks["detection"].verdict, analyze.PASS)
+        self.assertIn("does not publish a /proc view", notes(self.checks["detection"]))
+
+
 HEALTHY = """\
 2026-01-01 10:00:00.000 I PROCESS PROCESS_START process=com.unique kind=CORE sdk=35 abi=arm64-v8a
 2026-01-01 10:00:00.010 I NATIVE NATIVE_LOADED pageSize=4096
@@ -681,6 +739,10 @@ scope=/data/user/0/com.unique/files/virtual/apk/com.example.app/7/lib/arm64-v8a
 activity=com.example.app.Main vuid=0 item=LaunchActivityItem theme=1
 2026-01-01 10:00:03.020 I PROCESS PROVIDERS_PUBLISHED package=com.example.app declared=1
 2026-01-01 10:00:03.030 I PROCESS PROVIDER_SLOT_READY slot=0 vuid=0 pid=4242
+2026-01-01 10:00:02.850 I NATIVE IO_REDIRECT_ARMED package=com.example.app rules=13 \
+procView=6 watch=OK
+2026-01-01 10:00:02.950 I NATIVE PROC_VIEW_INSTALLED package=com.example.app rules=6 \
+named=14 leaked=0 first=-
 """
 
 
@@ -766,6 +828,41 @@ class BrokenRunTest(unittest.TestCase):
             "google",
         )
         self.assertEqual(check.verdict, analyze.PASS)
+
+    def test_a_view_that_leaves_unique_readable_fails(self):
+        # The check that matters most for the applications this engine exists to run, and
+        # the one most able to pass by doing nothing: a table with the wrong prefix in it
+        # and no table at all produce the same "installed" line and opposite behaviour.
+        # So the engine checks its own work and reports the count, and this is the shape
+        # of the report when the work is wrong.
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 W NATIVE PROC_VIEW_INSTALLED package=com.example.app "
+            "rules=6 named=14 leaked=3 first=/data/user/0/com.unique/files/virtual/runtime\n",
+            "detection",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("/data/user/0/com.unique/files/virtual/runtime", findings(check))
+
+    def test_a_guest_grafted_with_no_view_at_all_fails(self):
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 I NATIVE IO_REDIRECT_ARMED package=com.other.app "
+            "rules=13 procView=0 watch=OK\n",
+            "detection",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("no /proc view", findings(check))
+
+    def test_a_second_graft_in_one_process_fails(self):
+        # The eleventh run's worst fault, synthetically. The fixture has it too; this is
+        # here so the check cannot start passing by never firing if that fixture goes.
+        check = self.check_for(
+            "2026-01-01 10:00:04.000 W LAUNCH PROFILE_REBIND_IGNORED "
+            "current=028dca45-b67b-4d99-b849-a72edb754f1f "
+            "requested=6c904a63-1c8a-4c6c-9d6e-02a8a7249395\n",
+            "slots",
+        )
+        self.assertEqual(check.verdict, analyze.FAIL)
+        self.assertIn("under the first one's identity", findings(check))
 
     def test_a_hook_that_binds_to_nothing_fails(self):
         check = self.check_for(

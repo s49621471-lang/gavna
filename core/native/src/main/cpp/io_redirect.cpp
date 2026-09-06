@@ -1,16 +1,19 @@
 #include <cstdarg>
 #include <cstdio>
+#include <cerrno>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mutex>
 #include <string>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <unistd.h>
 #include <vector>
 
 #include "plt_hook.h"
+#include "proc_view.h"
 #include "redirect_table.h"
 #include "unique_native.h"
 
@@ -18,6 +21,7 @@ namespace unique::io_redirect {
 namespace {
 
 RedirectTable g_table;
+ProcView g_proc_view;
 std::mutex g_mutex;
 bool g_installed = false;
 
@@ -50,6 +54,33 @@ std::string redirect(const char* path) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_table.redirect(path, out)) return out;
     return {};
+}
+
+void set_proc_view(const char** from, const char** to, int count) {
+    std::vector<RedirectRule> rules;
+    rules.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        if (from[i] == nullptr || to[i] == nullptr) continue;
+        rules.push_back(RedirectRule{from[i], to[i]});
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_proc_view.set(std::move(rules));
+    ULOGI("proc view set: %zu rule(s)", g_proc_view.size());
+}
+
+void clear_proc_view() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_proc_view.clear();
+}
+
+int proc_view_rule_count() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return static_cast<int>(g_proc_view.size());
+}
+
+std::string proc_view_rewrite(const char* text) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_proc_view.rewrite(text == nullptr ? std::string() : std::string(text));
 }
 
 bool installed() { return g_installed; }
@@ -108,7 +139,80 @@ const char* rewrite(const char* path, std::string& holder) {
     return holder.c_str();
 }
 
+/// Reads a `/proc` pseudo-file whole, without going back through the hooks.
+///
+/// `st_size` is zero for everything under `/proc`, so the only way to know how much there
+/// is, is to read until there is not any more. A Unity game's maps runs to a few hundred
+/// kilobytes; the growth below reaches that in five reads.
+std::string read_all(const char* path) {
+    const int fd = o_open != nullptr ? o_open(path, O_RDONLY | O_CLOEXEC, 0)
+                                     : ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return {};
+    std::string out;
+    char buffer[16384];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            out.append(buffer, static_cast<size_t>(n));
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        break;
+    }
+    ::close(fd);
+    return out;
+}
+
+/// A read-only file descriptor holding [text], or -1.
+///
+/// `memfd_create` rather than a file on disk: a temporary file would be one more thing in
+/// the guest's own directory for the guest to find, would need cleaning up after a crash,
+/// and would appear in the very list this is rewriting.
+int fd_holding(const std::string& text, bool cloexec) {
+    const int fd = ::memfd_create("maps", cloexec ? MFD_CLOEXEC : 0u);
+    if (fd < 0) return -1;
+    size_t written = 0;
+    while (written < text.size()) {
+        const ssize_t n = ::write(fd, text.data() + written, text.size() - written);
+        if (n > 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        ::close(fd);
+        return -1;
+    }
+    if (::lseek(fd, 0, SEEK_SET) < 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/// Serves [path] from the guest's view of it, or -1 to let the real open proceed.
+///
+/// Every failure falls through to the real file. A guest that can read its own maps and
+/// sees UNIQUE in them is a guest that may refuse to run; a guest that cannot read them
+/// at all is one that crashes in its own crash handler.
+int serve_proc(const char* path, bool cloexec) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_proc_view.empty()) return -1;
+        if (!ProcView::covers(path, ::getpid())) return -1;
+    }
+    const std::string real = read_all(path);
+    if (real.empty()) return -1;
+    std::string shown;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        shown = g_proc_view.rewrite(real);
+    }
+    return fd_holding(shown, cloexec);
+}
+
 int h_open(const char* path, int flags, ...) {
+    const int served = serve_proc(path, (flags & O_CLOEXEC) != 0);
+    if (served >= 0) return served;
     std::string holder;
     const char* target = rewrite(path, holder);
     mode_t mode = 0;
@@ -122,6 +226,8 @@ int h_open(const char* path, int flags, ...) {
 }
 
 int h_openat(int dirfd, const char* path, int flags, ...) {
+    const int served = serve_proc(path, (flags & O_CLOEXEC) != 0);
+    if (served >= 0) return served;
     std::string holder;
     const char* target = rewrite(path, holder);
     mode_t mode = 0;
@@ -185,6 +291,15 @@ int h_rename(const char* from, const char* to) {
 }
 
 FILE* h_fopen(const char* path, const char* mode) {
+    // `fopen("/proc/self/maps", "r")` is the commonest spelling of the check by a long
+    // way, and it does not reach h_open: libc calls its own open internally, without
+    // crossing a PLT. Serving it here is what makes the view actually cover anything.
+    const int served = serve_proc(path, mode != nullptr && std::strchr(mode, 'e') != nullptr);
+    if (served >= 0) {
+        FILE* stream = ::fdopen(served, "r");
+        if (stream != nullptr) return stream;
+        ::close(served);
+    }
     std::string holder;
     const char* target = rewrite(path, holder);
     return o_fopen != nullptr ? o_fopen(target, mode) : ::fopen(target, mode);
@@ -193,8 +308,26 @@ FILE* h_fopen(const char* path, const char* mode) {
 ssize_t h_readlink(const char* path, char* buf, size_t size) {
     std::string holder;
     const char* target = rewrite(path, holder);
-    return o_readlink != nullptr ? o_readlink(target, buf, size)
-                                 : ::readlink(target, buf, size);
+    const ssize_t n = o_readlink != nullptr ? o_readlink(target, buf, size)
+                                            : ::readlink(target, buf, size);
+    if (n <= 0 || buf == nullptr) return n;
+
+    // The answer is a path, and under `/proc/self/fd` it is a path into UNIQUE. An app
+    // that walks its own open descriptors — which a protector does, looking for exactly
+    // this — reads the APK it was loaded from by name.
+    //
+    // `readlink` does not terminate the buffer and the caller is not entitled to a byte
+    // past what is returned, so a longer answer is truncated rather than written past the
+    // end. Truncation is what the real call does when the buffer is short.
+    std::string shown;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_proc_view.empty()) return n;
+        if (!g_proc_view.rewrite_path(buf, static_cast<size_t>(n), shown)) return n;
+    }
+    const size_t copied = shown.size() < size ? shown.size() : size;
+    std::memcpy(buf, shown.data(), copied);
+    return static_cast<ssize_t>(copied);
 }
 
 int h_statfs(const char* path, struct statfs* out) {

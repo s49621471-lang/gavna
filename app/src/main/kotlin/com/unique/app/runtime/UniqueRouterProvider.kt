@@ -40,6 +40,7 @@ class UniqueRouterProvider : ContentProvider() {
         VirtualProviderRouter.ROUTER_METHOD_SLOT_STARTING ->
             VirtualProviderRouter.slotStarting(extras)
         VirtualProviderRouter.ROUTER_METHOD_SLOT_STATUS -> VirtualProviderRouter.slotStatus(extras)
+        VirtualProviderRouter.ROUTER_METHOD_SLOT_FAILED -> VirtualProviderRouter.slotFailed(extras)
         VirtualBroadcastRouter.ROUTER_METHOD_COLD_DELIVERED ->
             VirtualBroadcastRouter.coldDelivered(extras)
         else -> {

@@ -395,6 +395,86 @@ def check_slots(run: Run) -> Check:
             f"slot {event['slot']} still had a process when it was reassigned to "
             f"{event['requested']}; it was ended first"
         )
+
+    # A device profile binds once per process, so a *second* graft in one `:vappN` is
+    # not a slow launch — it is one instance running under another's identity. The
+    # eleventh run had a file manager fail to construct its Application, leaving the
+    # process claimed by nobody, and a job for a different app grafted itself into it:
+    #
+    #   PROCESS_RENAMED        argv0=com.axlebolt.standoff2
+    #   PROFILE_REBIND_IGNORED current=028dca45-… requested=6c904a63-…
+    #
+    # The game then ran reporting the file manager's ANDROID_ID. Separate identity per
+    # instance is the one promise this engine makes, and nothing in the log said so.
+    for event in run.by_code("PROFILE_REBIND_IGNORED"):
+        check.fail(
+            "a second instance was grafted into a process that already had a device "
+            "profile; it is running under the first one's identity",
+            event.lineno,
+            f"holding={event['current']} refused={event['requested']}",
+        )
+    for event in run.by_code("SLOT_SURRENDERED"):
+        check.note(
+            f"slot {event['slot']} ended itself so {event['wanted']} could have it "
+            f"(it was serving {event['serving']}, behind it {event['behind'] or '-'})"
+        )
+    for event in run.by_code("SLOT_GRAFT_FAILED"):
+        check.note(
+            f"slot {event['slot']} reported its graft failed ({event['code']}) and was "
+            f"given back"
+        )
+    return check
+
+
+def check_detection(run: Run) -> Check:
+    """Could a guest read UNIQUE out of its own process?
+
+    Every other check here asks whether something worked. This one asks whether it is
+    *visible*, which for the applications this engine exists to run is the same question.
+    A game that refuses to start in a virtual space does not need to defeat anything: it
+    reads `/proc/self/maps`, which lists every file the process has mapped, and inside a
+    `:vappN` that list is a complete description of the engine —
+
+        … /data/app/~~eOlB8_…/com.unique-LcSgGP…/base.apk
+        … /data/user/0/com.unique/files/virtual/apk/com.axlebolt.standoff2/…/libunity.so
+
+    — costing one `fopen` and no permission at all.
+
+    The engine answers that file from a rewritten view for the guest's own libraries, and
+    then checks its own work: it reads the real file, puts it through the same view, and
+    counts what still names UNIQUE. `leaked=0` is the answer. Anything else names the
+    directory a rule is missing for, which is the whole diagnosis.
+    """
+    check = Check("detection", "Could a guest read UNIQUE out of its own process?")
+    reports = run.by_code("PROC_VIEW_INSTALLED")
+    armed = run.by_code("IO_REDIRECT_ARMED")
+    if not reports and not armed:
+        check.note("this build does not publish a /proc view; nothing to check")
+        return check
+
+    for event in armed:
+        if (event["procView"] or "0") == "0":
+            check.fail(
+                f"{event['package']} was grafted with no /proc view, so its own libraries "
+                f"can read UNIQUE's paths out of /proc/self/maps",
+                event.lineno,
+            )
+    for event in reports:
+        leaked = int(event["leaked"] or 0)
+        named = int(event["named"] or 0)
+        if leaked:
+            check.fail(
+                f"{event['package']}: {leaked} mapping(s) still name UNIQUE after the "
+                f"view was applied — the missing rule is for {event['first']}",
+                event.lineno,
+            )
+        else:
+            check.note(
+                f"{event['package']}: {named} mapping(s) named UNIQUE, none readable "
+                f"through the view"
+            )
+    for event in run.by_code("PROC_VIEW_UNCHECKED"):
+        check.note("the view could not be checked: /proc/self/maps was unreadable")
     return check
 
 
@@ -1138,6 +1218,7 @@ CHECKS = (
     check_storage,
     check_google_stack,
     check_native_hooks,
+    check_detection,
     check_hooks,
     check_providers,
     check_isolation,

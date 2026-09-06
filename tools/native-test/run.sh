@@ -4,6 +4,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 out="${TMPDIR:-/tmp}/unique-native-test"
 mkdir -p "$out"
-${CXX:-g++} -std=c++20 -O1 -Wall -Wextra -o "$out/redirect_table_test" \
-    "$here/redirect_table_test.cpp"
-"$out/redirect_table_test"
+for test in redirect_table proc_view; do
+    ${CXX:-g++} -std=c++20 -O1 -Wall -Wextra -o "$out/${test}_test" "$here/${test}_test.cpp"
+    "$out/${test}_test"
+done

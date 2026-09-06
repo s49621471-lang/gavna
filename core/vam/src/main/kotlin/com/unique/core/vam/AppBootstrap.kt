@@ -16,6 +16,7 @@ import com.unique.core.common.apk.ComponentEntry
 import com.unique.core.common.apk.ComponentKind
 import com.unique.core.common.apk.ManifestReader
 import com.unique.core.common.diag.DiagChannel
+import com.unique.core.common.diag.DiagLevel
 import com.unique.core.common.google.GoogleStackVisibility
 import com.unique.core.common.nativelib.GuestNativeExclusions
 import com.unique.core.common.path.VirtualPathModel
@@ -82,21 +83,128 @@ object AppBootstrap {
     /** True once this process is serving a virtual package. */
     val isBootstrapped: Boolean get() = bootstrapped != null
 
+    /** Which instance this process has been claimed for; see [claim]. */
+    internal data class Claim(val vuid: Int, val packageName: String, val slot: Int) {
+        /**
+         * Whether this claim and [other] name the same instance.
+         *
+         * The slot is deliberately not compared. A slot number reaches a `:vappN` process
+         * on the intent that started it and a stale one has been seen — a job records the
+         * slot its guest occupied when it was scheduled, and the guest may have been given
+         * a different one since. What must never differ is *whose* process this is.
+         */
+        fun isFor(other: Claim): Boolean =
+            vuid == other.vuid && packageName == other.packageName
+
+        override fun toString(): String = "$packageName/u$vuid"
+
+        companion object {
+            fun of(params: VirtualLaunchParams): Claim =
+                Claim(params.vuid, params.packageName, params.slot)
+        }
+    }
+
+    /**
+     * Which instance this process belongs to, written **before** the graft rather than
+     * after it succeeds.
+     *
+     * [bootstrapped] is only set when a graft completes, and that left a hole big enough
+     * to lose an app through. A guest whose `Application` cannot be constructed — a packed
+     * app whose own static initialiser throws is the case that found this — leaves the
+     * process renamed to it, its device profile bound and its identity hooks installed,
+     * and `bootstrapped` null. Every check that asks "is this slot taken?" then answers
+     * *no*, and the next thing the platform starts in `:vappN` is grafted straight on top:
+     *
+     * ```
+     * BOOTSTRAP_FAILED  package=bin.mt.plus code=NO_APPLICATION
+     * CREATE_SERVICE_UNMAPPED stub=com.unique.stub.JobStub_p0     <- a job for another app
+     * PROCESS_RENAMED   argv0=com.axlebolt.standoff2
+     * PROFILE_REBIND_IGNORED current=028dca45-… requested=6c904a63-…
+     * ```
+     *
+     * The last line is the damage. Standoff 2 ran, in bin.mt.plus's slot, reporting
+     * **bin.mt.plus's `ANDROID_ID`** — the one value this engine exists to keep separate —
+     * because a device profile binds once per process and the first binding had already
+     * happened. Every later launch of bin.mt.plus was then refused `SLOT_ALREADY_BOUND`,
+     * which is how it was noticed at all.
+     *
+     * A claim closes it: what a process is for is decided by the first caller through here
+     * and does not depend on whether that caller got what it wanted.
+     */
+    @Volatile private var claim: Claim? = null
+
+    /** The instance this process has been claimed for, whether or not its graft worked. */
+    internal val claimedBy: Claim? get() = claim
+
+    /**
+     * What a caller asking this process to graft [wanted] is entitled to.
+     *
+     * Split out from [bootstrap] and given no Android types on purpose: this is the
+     * decision the fault above turned on, and it is four lines of comparison that were
+     * previously spread across two `let` blocks holding an `Application` each — which is
+     * to say, untestable off a device. Every case is pinned in `AppBootstrapClaimTest`.
+     */
+    internal enum class Verdict {
+        /** Nothing has claimed this process. Graft. */
+        GRAFT,
+
+        /** This process is already serving exactly this instance. Hand it back. */
+        REUSE,
+
+        /** Claimed by somebody else and grafted. Refuse, and surrender the slot. */
+        REFUSE_BOUND,
+
+        /** Claimed by somebody else whose graft failed. Refuse, and surrender the slot. */
+        REFUSE_CLAIMED,
+    }
+
+    /**
+     * @param bound what a *completed* graft left, or null if none completed.
+     * @param claimed what the first caller through [bootstrap] claimed, or null if none
+     *   has been. A process with a claim and no binding is one whose graft failed, since
+     *   [bootstrap] is synchronized and a graft that starts also finishes.
+     */
+    internal fun verdict(bound: Claim?, claimed: Claim?, wanted: Claim): Verdict = when {
+        bound != null -> if (bound.isFor(wanted)) Verdict.REUSE else Verdict.REFUSE_BOUND
+        claimed != null -> if (claimed.isFor(wanted)) Verdict.GRAFT else Verdict.REFUSE_CLAIMED
+        else -> Verdict.GRAFT
+    }
+
     @Synchronized
     fun bootstrap(hostContext: Context, params: VirtualLaunchParams): Result {
-        bootstrapped?.let { existing ->
-            if (existing.params.vuid == params.vuid &&
-                existing.params.packageName == params.packageName
-            ) return existing
+        val wanted = Claim.of(params)
+        val bound = bootstrapped
+        val held = claim
+        when (verdict(bound?.params?.let(Claim::of), held, wanted)) {
+            Verdict.REUSE -> return bound!!
+
             // A slot must never serve two instances: their data directories differ, and a
             // second graft would leave the first instance's objects pointing at the wrong
             // one. The launch is refused instead.
-            surrenderSlot(existing, params)
-            return Result.Failed(
-                "SLOT_ALREADY_BOUND",
-                "Slot ${params.slot} already serves ${existing.params.packageName} " +
-                    "(u${existing.params.vuid}); refusing to rebind to ${params.packageName}.",
-            )
+            Verdict.REFUSE_BOUND -> {
+                val serving = Claim.of(bound!!.params)
+                surrenderSlot(serving.toString(), params, "a graft that succeeded")
+                return Result.Failed(
+                    "SLOT_ALREADY_BOUND",
+                    "Slot ${params.slot} already serves ${serving.packageName} " +
+                        "(u${serving.vuid}); refusing to rebind to ${params.packageName}.",
+                )
+            }
+
+            // A claim with no graft behind it: the process is serving nobody, and
+            // surrendering it is better than refusing alone — the slot comes back clean
+            // instead of staying poisoned for the life of the process.
+            Verdict.REFUSE_CLAIMED -> {
+                surrenderSlot(held.toString(), params, "a graft that failed")
+                return Result.Failed(
+                    "SLOT_ALREADY_BOUND",
+                    "Slot ${params.slot} was claimed by ${held!!.packageName} " +
+                        "(u${held.vuid}) and its graft failed; refusing to rebind to " +
+                        params.packageName + ".",
+                )
+            }
+
+            Verdict.GRAFT -> Unit
         }
 
         if (HiddenApi.ensure() != HiddenApi.State.GRANTED) {
@@ -106,11 +214,19 @@ object AppBootstrap {
             )
         }
 
+        // Claimed before the first line of the graft runs, because the graft's *first*
+        // steps are the ones that cannot be undone: the process is renamed, the device
+        // profile is bound, the identity hooks go in. From here on this process is this
+        // instance's whatever happens next.
+        claim = wanted
+
         return try {
             val result = graft(hostContext, params)
             if (result is Result.Ready) {
                 bootstrapped = result
                 announceReady(hostContext, params)
+            } else if (result is Result.Failed) {
+                announceFailed(hostContext, params, result.code)
             }
             result
         } catch (t: Throwable) {
@@ -118,6 +234,7 @@ object AppBootstrap {
             // which is right for events and useless for this one: the tag is the same
             // "Unique" the device capture is filtered on, so the frames travel with it.
             android.util.Log.e("Unique", "BOOTSTRAP_FAILED ${params.packageName}", t)
+            announceFailed(hostContext, params, "BOOTSTRAP_THREW")
             Result.Failed("BOOTSTRAP_FAILED", describeFailure(t), t)
         }
     }
@@ -182,14 +299,21 @@ object AppBootstrap {
      *
      * Off the caller's thread and after a beat, so the refusal is recorded and the Binder
      * reply is sent before the process stops existing.
+     *
+     * @param serving what this process already belongs to, as `<package>/u<vuid>`.
+     * @param behind whether that came from a graft that succeeded or one that failed.
+     *   Both leave a process that must not serve [wanted], and the distinction is what
+     *   a later log needs to tell "two apps raced for a slot" from "a broken app's
+     *   process was still holding one".
      */
-    private fun surrenderSlot(existing: Result.Ready, wanted: VirtualLaunchParams) {
+    private fun surrenderSlot(serving: String, wanted: VirtualLaunchParams, behind: String) {
         Diagnostics.warn(
             DiagChannel.PROCESS, "SLOT_SURRENDERED",
             mapOf(
                 "slot" to wanted.slot.toString(),
-                "serving" to "${existing.params.packageName}/u${existing.params.vuid}",
+                "serving" to serving,
                 "wanted" to "${wanted.packageName}/u${wanted.vuid}",
+                "behind" to behind,
                 "detail" to "this process is ending so the slot can be re-grafted",
             ),
         )
@@ -239,7 +363,29 @@ object AppBootstrap {
     fun announceStarting(hostContext: Context, params: VirtualLaunchParams) =
         announce(hostContext, params, VirtualProviderRouter.ROUTER_METHOD_SLOT_STARTING)
 
-    private fun announce(hostContext: Context, params: VirtualLaunchParams, method: String) {
+    /**
+     * Says the graft did *not* happen, which nothing else in the system can observe.
+     *
+     * A `:vappN` whose graft failed is still a running process, so the pool's liveness
+     * check says the slot is busy — correctly — and the slot stays held by an app that
+     * never started. It also stays *claimable*: everything that lands there afterwards
+     * finds a process already renamed, profiled and hooked for a guest that is not it.
+     * That is the shape of the eleventh run's worst fault, and telling the allocator is
+     * what closes it. The pool ends the process, and the next attempt gets a clean one.
+     *
+     * Sent only from inside the graft, so reaching here means the claim above was taken
+     * and this process really is the one holding the slot. A failure that happens before
+     * the claim — no APK on disk, hidden-API access refused — has nothing to give back.
+     */
+    private fun announceFailed(hostContext: Context, params: VirtualLaunchParams, code: String) =
+        announce(hostContext, params, VirtualProviderRouter.ROUTER_METHOD_SLOT_FAILED, code)
+
+    private fun announce(
+        hostContext: Context,
+        params: VirtualLaunchParams,
+        method: String,
+        code: String? = null,
+    ) {
         // `hostPackage` is set part-way through the graft, and the *starting* announcement
         // is made before the graft begins — so on a cold process this read was null and
         // this method returned having done nothing. Which is precisely the case the
@@ -266,6 +412,7 @@ object AppBootstrap {
                                 putInt(VirtualProviderRouter.KEY_SLOT, params.slot)
                                 putInt(VirtualProviderRouter.KEY_VUID, params.vuid)
                                 putInt(VirtualProviderRouter.KEY_PID, Process.myPid())
+                                code?.let { putString(VirtualProviderRouter.KEY_CODE, it) }
                             },
                         )
                     }
@@ -410,6 +557,21 @@ object AppBootstrap {
             hostContext,
             VirtualActivityManagerHook.hostSourceFor(hostContext, hostContext.packageName),
         )
+
+        // Armed before the guest can load a single library of its own.
+        //
+        // `makeApplication` runs the guest's `Application` class initialiser, and that is
+        // where a packed app loads its protector — `bin.mt.plus` had `libmtprotect.so`
+        // mapped 58 ms before it failed, and failed *because* of what that library
+        // concluded about its surroundings. `JNI_OnLoad` is called by ART after
+        // `android_dlopen_ext` returns, so a load-watch installed before this point
+        // patches the library's own PLT in between: the protector's checks then go
+        // through the redirect table and the `/proc` view like anything else.
+        //
+        // Publishing only, no scan: there is nothing of the guest's loaded yet to hook.
+        // The scans stay where they were, after the Application exists and again after
+        // its `onCreate`, and are idempotent.
+        armIoRedirection(hostContext, effective, appInfo)
 
         // Created, but its `onCreate` deliberately *not* run yet: `makeApplication` is
         // passed a null Instrumentation, and `callApplicationOnCreate` happens at the very
@@ -828,10 +990,87 @@ object AppBootstrap {
         appInfo: ApplicationInfo,
     ) {
         runCatching {
+            val armed = armIoRedirection(hostContext, params, appInfo) ?: return
+            val status = UniqueNative.installIoRedirect()
+            Diagnostics.info(
+                DiagChannel.NATIVE, "IO_REDIRECT_INSTALLED",
+                mapOf(
+                    "status" to status.name,
+                    "watch" to armed.watch.name,
+                    "rules" to armed.rules.toString(),
+                    // Zero here means a guest's own libraries can still read UNIQUE out of
+                    // `/proc/self/maps`, which is a different failure from an unredirected
+                    // path and is invisible unless it is counted.
+                    "procView" to armed.view.toString(),
+                    "slots" to UniqueNative.redirectSlotsPatched().toString(),
+                    "scope" to armed.scope.joinToString(",").take(200),
+                    // Reported on every launch, not only when it is non-empty: a library
+                    // that is deliberately not hooked and one the scan never found produce
+                    // the same zero slots, and only one of them is a bug.
+                    "excluded" to armed.exclusions.joinToString(",").take(200),
+                ),
+            )
+            reportProcView(hostContext, params, armed.view)
+        }.onFailure {
+            Diagnostics.error(
+                DiagChannel.NATIVE, "IO_REDIRECT_INSTALL_FAILED",
+                mapOf("package" to params.packageName, "error" to it.toString()),
+            )
+        }
+    }
+
+    /** What [armIoRedirection] published, so [installIoRedirection] can report it. */
+    private data class Armed(
+        val rules: Int,
+        val view: Int,
+        val scope: List<String>,
+        val exclusions: List<String>,
+        val watch: com.unique.core.nativebridge.InstallStatus,
+    )
+
+    @Volatile private var armed: Armed? = null
+
+    /**
+     * Publishes both path tables and starts watching library loads. Once per process.
+     *
+     * Separate from the scan, and earlier than it, because of what the two cover. The scan
+     * hooks libraries that are loaded *now*; the watch hooks each one as it arrives. A
+     * packed app loads its protector from the `Application` class initialiser, before any
+     * scan can have run, and `JNI_OnLoad` — where a protector decides whether to register
+     * anything at all — is called by ART *after* `android_dlopen_ext` returns. So the
+     * watch, installed before `makeApplication`, patches that library in the gap between
+     * the two, and its checks go through the redirect table and the `/proc` view like
+     * every other library's.
+     *
+     * `bin.mt.plus` is the app that showed this. `libmtprotect.so` mapped cleanly and 58
+     * milliseconds later its `<clinit>` had no implementation — the protector had loaded
+     * and declined to register its natives, having looked around first, with nothing of
+     * UNIQUE's interception in place to look through.
+     */
+    private fun armIoRedirection(
+        hostContext: Context,
+        params: VirtualLaunchParams,
+        appInfo: ApplicationInfo,
+    ): Armed? {
+        armed?.let { return it }
+        return runCatching {
             val storage = VirtualStorage(hostContext)
             val rules = storage.publishRedirection(
                 params.vuid, params.packageName, params.versionCode,
             )
+            // The same pairs the other way round, so that the one file which hands a guest
+            // every path at once — its own `/proc/self/maps` — describes an installed app
+            // rather than this engine.
+            val view = runCatching {
+                storage.publishProcView(
+                    vuid = params.vuid,
+                    packageName = params.packageName,
+                    versionCode = params.versionCode,
+                    hostSourceDir = hostContext.applicationInfo?.sourceDir.orEmpty(),
+                    hostDataDir = hostContext.applicationInfo?.dataDir.orEmpty(),
+                    abiDirName = appInfo.nativeLibraryDir?.substringAfterLast('/') ?: "arm64-v8a",
+                )
+            }.getOrDefault(emptyList())
             val scope = listOfNotNull(
                 appInfo.nativeLibraryDir,
                 appInfo.sourceDir?.substringBeforeLast('/'),
@@ -841,30 +1080,75 @@ object AppBootstrap {
             // exclusion that arrives afterwards excludes a library that is already hooked.
             val exclusions = nativeExclusionsFor(hostContext, params)
             UniqueNative.setRedirectExclusions(exclusions)
-            val status = UniqueNative.installIoRedirect()
-            // And keep it current: a library the guest loads later has its own GOT and is
-            // not covered by the scan above.
             val watch = UniqueNative.watchLibraryLoads()
             Diagnostics.info(
-                DiagChannel.NATIVE, "IO_REDIRECT_INSTALLED",
+                DiagChannel.NATIVE, "IO_REDIRECT_ARMED",
                 mapOf(
-                    "status" to status.name,
-                    "watch" to watch.name,
+                    "package" to params.packageName,
                     "rules" to rules.size.toString(),
-                    "slots" to UniqueNative.redirectSlotsPatched().toString(),
-                    "scope" to scope.joinToString(",").take(200),
-                    // Reported on every launch, not only when it is non-empty: a library
-                    // that is deliberately not hooked and one the scan never found produce
-                    // the same zero slots, and only one of them is a bug.
-                    "excluded" to exclusions.joinToString(",").take(200),
+                    "procView" to view.size.toString(),
+                    "watch" to watch.name,
                 ),
             )
+            Armed(rules.size, view.size, scope, exclusions, watch).also { armed = it }
         }.onFailure {
             Diagnostics.error(
-                DiagChannel.NATIVE, "IO_REDIRECT_INSTALL_FAILED",
+                DiagChannel.NATIVE, "IO_REDIRECT_ARM_FAILED",
                 mapOf("package" to params.packageName, "error" to it.toString()),
             )
+        }.getOrNull()
+    }
+
+    /**
+     * Says whether the view actually hides everything, rather than that it was installed.
+     *
+     * A table with the wrong prefix in it and no table at all produce the same log line
+     * and opposite behaviour — the failure this project keeps meeting — so the check is
+     * the real question: take this process's own `/proc/self/maps`, put it through the
+     * view, and count what still names UNIQUE.
+     *
+     * The read is done from Kotlin, which is exactly why it works as a check: Java file
+     * IO does not cross a PLT the hook has patched, so this reads the *real* file and the
+     * rewriting is the only thing under test. It is also why the guest's own Java code can
+     * still read the real one — stated in COMPATIBILITY.md rather than left to be found.
+     *
+     * Only counts and one prefix are reported. The paths in a maps file are UNIQUE's own
+     * and the guest's own library names; nothing from inside the app's data ever appears
+     * in one, and nothing here opens anything that would.
+     */
+    @Volatile private var procViewReported = false
+
+    private fun reportProcView(hostContext: Context, params: VirtualLaunchParams, rules: Int) {
+        // Once. The scan runs two or three times per graft by design; reading a Unity
+        // game's maps costs a few hundred kilobytes each time and says the same thing.
+        if (procViewReported) return
+        procViewReported = true
+        val host = hostContext.packageName
+        val maps = runCatching { File("/proc/self/maps").readText() }.getOrNull()
+        if (maps == null) {
+            Diagnostics.warn(
+                DiagChannel.NATIVE, "PROC_VIEW_UNCHECKED",
+                mapOf("rules" to rules.toString(), "detail" to "/proc/self/maps is unreadable"),
+            )
+            return
         }
+        val before = maps.lineSequence().count { it.contains(host) }
+        val shown = UniqueNative.procViewRewrite(maps)
+        val leaks = shown.lineSequence().filter { it.contains(host) }.toList()
+        Diagnostics.event(
+            DiagChannel.NATIVE,
+            if (leaks.isEmpty()) DiagLevel.INFO else DiagLevel.WARN,
+            "PROC_VIEW_INSTALLED",
+            mapOf(
+                "package" to params.packageName,
+                "rules" to rules.toString(),
+                "named" to before.toString(),
+                "leaked" to leaks.size.toString(),
+                // The directory only, never the file: enough to say which rule is missing.
+                "first" to (leaks.firstOrNull()
+                    ?.substringAfterLast(' ')?.substringBeforeLast('/') ?: "-"),
+            ),
+        )
     }
 
     /**

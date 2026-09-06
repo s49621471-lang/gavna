@@ -136,6 +136,26 @@ apps rely on `:push`/`:remote` processes being genuinely separate.
 Reclamation: LRU over empty slots, plus `onTrimMemory(TRIM_MEMORY_COMPLETE)` pressure
 handling, plus explicit *Stop* from the UI.
 
+**A process belongs to whoever claimed it first, whatever happened next.** `AppBootstrap`
+used to record the *result* of a graft, which left a hole the eleventh phone run fell
+through: an app whose `Application` could not be constructed left the process renamed to
+it, its device profile bound and its identity hooks installed — and `bootstrapped` null, so
+every check that asks "is this slot taken" answered no. A job for a different app then
+grafted itself into the same process, and because a device profile binds once per process,
+that app ran reporting the first one's `ANDROID_ID`. Separate identity per instance is the
+one promise this engine makes, and it was broken silently by an app that was not running.
+
+So the claim is written *before* the graft (`AppBootstrap.Claim`). A second instance
+arriving is refused, and the process surrenders the slot rather than only refusing —
+refusing alone leaves the slot poisoned for the life of the process, which is the failure
+`SLOT_ALREADY_BOUND` was invented to report. A graft that fails also says so, over the
+router (`ROUTER_METHOD_SLOT_FAILED` → `ProcessPool.releaseIf`), because the pool cannot
+see it for itself: a process whose graft failed is *running*, so `alive()` says the slot is
+busy, quite correctly, and it stays held by an app that never started. `releaseIf` takes
+the instance as well as the slot, because that message describes the moment it was sent
+and the pool may have reclaimed the slot since — releasing unconditionally would kill a
+healthy process whose only mistake was being next.
+
 ---
 
 ## 4. Runtime access layer (the part that decides whether anything works at all)
@@ -1209,6 +1229,75 @@ Rules are **prefix rewrites with an explicit ordering**, not regexes, and the ta
 frozen after `attachBaseContext` so the hot path is a sorted-array scan (typically ≤ 12
 entries, one `strncmp` each). Redirection is per-process and carries the process's vuid, so
 `:vapp3` can never see `:vapp4`'s tree.
+
+### 7.3.1 The inverse table: what `/proc` says about all of it
+
+Redirection covers the paths a guest **hands out**. It does nothing about the ones a guest
+is **handed**, and there is one file that hands out all of them at once. Inside the
+`:vapp0` that ran Standoff 2 on the eleventh phone run:
+
+```
+… r--p … /data/app/~~eOlB8_…/com.unique-LcSgGP…/base.apk
+… r-xp … /data/user/0/com.unique/files/virtual/apk/com.axlebolt.standoff2/…/libunity.so
+```
+
+An installed app's `/proc/self/maps` names its own package and nothing else. Two lines
+like those are all a check needs; they cost one `fopen` and no permission; and reading
+that file is what every native crash handler does anyway, so the code that would find them
+is already in most applications for an innocent reason. For the applications this engine
+exists to run, "does it work" and "can it be seen" are the same question.
+
+So the same pairs are published a second time, the other way round
+(`VirtualPathModel.procViewRules`, `ProcView` in `core/native/proc_view.h`):
+
+| Real | What the guest reads |
+|---|---|
+| `…/virtual/apk/<pkg>/<vc>/lib/arm64-v8a` | `/data/app/~~<a>/<pkg>-<b>/lib/arm64` |
+| `…/virtual/apk/<pkg>/<vc>` | `/data/app/~~<a>/<pkg>-<b>` |
+| `…/virtual/users/<vuid>/data/<pkg>` | `/data/user/0/<pkg>` |
+| `…/virtual/users/<vuid>/sdcard` | `/storage/emulated/0` |
+| UNIQUE's own install directory | `/data/app/~~<a>/<pkg>-<b>` |
+| UNIQUE's own private directory | `/data/user/0/<pkg>` |
+
+`<a>` and `<b>` are the two 22-character tokens Android 11 and newer give an installed
+app's directory, derived from the instance so they are stable across launches and differ
+between two instances of one app — which a real install would also give.
+
+Four decisions worth stating, because each was the alternative to something worse:
+
+1. **It renames, it never deletes.** Every mapping keeps its address, its permissions and
+   its place in the file. Unity's crash handler, Crashlytics and every native unwinder
+   read this file to turn addresses into symbols, and a view with lines missing breaks
+   them in ways that look like the app's own fault.
+2. **The tables are exact inverses, and a test says so.** A path the view produces, put
+   back through redirection, is the path it came from — including the `lib/arm64` versus
+   `lib/arm64-v8a` difference between an installed app and an APK. A view that answered
+   with a path nothing resolves would be a stranger fault than the one it fixes: a library
+   that is mapped and cannot be opened is a state no real device produces.
+3. **It is served, not copied.** `open`, `openat` and `fopen` on a covered path read the
+   real file, rewrite it and hand back a `memfd`. A temporary file on disk would be one
+   more thing in the guest's own directory for the guest to find, would survive a crash,
+   and would appear in the very list being rewritten. Every failure falls through to the
+   real file: a guest that cannot read its own maps crashes inside its own crash handler,
+   which is worse than one that can read UNIQUE out of them.
+4. **The graft checks its own work.** A table with a wrong prefix in it and no table at
+   all produce the same "installed" line and opposite behaviour. So the graft reads the
+   real file from Kotlin — which does not cross a patched PLT, and is therefore a genuine
+   second opinion — puts it through the same code that serves it, and counts what still
+   names UNIQUE: `PROC_VIEW_INSTALLED … named=17 leaked=0`.
+
+**Scope, and what is outside it.** The hook is a PLT patch in the *guest's own* libraries,
+which is where anti-cheat code lives and is why the scope is drawn there (§7.3). It does
+not cover a read made through Java, because `libjavacore.so` is a system library and
+patching it would redirect UNIQUE's own file operations in the same process; nor
+`dl_iterate_phdr` and `dladdr`, which read the linker's tables and open nothing; nor a raw
+`syscall(SYS_openat, …)`, which crosses no PLT. And it does not change
+`ApplicationInfo.dataDir`, which is the virtual path and has to be, because the guest's
+Java code writes there through those same unpatched libraries — an app comparing it with
+`/data/user/0/<its own package>` sees the difference. Closing that means redirecting Java
+file IO as well, which means patching the platform's libraries and exempting UNIQUE's own
+reads. That is a real design and the obvious next step; it is not one to make on reasoning
+alone.
 
 ### 7.4 Scoped storage, MediaStore, URIs
 

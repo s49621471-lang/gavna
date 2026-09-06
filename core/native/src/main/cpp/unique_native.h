@@ -65,6 +65,18 @@ void set_scope(const char** paths, int count);
 // whole app.
 void set_exclusions(const char** paths, int count);
 int exclusion_count();
+// Publishes the *outward* table: real path prefix -> the prefix an installed app shows.
+//
+// The inverse of set_rules(). Redirection answers "where does this path really live";
+// this answers "what would this path look like if the app were installed", which is the
+// question `/proc/self/maps` asks on the guest's behalf whether it wants it or not. See
+// proc_view.h. An empty table leaves /proc exactly as the kernel wrote it.
+void set_proc_view(const char** from, const char** to, int count);
+void clear_proc_view();
+int proc_view_rule_count();
+// Rewrites arbitrary text through the outward table. Exposed for the diagnostic that
+// reports what a guest would see, so the answer comes from the same code that serves it.
+std::string proc_view_rewrite(const char* text);
 // Installs the libc interception into the scoped libraries. Idempotent, and meant to be
 // repeated after the guest loads more libraries.
 InstallStatus install();

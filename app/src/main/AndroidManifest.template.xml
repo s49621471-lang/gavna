@@ -84,6 +84,41 @@
     <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
 
     <!--
+      The advertising and licensing permissions, which every large free-to-play game has.
+
+      All five are install-time. That is the whole reason they are here: no dialog exists
+      for an install-time permission, so a guest denied one cannot be helped afterwards
+      and the failure surfaces wherever the SDK happens to check. The eleventh phone run
+      caught the first of them —
+
+        PERMISSION_CHECK permission=android.permission.ACCESS_ADSERVICES_ATTRIBUTION
+                         result=DENIED   (twice, in com.axlebolt.standoff2)
+
+      — and the other four are the rest of what that game declares and UNIQUE did not.
+      The three `ACCESS_ADSERVICES_*` are the platform's Privacy Sandbox family; `AD_ID`
+      is Play services' gate on the advertising id, which the game asks for through
+      `IAdvertisingIdService`; `BILLING` is Play's. `CHECK_LICENSE`, which the same game
+      also asks for, is already declared further down with the run that put it there.
+
+      Declaring `BILLING` is not a claim that Play Billing works — it does not, and
+      COMPATIBILITY.md still says so. It means that when it fails, it fails at the thing
+      that is actually unsupported rather than at a permission check several layers above
+      it, which is a much harder failure to read.
+
+      Deliberately *not* declared, from the same app's manifest:
+        REQUEST_DELETE_PACKAGES — lets a guest put a system uninstall dialog in front of
+          the user for a package on the real device. That is a guest acting on the device
+          rather than inside its own space, which is the one thing this engine is for.
+        com.adjust.preinstall.READ_PERMISSION, com.amazon.privacypass.ATTEST — defined by
+          packages this device does not have, so declaring them grants nothing.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_TOPICS" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+    <uses-permission android:name="com.android.vending.BILLING" />
+
+    <!--
       Legacy external storage, capped at the API where it still meant anything.
 
       19 of 59 surveyed apps declare WRITE_EXTERNAL_STORAGE and 17 READ_EXTERNAL_STORAGE,

@@ -4,21 +4,29 @@ Two APKs, both **arm64-v8a only**, both signed with the same key — so either c
 installed over the other. Android 12 or newer (`minSdk 31`), no root, no unlocked
 bootloader.
 
-> **A build from a different session will not install over an older one.** These are
-> signed with a *test* key that the build machine generates, so two builds made on
-> different machines have different keys, and Android's error for that is the unhelpful
-> `App not installed`. When it happens, uninstall first — which removes the instances and
-> their data with it. That is the cost of a test-signed pre-release, and it is stated here
-> rather than discovered.
+> **This build needs one uninstall, and it is the last one that will.**
 >
-> Consecutive builds from the *same* session share a key and update in place, instances
-> intact. `apksigner verify --print-certs` on the APK you have and the one you are about
-> to install answers which case you are in; `SHA256SUMS` says which artifact this is.
+> Every build before it was signed with a key the *build machine* generated for itself,
+> so two builds made in two sessions had two different keys — and Android's error for
+> that is the unhelpful `App not installed`. The only way through it is to uninstall,
+> which deletes the instances, their data, and any expansion file you spent an evening
+> importing. That was a build-machine detail costing a tester their work, so the key now
+> lives in the repository (`app/debug.keystore`, subject `CN=UNIQUE Test Key`) and every
+> build from here on installs over this one with the instances intact.
+>
+> It is a **test** key and marked as one: its password is written in `app/build.gradle.kts`
+> in the open, and anyone with the repository can build something that installs over your
+> copy. That is exactly what it is for, and it is why an APK signed this way must not be
+> distributed. `apksigner verify --print-certs` on the APK you have and the one you are
+> about to install says which case you are in; `SHA256SUMS` says which artifact this is.
+>
+> So: **uninstall UNIQUE once, install this, and re-import your apps.** After that,
+> updates keep everything.
 
 | File | Size | What it is |
 |---|---|---|
-| `unique-arm64-v8a.apk` | ~27 MB | **Install this one.** The engine exactly as the acceptance suite runs it — no R8, so no keep rule can be wrong — with Flutter's UI built ahead of time so the artifact is a quarter the size of a debug build |
-| `unique-arm64-v8a-minified.apk` | ~19 MB | The same thing with R8 on. **Not device-verified** — see below |
+| `unique-arm64-v8a.apk` | ~26 MB | **Install this one.** The engine exactly as the acceptance suite runs it — no R8, so no keep rule can be wrong — with Flutter's UI built ahead of time so the artifact is a quarter the size of a debug build |
+| `unique-arm64-v8a-minified.apk` | ~18 MB | The same thing with R8 on. **Not device-verified** — see below |
 
 Direct links, which work in a phone browser:
 
@@ -44,12 +52,68 @@ differently from the other one, that difference is the finding.
 
 ## Signing
 
-Both are signed with Android's **debug key** (`CN=Android Debug`, SHA-256
-`f061acdb0b780c3a83efe0c364435a0d02f0920c6e4ff23dd53305fbb1d76489`). That is a
-test-signing arrangement and is marked as such: these must not be distributed as a
-release, and an app signed with a real key later will not install over them.
+Both are signed with the repository's **test key** (`CN=UNIQUE Test Key`, SHA-256
+`6086840c82b590eb8b0e1b35578844f973f056fe08fc2577e110e739cb3ba6d3`). It lives in
+`app/debug.keystore` so that every build from here on installs over the last one with your
+instances intact — see the warning at the top for why that changed, and for the one
+uninstall it costs you now. It is a test-signing arrangement and is marked as such: these
+must not be distributed as a release, and an app signed with a real key later will not
+install over them.
 
 ## What changed since the last phone run
+
+**Your log has the best news this project has had.** Standoff 2 ran. Not "launched" —
+*ran*: Unity came up on the real GPU, the game read its own expansion file out of its
+copy's storage, sound loaded, Firebase and the analytics SDKs started, and it drew its
+login screen at 2400×1080 and took your tap on it. Every version of the project's own
+README before today said a virtual app had never reached a usable screen on a phone. That
+sentence is now wrong and has been replaced.
+
+Then you tapped *Sign in with Google* and it crashed. That exact crash was found and fixed
+in the previous build from your ninth log — the one you tested is older than the fix — so
+it should not happen again here. Nothing new was needed for it.
+
+What was new is underneath, and it is worse than the crash:
+
+- **A game ran under another app's identity.** MT Manager failed to start (see below),
+  and the process it failed in was left half-set-up and marked as belonging to nobody.
+  Sixteen seconds later a background job for Standoff 2 landed in that same process and
+  took it over — so the game ran reporting **MT Manager's device id**. Two copies having
+  separate identities is the one thing this whole project is for, and it was quietly
+  broken by an app that was not even running. A process is now claimed the moment a copy
+  starts using it, whether or not that copy then works, and a failed start hands the
+  process back so the next attempt gets a clean one instead of a poisoned one.
+- **The game was refused a permission no dialog can grant.** `ACCESS_ADSERVICES_ATTRIBUTION`,
+  twice. It is granted at install or never; there is no screen anywhere on your phone that
+  could have fixed it. UNIQUE now asks for it, and for the four others Standoff 2 wants
+  that it did not have.
+- **The game can see it is inside UNIQUE, and now sees less.** This is the one you asked
+  about. An app does not have to work hard to find out where it is: it reads
+  `/proc/self/maps`, a file listing everything its process has open, and inside a copy
+  that file names UNIQUE's own app and UNIQUE's own folders in plain text. It costs one
+  read and no permission. That file is now answered with a rewritten version — the game's
+  own files appear where an installed game's would be, `/data/app/…/com.axlebolt.standoff2-…`
+  and `/data/user/0/com.axlebolt.standoff2`, and so does UNIQUE's own code. Nothing is
+  removed from the list, only renamed, because the game's crash reporter reads the same
+  file and would break if lines went missing.
+
+  **This covers reads made by the game's own native code, which is where this kind of
+  check lives.** It does not cover four other ways of asking, and rather than let you find
+  that out from a screenshot: a check written in Java, a check that asks the code loader
+  instead of the filesystem, a check that calls the kernel directly, and the app's own
+  data folder path, which is still UNIQUE's and has to be until a larger change is made.
+  If the notice still appears, the log will now say whether this vector was closed —
+  UNIQUE checks its own work at startup and records the result — and that narrows the
+  next step to one of those four.
+- **MT Manager still does not start**, and I know one more thing about why. Its protection
+  library `libmtprotect.so` **loads fine**, and 58 milliseconds later the thing it was
+  supposed to provide is not there. It did not fail to load; it looked around and refused.
+  And it looked around before any of UNIQUE's interception was in place, because that was
+  set up after the app's first code ran rather than before it. That order is fixed. Whether
+  the protector changes its mind is a measurement, not a promise — if it still fails, it
+  fails for a reason worth reading.
+
+## What changed one run ago
 
 The rewrite from the last build worked — your log shows 17 requests going out under a
 name Google accepts, and the game-files message is gone. What it uncovered is three more
@@ -76,7 +140,7 @@ covered all of them.** The `DEVELOPER_ERROR` is real for a request that reaches 
 UNIQUE. But this crash never reached Google at all. Try signing in on this build and send
 the log: what happens now is something nobody has measured, me included.
 
-## What changed one run ago
+## What changed two runs ago
 
 - **Google Play services actually works now.** There was one refusal behind every Google
   failure this project has ever had: Play services checks that the calling app's name
@@ -101,7 +165,7 @@ the log: what happens now is something nobody has measured, me included.
   picker reaches, several at once. It is still reachable from an app's own Storage
   section, which opens it directly inside that app.
 
-## What changed two runs ago
+## What changed three runs ago
 
 Six things were reported. Two of them were mistakes of mine, one was a request, and the
 log had all of them.
@@ -136,7 +200,7 @@ log had all of them.
   services resolves the caller to UNIQUE, so a token comes back for UNIQUE and not for the
   app. Only Play services running *inside* the space can answer that, and it is not built.
 
-## What changed three runs ago
+## What changed four runs ago
 
 That log was answered with two words — *"nothing changed"* — and a screenshot of a
 notification asking to install Google Play services. That was fair. The build was
@@ -163,7 +227,7 @@ installed and its new code was running; the code was wrong.
   passed on the log that produced that notification; this is the seventeenth, and it is
   asserted against that same log so the rule cannot come back quietly.
 
-## What changed four runs ago
+## What changed five runs ago
 
 Six apps launched in that run and three of them died seconds later, all of the same thing.
 This build answers everything that log reported.
@@ -305,7 +369,21 @@ so an ordinary capture carries the whole run — `tools/device-log/analyze.py` r
 
 ## What is not claimed
 
-ARM64 native code, hardware Vulkan, WebView rendering, Google Play services and any real
-application are all `NOT_TESTED` in `docs/COMPATIBILITY.md`, and stay that way until a
-physical-device run says otherwise. Everything verified so far ran on an x86_64 Android 14
-emulator with software rendering.
+Standoff 2 is recorded `PARTIAL` on ARM64 in `docs/COMPATIBILITY.md`, not `SUPPORTED`, and
+the gap is named there: Google sign-in from it has never completed, and whether the game
+shows its *"running in a virtual space"* notice further in has not been measured under a
+build with the `/proc` view in it. Everything else — hardware Vulkan, WebView rendering,
+Play Integrity, Play Billing, Play Games — is still `NOT_TESTED` or `UNSUPPORTED` and stays
+that way until a run says otherwise.
+
+What would settle the remaining question fastest: play far enough to reach the notice, or
+far enough to be sure it is gone, and send the log either way. Two lines in it decide the
+next step —
+
+```
+PROC_VIEW_INSTALLED package=com.axlebolt.standoff2 … leaked=0
+```
+
+means the file this build rewrites is clean, and the notice (if it appears) is coming from
+one of the four routes listed above rather than from `/proc/self/maps`. Anything other than
+`leaked=0` names the folder a rule is missing for, which is a ten-minute fix.

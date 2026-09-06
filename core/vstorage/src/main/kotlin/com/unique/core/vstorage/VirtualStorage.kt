@@ -54,6 +54,45 @@ class VirtualStorage(context: Context) {
         return rules
     }
 
+    /**
+     * Publishes what this instance's `/proc` should say, which is the other direction.
+     *
+     * Redirection covers the paths a guest hands out; this covers the ones it is handed.
+     * `/proc/self/maps` inside a `:vappN` lists UNIQUE's APK and UNIQUE's private
+     * directory by name, and reading it is what a native crash handler does anyway — so
+     * the code that would find them is already in most apps, for an innocent reason.
+     *
+     * Published from the same place and at the same moment as the redirection table so
+     * the two cannot get out of step: they are inverses of each other, and a view that
+     * describes a layout the redirector no longer implements is worse than none.
+     */
+    fun publishProcView(
+        vuid: Int,
+        packageName: String,
+        versionCode: Long,
+        hostSourceDir: String,
+        hostDataDir: String,
+        abiDirName: String,
+    ): List<RedirectRule> {
+        val rules = model.procViewRules(
+            vuid = vuid,
+            packageName = packageName,
+            versionCode = versionCode,
+            hostSourceDir = hostSourceDir,
+            hostDataDir = hostDataDir,
+            abiDirName = abiDirName,
+        )
+        UniqueNative.setProcView(rules)
+        val accepted = UniqueNative.procViewRuleCount()
+        if (accepted != rules.size) {
+            Diagnostics.warn(
+                DiagChannel.STORAGE, "PROC_VIEW_RULE_COUNT_MISMATCH",
+                mapOf("published" to rules.size.toString(), "accepted" to accepted.toString()),
+            )
+        }
+        return rules
+    }
+
     fun usage(vuid: Int, packageName: String): StorageUsage = StorageUsage(
         dataBytes = sizeOf(File(model.dataDir(vuid, packageName))) - sizeOf(File(model.cacheDir(vuid, packageName))),
         cacheBytes = sizeOf(File(model.cacheDir(vuid, packageName))),

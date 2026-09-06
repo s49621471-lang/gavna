@@ -187,6 +187,60 @@ class ProcessPoolTest {
         assertThat(pool.freeCount()).isEqualTo(1)
     }
 
+    /**
+     * A slot whose graft failed comes back, and only for the app whose graft it was.
+     *
+     * `releaseIf` is called from a message a `:vappN` sends after its own graft failed,
+     * and a message describes the moment it was sent. On the eleventh phone run the file
+     * manager's slot went on holding a process that had failed to start it, through three
+     * more attempts and a job for another app that grafted itself into the same process.
+     */
+    @Test fun `releaseIf frees the slot when the instance still holds it`() {
+        val processes = Processes()
+        val pool = processes.pool()
+        val slot = pool.acquire(occupant("bin.mt.plus", vuid = 1))!!
+        processes.start(slot.index)
+
+        assertThat(pool.releaseIf(slot.index, vuid = 1, reason = "graft failed")).isTrue()
+
+        assertThat(pool.find(occupant("bin.mt.plus", vuid = 1))).isNull()
+        assertThat(processes.running).doesNotContain(slot.index)
+        assertThat(processes.stopped.map { it.first }).containsExactly(slot.index)
+    }
+
+    @Test fun `releaseIf leaves a slot that has already been handed to somebody else`() {
+        // The failing process's message arrives after the pool reclaimed its slot and
+        // started the next app in it. Releasing on that message would kill a healthy
+        // process whose only mistake was being next.
+        val processes = Processes()
+        val pool = processes.pool()
+        val first = pool.acquire(occupant("bin.mt.plus", vuid = 1))!!
+        pool.release(first.index, "process gone")
+        val second = pool.acquire(occupant("com.axlebolt.standoff2", vuid = 0))!!
+        processes.start(second.index)
+        processes.stopped.clear()
+
+        assertThat(pool.releaseIf(second.index, vuid = 1, reason = "graft failed")).isFalse()
+
+        assertThat(pool.find(occupant("com.axlebolt.standoff2", vuid = 0))).isNotNull()
+        assertThat(processes.running).contains(second.index)
+        assertThat(processes.stopped).isEmpty()
+    }
+
+    @Test fun `releaseIf on a free slot does nothing`() {
+        val processes = Processes()
+        val pool = processes.pool()
+        assertThat(pool.releaseIf(0, vuid = 1, reason = "graft failed")).isFalse()
+        assertThat(processes.stopped).isEmpty()
+    }
+
+    @Test fun `releaseIf on a slot index that does not exist does nothing`() {
+        val processes = Processes()
+        val pool = processes.pool(capacity = 2)
+        assertThat(pool.releaseIf(7, vuid = 0, reason = "graft failed")).isFalse()
+        assertThat(processes.stopped).isEmpty()
+    }
+
     @Test fun `an occupied slot is not free`() {
         val processes = Processes()
         val pool = processes.pool(capacity = 2)

@@ -141,7 +141,7 @@ Send the capture. Whoever reads it runs:
 tools/device-log/analyze.py capture.log
 ```
 
-Ten checks, exit status 0 or 1, no SDK and no device needed. It answers the questions a
+Eighteen checks, exit status 0 or 1, no SDK and no device needed. It answers the questions a
 person scrolling a 27,000-line log is trying to answer and usually cannot: did every
 launch reach the guest's own Activity, was every process slot handed over clean, did any
 call go out under the guest's name and get refused — and *which system service to hook*

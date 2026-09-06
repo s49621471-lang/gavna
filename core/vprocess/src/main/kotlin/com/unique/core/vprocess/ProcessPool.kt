@@ -192,6 +192,36 @@ class ProcessPool(
         )
     }
 
+    /**
+     * Gives up a slot **only if** it is still the one [vuid] holds.
+     *
+     * The check is the point. This is called from a message sent by a `:vappN` that has
+     * just failed to graft, and a message describes the moment it was sent: by the time it
+     * arrives the pool may have reclaimed that slot and started somebody else in it.
+     * Releasing unconditionally would then kill a healthy process that had done nothing
+     * except be next.
+     *
+     * Returns whether the slot was released, so a caller can say which happened.
+     */
+    @Synchronized
+    fun releaseIf(index: Int, vuid: Int, reason: String): Boolean {
+        val slot = slots.getOrNull(index) ?: return false
+        if (slot.occupant?.vuid != vuid) {
+            Diagnostics.info(
+                DiagChannel.PROCESS, "SLOT_RELEASE_SKIPPED",
+                mapOf(
+                    "slot" to slot.processSuffix,
+                    "asked" to vuid.toString(),
+                    "serves" to (slot.occupant?.vuid?.toString() ?: "-"),
+                    "reason" to reason,
+                ),
+            )
+            return false
+        }
+        release(index, reason)
+        return true
+    }
+
     @Synchronized
     fun releaseAll(vuid: Int, reason: String) {
         slots.filter { it.occupant?.vuid == vuid }.forEach { release(it.index, reason) }

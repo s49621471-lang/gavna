@@ -144,6 +144,7 @@ object UniqueEngine {
     suspend fun registerBroadcastRoutes(context: Context) {
         VirtualBroadcastRouter.starter = ::startForBroadcast
         VirtualProviderRouter.slotLeaser = ::leaseSlotFor
+        VirtualProviderRouter.slotReleaser = launcher::releaseSlot
         var registered = 0
         for (instance in instances.instances()) {
             val manifest = runCatching { manifestOf(instance) }.getOrNull() ?: continue

@@ -52,6 +52,19 @@ class VirtualLauncher(
     fun release(vuid: Int, reason: String) = pool.releaseAll(vuid, reason)
 
     /**
+     * Gives back a slot whose `:vappN` reported that its graft failed.
+     *
+     * The process is ended with the slot, which is the whole point: a guest that could not
+     * be grafted leaves behind a process with its name, its device profile and its
+     * identity hooks already applied, and nothing else may be started in it. Releasing it
+     * here rather than from the failing process itself keeps the allocator the only thing
+     * that decides which slot serves what.
+     */
+    fun releaseSlot(slot: Int, vuid: Int, reason: String) {
+        pool.releaseIf(slot, vuid, reason)
+    }
+
+    /**
      * Leases a slot for a virtual process started by something other than [launch].
      *
      * Cold broadcast delivery needs a process without an activity to put on screen, so it

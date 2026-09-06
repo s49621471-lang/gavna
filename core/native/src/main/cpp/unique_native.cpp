@@ -80,6 +80,64 @@ Java_com_unique_core_nativebridge_UniqueNative_nativeClearRedirectRules(JNIEnv*,
     unique::io_redirect::clear_rules();
 }
 
+// The outward table: the same pairs as the redirect rules, the other way round.
+UNIQUE_EXPORT JNIEXPORT void JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeSetProcView(
+        JNIEnv* env, jclass, jobjectArray from, jobjectArray to) {
+    const jsize n = from == nullptr ? 0 : env->GetArrayLength(from);
+    if (to == nullptr || n != env->GetArrayLength(to)) {
+        ULOGE("proc view arrays differ in length; ignoring");
+        return;
+    }
+    std::vector<std::string> from_storage;
+    std::vector<std::string> to_storage;
+    from_storage.reserve(static_cast<size_t>(n));
+    to_storage.reserve(static_cast<size_t>(n));
+    for (jsize i = 0; i < n; ++i) {
+        auto fs = reinterpret_cast<jstring>(env->GetObjectArrayElement(from, i));
+        auto ts = reinterpret_cast<jstring>(env->GetObjectArrayElement(to, i));
+        // The inner scope is load-bearing; see nativeSetRedirectRules.
+        {
+            ScopedUtf f(env, fs);
+            ScopedUtf t(env, ts);
+            from_storage.emplace_back(f.get() != nullptr ? f.get() : "");
+            to_storage.emplace_back(t.get() != nullptr ? t.get() : "");
+        }
+        env->DeleteLocalRef(fs);
+        env->DeleteLocalRef(ts);
+    }
+    std::vector<const char*> fp;
+    std::vector<const char*> tp;
+    fp.reserve(from_storage.size());
+    tp.reserve(to_storage.size());
+    for (size_t i = 0; i < from_storage.size(); ++i) {
+        fp.push_back(from_storage[i].c_str());
+        tp.push_back(to_storage[i].c_str());
+    }
+    unique::io_redirect::set_proc_view(fp.data(), tp.data(), static_cast<int>(fp.size()));
+}
+
+UNIQUE_EXPORT JNIEXPORT void JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeClearProcView(JNIEnv*, jclass) {
+    unique::io_redirect::clear_proc_view();
+}
+
+UNIQUE_EXPORT JNIEXPORT jint JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeProcViewRuleCount(JNIEnv*, jclass) {
+    return unique::io_redirect::proc_view_rule_count();
+}
+
+// What the guest would see in place of this text. Used by the diagnostic that reports
+// whether anything of UNIQUE's is still readable, so the answer comes from the code that
+// serves it rather than from a second implementation that can drift from it.
+UNIQUE_EXPORT JNIEXPORT jstring JNICALL
+Java_com_unique_core_nativebridge_UniqueNative_nativeProcViewRewrite(
+        JNIEnv* env, jclass, jstring text) {
+    ScopedUtf t(env, text);
+    if (t.get() == nullptr) return nullptr;
+    return env->NewStringUTF(unique::io_redirect::proc_view_rewrite(t.get()).c_str());
+}
+
 UNIQUE_EXPORT JNIEXPORT jint JNICALL
 Java_com_unique_core_nativebridge_UniqueNative_nativeRedirectRuleCount(JNIEnv*, jclass) {
     return unique::io_redirect::rule_count();

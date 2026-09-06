@@ -87,6 +87,40 @@ object UniqueNative {
     fun redirectRuleCount(): Int = if (loaded) nativeRedirectRuleCount() else 0
 
     /**
+     * Publishes the *outward* table produced by `VirtualPathModel.procViewRules`.
+     *
+     * The inverse of [setRedirectRules], and needed for the same reason in reverse. A
+     * redirect answers a path the guest hands out; this answers a path the guest is
+     * handed — by `/proc/self/maps`, which lists every file the process has mapped and
+     * inside a `:vappN` describes the engine in full. An app does not have to look for
+     * UNIQUE to find it there; it only has to read its own maps, which every native crash
+     * handler does anyway.
+     *
+     * Publishing an empty list leaves `/proc` exactly as the kernel wrote it.
+     */
+    fun setProcView(rules: List<RedirectRule>) {
+        if (!loaded) return
+        nativeSetProcView(
+            rules.map { it.from }.toTypedArray(),
+            rules.map { it.to }.toTypedArray(),
+        )
+    }
+
+    fun clearProcView() { if (loaded) nativeClearProcView() }
+
+    fun procViewRuleCount(): Int = if (loaded) nativeProcViewRuleCount() else 0
+
+    /**
+     * What a guest reading [text] out of `/proc` would see.
+     *
+     * The same code that serves the file, so a check written against this cannot pass
+     * while the thing it is checking is broken. Returns [text] unchanged when no view is
+     * published, which is the state in UNIQUE's own processes.
+     */
+    fun procViewRewrite(text: String): String =
+        if (loaded) nativeProcViewRewrite(text) ?: text else text
+
+    /**
      * Applies the native table to [path], returning null when no rule matched.
      *
      * Used by the on-device consistency suite to assert that the native table agrees
@@ -189,6 +223,10 @@ object UniqueNative {
     @JvmStatic private external fun nativeSetRedirectRules(from: Array<String>, to: Array<String>)
     @JvmStatic private external fun nativeClearRedirectRules()
     @JvmStatic private external fun nativeRedirectRuleCount(): Int
+    @JvmStatic private external fun nativeSetProcView(from: Array<String>, to: Array<String>)
+    @JvmStatic private external fun nativeClearProcView()
+    @JvmStatic private external fun nativeProcViewRuleCount(): Int
+    @JvmStatic private external fun nativeProcViewRewrite(text: String): String?
     @JvmStatic private external fun nativeRedirect(path: String): String?
     @JvmStatic private external fun nativeSetRedirectScope(paths: Array<String>)
     @JvmStatic private external fun nativeSetRedirectExclusions(paths: Array<String>)

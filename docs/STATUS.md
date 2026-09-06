@@ -45,7 +45,7 @@ Every device claim below names the environment. Nothing is marked working on rea
 | Which packages a guest may see | 6 | The Google stack hidden, `com.android.vending` not, a prefix match not enough, and both shapes intent resolution answers in — the emulator has no Play services, so this is where the decision is pinned |
 | Window and task attributes | 9 | `hardwareAccelerated` at both levels including the `targetSdk >= 14` default, orientation, config changes, the task flags, typed meta-data, and a provider's own grant flag — against real `aapt2` output |
 
-**204 JVM tests, 15 Dart tests, 34 native checks, 71 off-device tool tests — all passing.**
+**269 JVM tests, 15 Dart tests, 65 native checks, 99 off-device tool tests — all passing.**
 
 ## On device (EMU34): verified working
 
@@ -1004,6 +1004,104 @@ conclusion was drawn from one path and stated as though it covered every path. W
 loader fixed, sign-in gets further than it has, and what it does next is a measurement
 that has not been taken yet. Which is the answer this project keeps having to re-learn:
 the log decides, not the reasoning.
+
+### The eleventh run: a game ran, and a slot was stolen out from under it
+
+The first log in which a virtual app is *used*. Standoff 2 — Unity 6000.3.13f1, IL2CPP,
+ARM64, a 105 MB APK and a separate expansion file — launched into its own Activity on the
+hardware renderer and stayed there:
+
+```
+I Unity: SystemInfo CPU = ARM64 FP ASIMD AES, Cores = 8, Memory = 7707mb
+I Unity: Device Model 'Xiaomi 23030RAC7Y', OS 'Android OS 15 (API 35)'
+W Unity: [FMOD] loadFromWeb. Path = jar:file:///data/user/0/com.unique/files/virtual/
+         users/0/sdcard/Android/obb/com.axlebolt.standoff2/main.203908.…obb!/assets/Master…
+D BLASTBufferQueue: [SurfaceView[com.axlebolt.standoff2/…MessagingUnityPlayerActivity]#1]
+         acquireNextBufferLocked size=2400x1080
+I MIUIInput: [MotionEvent] ViewRootImpl windowName
+         'com.axlebolt.standoff2/com.google.firebase.MessagingUnityPlayerActivity',
+         { action=ACTION_DOWN … }
+I Unity: Firebase Cloud Messaging API Initialized
+```
+
+Its expansion file was read out of the instance's own storage, FMOD loaded its banks,
+Firebase Analytics, FCM and AppMetrica all initialised, and the game drew its login screen
+at full resolution and took a touch on it. **That is a virtual app running to a usable
+screen on physical hardware**, which every previous version of this file said had never
+happened. It is the single largest change in this project's status and it is recorded here
+before anything that went wrong, because the temptation is to lead with the faults.
+
+Then the user tapped *Sign in with Google*, and `SignInHubActivity` died on the class
+loader — the tenth run's fault exactly, in the build that predates its fix. Nothing new,
+and it is fixed at HEAD.
+
+What *is* new is underneath, and is worse than anything the crash check reported.
+
+| Found | Fixed by |
+|---|---|
+| **A game ran under another app's device identity.** `bin.mt.plus` failed to construct its `Application`, and the graft stopped there — *after* the process had been renamed to it, its device profile bound and its identity hooks installed. `AppBootstrap` records the *result* of a graft, so a graft that failed recorded nothing and the process read as claimed by nobody. Sixteen seconds later a `JobStub_p0` job for Standoff 2 fired into that same process: `PROCESS_RENAMED argv0=com.axlebolt.standoff2` followed by `PROFILE_REBIND_IGNORED current=028dca45-… requested=6c904a63-…`. A device profile binds once per process, so the game ran reporting **the file manager's `ANDROID_ID`** — the one value this engine exists to keep separate — and every later launch of the file manager was refused `SLOT_ALREADY_BOUND` | The claim is written **before** the graft, not after it succeeds (`AppBootstrap.Claim`). A process belongs to whoever asked for it first, whatever happened next, and a second instance arriving is refused and the process surrenders the slot. The decision is a pure function with every case pinned (`AppBootstrapClaimTest`). A failed graft also *says so* now — `ROUTER_METHOD_SLOT_FAILED` → `ProcessPool.releaseIf` — so the allocator ends the process and the next attempt gets a clean one instead of the third identical failure in a poisoned one |
+| **Nothing in the analyzer would have said a word about it.** The one line that names the fault, `PROFILE_REBIND_IGNORED`, read as a debug note | `slots` fails on it, with the sentence that says what it means: *a second instance was grafted into a process that already had a device profile; it is running under the first one's identity*. Pinned against this log and against a synthetic line, so the check cannot start passing by never firing |
+| **`ACCESS_ADSERVICES_ATTRIBUTION` denied twice**, and it is install-time: no dialog exists for it anywhere on the device, so a guest denied it cannot be helped afterwards | Declared, with the five others the same game asks for that UNIQUE did not have: the three `ACCESS_ADSERVICES_*`, `com.google.android.gms.permission.AD_ID`, `com.android.vending.BILLING` and `CHECK_LICENSE`. `REQUEST_DELETE_PACKAGES` is deliberately still refused — it lets a guest put a system uninstall dialog in front of the user for a package on the real device |
+| **`bin.mt.plus` still does not launch**, and the log now says more about why than "unexplained". `libmtprotect.so` **loaded cleanly** and 58 ms later `l.ۢ.<clinit>` had no implementation. The library is there and its natives are not registered: the protector ran and declined. And it declined having looked around with nothing of UNIQUE's interception in place — `installIoRedirection` ran *after* `makeApplication`, which is where a packed app loads its protector | The tables and the load-watch are armed **before** `makeApplication` (`armIoRedirection`). ART calls `JNI_OnLoad` *after* `android_dlopen_ext` returns, so a watch installed first patches the protector's own PLT in the gap between the two, and its checks then go through the redirect table and the `/proc` view like any other library's. Whether that changes its mind is a measurement, not a claim: `NO_APPLICATION` is still what the analyzer asserts for this app |
+
+### What a guest can read about UNIQUE, and what it can now not
+
+The eleventh run also settled what to do next, by running the app this project is being
+built for. Standoff 2 does not need to defeat anything to know where it is:
+
+```
+$ cat /proc/self/maps          # inside :vapp0
+… r--p … /data/app/~~eOlB8_…/com.unique-LcSgGP…/base.apk
+… r-xp … /data/user/0/com.unique/files/virtual/apk/com.axlebolt.standoff2/…/libunity.so
+```
+
+An installed app's maps names its own package and nothing else. Two lines like those are
+all a check needs, they cost one `fopen` and no permission, and reading that file is
+something every native crash handler does anyway — so the code that would find them is
+already in the app for an innocent reason.
+
+`core/native/proc_view.h` answers that file, and `smaps`, and the per-thread spellings of
+both, from a rewritten view: the guest's APK directory and UNIQUE's own install directory
+both read as `/data/app/~~<a>/<pkg>-<b>`, the instance's data as `/data/user/0/<pkg>`, its
+storage as `/storage/emulated/0`. `readlink` answers are put through the same table, which
+covers a walk of `/proc/self/fd`.
+
+Three properties it was built to have:
+
+- **It renames, it never deletes.** Every mapping keeps its address, its permissions and
+  its place in the file. Unity's crash handler, Crashlytics and every native unwinder read
+  this file to turn addresses into symbols, and a view with lines missing would break them
+  in ways that look like the app's own fault.
+- **It is the exact inverse of the redirect table**, and there is a test that says so: a
+  path the view produces, put back through redirection, is the path it came from. A view
+  that answered with a path nothing resolves would be a stranger fault than the one being
+  fixed — a library that is mapped and cannot be opened is a state no real device produces.
+- **It checks its own work and reports the count.** A table with a wrong prefix in it and
+  no table at all produce the same "installed" line and opposite behaviour, which is the
+  failure this project keeps meeting. So the graft reads the real `/proc/self/maps`, puts
+  it through the same code that serves it, and counts what still names UNIQUE:
+  `PROC_VIEW_INSTALLED … named=17 leaked=0`. The analyzer's new `detection` check fails on
+  anything but zero and names the directory the missing rule is for.
+
+**What it does not cover, stated rather than discovered.** The hook is a PLT patch in the
+*guest's own* libraries, which is where anti-cheat code lives and is the reason the scope
+is drawn there. It does not cover:
+
+- **Java.** `new FileInputStream("/proc/self/maps")` goes through `libjavacore.so`, a
+  system library UNIQUE does not patch — patching it would redirect UNIQUE's own file
+  operations in the same process, which is a much larger change than this one.
+- **`dl_iterate_phdr` and `dladdr`**, which read the linker's own tables and never open a
+  file.
+- **A raw `syscall(SYS_openat, …)`**, which crosses no PLT.
+- **`ApplicationInfo.dataDir`,** which is the virtual path and has to be: the guest's Java
+  code writes there through those same unpatched system libraries. An app comparing it
+  with `/data/user/0/<its own package>` sees the difference. Closing that means redirecting
+  Java file IO too, which means patching the platform's libraries and exempting UNIQUE's
+  own reads — a real design and the obvious next step, and not one to make on reasoning
+  alone the week a build is going onto a phone.
+
+So this is one vector closed, measured, with the rest named. Whether it is *the* vector
+Standoff 2 uses is what the next log says.
 
 ### What the sixth run settled about Google sign-in
 

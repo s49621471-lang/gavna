@@ -198,6 +198,21 @@ class VirtualPathModel(private val hostFilesRoot: String) {
         // pointed at the shared read-only APK directory.
         rules += RedirectRule("/data/app/$packageName", apkDir(packageName, versionCode))
 
+        // And the exact directory `procViewRules` shows in place of that one, so a guest
+        // that takes a path out of its own `/proc/self/maps` and opens it finds the file.
+        // A view that answers with a path nothing resolves would be a stranger fault than
+        // the one it fixes: a library that is mapped and cannot be opened is a state no
+        // real device produces. The library rule is separate because an installed app's
+        // is `lib/arm64` where the APK's is `lib/arm64-v8a`.
+        val installed = installedApkDir(packageName, installTokenFor(vuid, packageName, versionCode))
+        for (abi in listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")) {
+            rules += RedirectRule(
+                "$installed/lib/${installedAbiDirName(abi)}",
+                nativeLibraryDir(packageName, versionCode, abi),
+            )
+        }
+        rules += RedirectRule(installed, apkDir(packageName, versionCode))
+
         // External storage, in every spelling.
         for (prefix in listOf(
             "/sdcard",
@@ -211,19 +226,80 @@ class VirtualPathModel(private val hostFilesRoot: String) {
         return rules.sortedByDescending { it.from.length }
     }
 
-    // ---- validation -----------------------------------------------------------------
+    // ---- the outward view ------------------------------------------------------------
 
-    /** True when [path] belongs to the instance identified by [vuid]. */
-    fun belongsToInstance(path: String, vuid: Int): Boolean {
-        val normalized = normalize(path)
-        return normalized == userRoot(vuid) || normalized.startsWith(userRoot(vuid) + "/")
+    /**
+     * The other half of [redirectionRules]: real path prefix → what an installed app shows.
+     *
+     * Redirection covers the paths a guest *hands out*. It does nothing about the ones a
+     * guest is *handed*, and there is one file that hands out all of them at once:
+     *
+     * ```
+     * $ cat /proc/self/maps          # inside :vapp0, running Standoff 2
+     * … r--p … /data/app/~~eOlB8_…/com.unique-LcSgGP…/base.apk
+     * … r-xp … /data/user/0/com.unique/files/virtual/apk/com.axlebolt.standoff2/…/libunity.so
+     * ```
+     *
+     * An installed app's maps names its own package and nothing else. Two lines like
+     * those are all a game needs, they cost one `fopen` and no permission, and reading
+     * them is something native crash handlers do anyway — so the code that would find
+     * them is already in every such app for an innocent reason.
+     *
+     * The rewrite is a rename, never a deletion: every mapping keeps its address, its
+     * permissions and its place in the file, because Unity's crash handler, Crashlytics
+     * and every native unwinder read this file to turn addresses into symbols, and a view
+     * with lines missing breaks them in ways that look like the app's own fault.
+     *
+     * @param hostSourceDir UNIQUE's own `ApplicationInfo.sourceDir`, whose directory is
+     *   mapped into every `:vappN` because that is whose process it is.
+     * @param hostDataDir UNIQUE's own `dataDir`, the root everything virtual lives under.
+     * @param installToken the two path components Android 11+ gives an installed app's
+     *   directory. Deterministic per instance — see [installTokenFor] — so a guest that
+     *   remembers where it was installed last time still recognises the place.
+     */
+    fun procViewRules(
+        vuid: Int,
+        packageName: String,
+        versionCode: Long,
+        hostSourceDir: String,
+        hostDataDir: String,
+        installToken: Pair<String, String> = installTokenFor(vuid, packageName, versionCode),
+        realHostUserId: Int = 0,
+        abiDirName: String = "arm64-v8a",
+    ): List<RedirectRule> {
+        val installed = installedApkDir(packageName, installToken)
+        val installedData = "/data/user/$realHostUserId/$packageName"
+        val rules = ArrayList<RedirectRule>(8)
+
+        // The guest's own code. The library directory is listed separately because an
+        // installed app's is `lib/arm64`, not `lib/arm64-v8a`: the ABI directory inside an
+        // APK and the one the installer extracts to are spelled differently, and an app
+        // that knows the difference is exactly the kind that is looking.
+        rules += RedirectRule(nativeLibraryDir(packageName, versionCode, abiDirName),
+            "$installed/lib/${installedAbiDirName(abiDirName)}")
+        rules += RedirectRule(apkDir(packageName, versionCode), installed)
+
+        // The guest's own data, and what it calls the sdcard.
+        rules += RedirectRule(dataDir(vuid, packageName), installedData)
+        rules += RedirectRule(externalRoot(vuid), "/storage/emulated/$realHostUserId")
+
+        // UNIQUE itself. Its APK is mapped into this process — it is UNIQUE's process —
+        // and so is anything else it has open under its private directory. Both are shown
+        // as more of the guest's own: an app's `base.apk` is mapped many times over, so
+        // one more mapping of it is the least remarkable thing in the file.
+        //
+        // These come last only for readability; the native side sorts longest-first, so
+        // the specific rules above always win over `hostDataDir`, which is their prefix.
+        hostSourceDir.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
+            ?.let { rules += RedirectRule(it, installed) }
+        rules += RedirectRule(hostDataDir, installedData)
+
+        return rules.sortedByDescending { it.from.length }
     }
 
-    /** True when [path] is inside UNIQUE's own tree at all. */
-    fun isVirtual(path: String): Boolean {
-        val normalized = normalize(path)
-        return normalized == root || normalized.startsWith("$root/")
-    }
+    /** `/data/app/~~<a>/<pkg>-<b>`, as Android 11 and newer lay an installed app out. */
+    fun installedApkDir(packageName: String, token: Pair<String, String>): String =
+        "/data/app/~~${token.first}/$packageName-${token.second}"
 
     companion object {
         /** Collapses `.`/`..`/duplicate separators without touching the filesystem. */
@@ -241,7 +317,87 @@ class VirtualPathModel(private val hostFilesRoot: String) {
             val joined = out.joinToString("/")
             return if (absolute) "/$joined" else joined
         }
+
+        /**
+         * The two 22-character tokens in an installed app's directory name.
+         *
+         * Android generates them at install time from a random 128-bit value, encoded
+         * base64url without padding. UNIQUE derives them instead, from the instance —
+         * which makes them stable for the life of that instance and different between two
+         * instances of one app, both of which a real install would also give.
+         *
+         * Not a hash of anything secret and not meant to be one: the point is a name of
+         * the right *shape*, in a directory the guest never opens, that does not change
+         * under it between launches.
+         */
+        fun installTokenFor(vuid: Int, packageName: String, versionCode: Long): Pair<String, String> {
+            val seed = "$vuid|$packageName|$versionCode"
+            return token(seed, salt = 0x9E3779B97F4A7C15uL) to
+                token(seed, salt = 0xC2B2AE3D27D4EB4FuL)
+        }
+
+        /** Twenty-two base64url characters, from a 128-bit value derived from [seed]. */
+        private fun token(seed: String, salt: ULong): String {
+            var hi = salt
+            var lo = salt xor 0x165667B19E3779F9uL
+            for (c in seed) {
+                hi = (hi xor c.code.toULong()) * 0x100000001B3uL
+                lo = (lo + hi).rotateLeft(23) * 0x9E3779B97F4A7C15uL
+            }
+            val bytes = ByteArray(16)
+            for (i in 0 until 8) {
+                bytes[i] = ((hi shr (8 * i)) and 0xFFuL).toByte()
+                bytes[8 + i] = ((lo shr (8 * i)) and 0xFFuL).toByte()
+            }
+            val out = StringBuilder(22)
+            var bits = 0
+            var buffer = 0
+            for (b in bytes) {
+                buffer = (buffer shl 8) or (b.toInt() and 0xFF)
+                bits += 8
+                while (bits >= 6) {
+                    bits -= 6
+                    out.append(BASE64URL[(buffer shr bits) and 0x3F])
+                    if (out.length == 22) return out.toString()
+                }
+            }
+            if (bits > 0 && out.length < 22) out.append(BASE64URL[(buffer shl (6 - bits)) and 0x3F])
+            return out.toString()
+        }
+
+        private const val BASE64URL =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+        /**
+         * The directory name the *installer* extracts native libraries into.
+         *
+         * An APK carries `lib/arm64-v8a`; the installed app has `lib/arm64`. The mapping
+         * is the platform's, in `VMRuntime.getInstructionSet`, and getting it wrong would
+         * leave a path that is nearly right and therefore worth looking at twice.
+         */
+        fun installedAbiDirName(abiDirName: String): String = when (abiDirName) {
+            "arm64-v8a" -> "arm64"
+            "armeabi-v7a", "armeabi" -> "arm"
+            "x86_64" -> "x86_64"
+            "x86" -> "x86"
+            else -> abiDirName
+        }
     }
+
+    // ---- validation -----------------------------------------------------------------
+
+    /** True when [path] belongs to the instance identified by [vuid]. */
+    fun belongsToInstance(path: String, vuid: Int): Boolean {
+        val normalized = normalize(path)
+        return normalized == userRoot(vuid) || normalized.startsWith(userRoot(vuid) + "/")
+    }
+
+    /** True when [path] is inside UNIQUE's own tree at all. */
+    fun isVirtual(path: String): Boolean {
+        val normalized = normalize(path)
+        return normalized == root || normalized.startsWith("$root/")
+    }
+
 }
 
 /** One entry of the native redirection table: everything under [from] resolves under [to]. */

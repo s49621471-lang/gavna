@@ -53,6 +53,19 @@ object VirtualProviderRouter {
     /** A caller asking whether a slot has got that far yet. */
     const val ROUTER_METHOD_SLOT_STATUS = "unique.slotStatus"
 
+    /**
+     * A `:vappN` saying its graft failed, so the slot it holds is serving nobody.
+     *
+     * The pool cannot see this for itself. A process whose graft failed is *running* —
+     * `alive()` says yes, quite correctly — and its slot stays occupied by an app that
+     * never started. On the eleventh phone run that left `:vapp0` held by a file manager
+     * that could not construct its `Application`, through three more attempts and then a
+     * job for a different app that grafted itself into the same process. Announcing the
+     * failure is what lets the allocator, which is the only thing entitled to decide, end
+     * the process and hand the slot back clean.
+     */
+    const val ROUTER_METHOD_SLOT_FAILED = "unique.slotFailed"
+
     const val KEY_READY = "unique.ready"
     const val KEY_STARTING = "unique.starting"
     const val KEY_PID = "unique.pid"
@@ -64,6 +77,9 @@ object VirtualProviderRouter {
     const val KEY_PROVIDER = "unique.provider"
     const val KEY_PROCESS = "unique.process"
     const val KEY_SLOT = "unique.slot"
+
+    /** Why a slot is reporting failure, for the log line the release writes. */
+    const val KEY_CODE = "unique.code"
 
     /** The host provider every other process asks. `<applicationId>.router`. */
     fun routerUri(hostPackage: String): Uri = Uri.parse("content://$hostPackage.router")
@@ -78,6 +94,15 @@ object VirtualProviderRouter {
     /** Set by the engine: leases the `:vappN` slot that will serve an instance. */
     @Volatile
     var slotLeaser: ((Target) -> Int?)? = null
+
+    /**
+     * Set by the engine: gives a slot back after the graft in it failed.
+     *
+     * Takes the instance as well as the slot because the message and the pool can
+     * disagree — see `ProcessPool.releaseIf`.
+     */
+    @Volatile
+    var slotReleaser: ((slot: Int, vuid: Int, reason: String) -> Unit)? = null
 
     val size: Int get() = synchronized(this) { targets.size }
 
@@ -265,6 +290,21 @@ object VirtualProviderRouter {
         val pid = extras?.getInt(KEY_PID, -1) ?: -1
         if (slot < 0 || vuid < 0 || pid < 0) return null
         markStarting(slot, vuid, pid)
+        return Bundle.EMPTY
+    }
+
+    /** Answers [ROUTER_METHOD_SLOT_FAILED]. */
+    fun slotFailed(extras: Bundle?): Bundle? {
+        val slot = extras?.getInt(KEY_SLOT, -1) ?: -1
+        val vuid = extras?.getInt(KEY_VUID, -1) ?: -1
+        if (slot < 0 || vuid < 0) return null
+        val code = extras?.getString(KEY_CODE) ?: "?"
+        forgetSlot(slot)
+        Diagnostics.warn(
+            DiagChannel.PROCESS, "SLOT_GRAFT_FAILED",
+            mapOf("slot" to ":vapp$slot", "vuid" to vuid.toString(), "code" to code),
+        )
+        slotReleaser?.invoke(slot, vuid, "graft failed: $code")
         return Bundle.EMPTY
     }
 
